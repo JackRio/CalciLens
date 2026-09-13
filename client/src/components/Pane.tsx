@@ -72,6 +72,7 @@ export default function Pane({
 
   const planeLength = pane.ctInfo ? pane.ctInfo.plane_lengths[pane.plane] : 1
   const currentRowPos = pane.manifestRows.findIndex((r) => r.index === pane.activeRowIndex)
+  const currentRow = currentRowPos >= 0 ? pane.manifestRows[currentRowPos] : null
 
   useEffect(() => {
     return () => {
@@ -491,6 +492,9 @@ export default function Pane({
             >
               ◂ Previous
             </button>
+            <span className="case-nav-count">
+              {currentRowPos >= 0 ? currentRowPos + 1 : '-'}/{pane.manifestRows.length}
+            </span>
             <button
               onClick={() => onNavigate(1)}
               disabled={currentRowPos < 0 || currentRowPos >= pane.manifestRows.length - 1}
@@ -599,15 +603,22 @@ export default function Pane({
           )}
           {pane.ctInfo && (
             <div className="viewer-top-right">
-              <span>
-                {pane.plane} {pane.index + 1}/{planeLength}
-              </span>
-              {probe && (
+              <div>
                 <span>
-                  {' '}
-                  · row {probe.row}, col {probe.col} · HU {probe.hu !== null ? probe.hu.toFixed(0) : '-'}
-                  {probe.label !== null && probe.label !== 0 ? ` · label ${probe.label}` : ''}
+                  {pane.plane} {pane.index + 1}/{planeLength}
                 </span>
+                {probe && (
+                  <span>
+                    {' '}
+                    · row {probe.row}, col {probe.col} · HU {probe.hu !== null ? probe.hu.toFixed(0) : '-'}
+                    {probe.label !== null && probe.label !== 0 ? ` · label ${probe.label}` : ''}
+                  </span>
+                )}
+              </div>
+              {currentRow && (currentRow.patient_id || currentRow.label) && (
+                <div className="viewer-patient-id">
+                  Patient ID: {currentRow.patient_id || currentRow.label}
+                </div>
               )}
             </div>
           )}

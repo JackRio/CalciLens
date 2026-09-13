@@ -54,15 +54,13 @@ export interface ManifestConfig {
   manifestPath: string
   imageColumn: string
   maskColumn: string
-  idColumn: string // optional; blank = derive label from image filename
-  patientIdColumn: string // optional; blank = no patient-id-based sync
+  patientIdColumn: string // used as the case-picker label/index; blank = derive label from image filename
 }
 
 export const DEFAULT_MANIFEST_CONFIG: ManifestConfig = {
   manifestPath: '',
   imageColumn: 'image_path',
   maskColumn: 'mask_path',
-  idColumn: '',
   patientIdColumn: '',
 }
 

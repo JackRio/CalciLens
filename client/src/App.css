@@ -322,6 +322,19 @@
   white-space: nowrap;
 }
 
+.viewer-patient-id {
+  margin-top: 2px;
+  font-size: 13px;
+  color: #ffd873;
+}
+
+.case-nav-count {
+  color: #9c9dab;
+  font-size: 13px;
+  padding: 0 2px;
+  align-self: center;
+}
+
 .viewer-alpha-controls {
   display: flex;
   flex-wrap: wrap;

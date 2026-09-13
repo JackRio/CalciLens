@@ -88,7 +88,6 @@ export default function CaseLoader({
         manifestPath: cfg.manifestPath,
         imageColumn: cfg.imageColumn,
         maskColumn: cfg.maskColumn,
-        idColumn: cfg.idColumn,
         patientIdColumn: cfg.patientIdColumn,
       })
       onChange({ manifestRows: rows })
@@ -212,27 +211,7 @@ export default function CaseLoader({
               )}
             </label>
             <label>
-              Label column (optional)
-              {availableColumns.length > 0 ? (
-                <select value={cfg.idColumn} onChange={(e) => updateConfig({ idColumn: e.target.value })}>
-                  <option value="">(use image filename)</option>
-                  {availableColumns.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type="text"
-                  placeholder="e.g. case_id"
-                  value={cfg.idColumn}
-                  onChange={(e) => updateConfig({ idColumn: e.target.value })}
-                />
-              )}
-            </label>
-            <label>
-              Patient ID column (optional)
+              Patient ID column (used to pick cases, optional)
               {availableColumns.length > 0 ? (
                 <select
                   value={cfg.patientIdColumn}
@@ -278,8 +257,7 @@ export default function CaseLoader({
             <option value="">-- select --</option>
             {pane.manifestRows.map((r) => (
               <option key={r.index} value={r.index}>
-                {r.label}
-                {r.patient_id ? ` (${r.patient_id})` : ''}
+                {r.patient_id || r.label}
                 {!r.image_exists ? ' (image missing)' : !r.mask_path ? ' (no mask)' : !r.mask_exists ? ' (mask missing)' : ''}
               </option>
             ))}

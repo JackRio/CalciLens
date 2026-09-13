@@ -94,7 +94,6 @@ export async function getManifestPairs(params: {
   manifestPath: string
   imageColumn: string
   maskColumn: string
-  idColumn?: string
   patientIdColumn?: string
 }): Promise<ManifestRow[]> {
   const res = await fetch('/api/manifest_pairs', {
@@ -104,7 +103,7 @@ export async function getManifestPairs(params: {
       manifest_path: params.manifestPath,
       image_column: params.imageColumn,
       mask_column: params.maskColumn,
-      id_column: params.idColumn || null,
+      id_column: params.patientIdColumn || null,
       patient_id_column: params.patientIdColumn || null,
     }),
   })

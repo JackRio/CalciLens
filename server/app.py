@@ -311,6 +311,25 @@ def manifest_pairs(req: ManifestPairsRequest):
     return {"rows": rows}
 
 
+class ManifestCommentRequest(BaseModel):
+    manifest_path: str
+    row_index: int
+    comment: str
+
+
+@app.post("/api/manifest/comment")
+def manifest_comment(req: ManifestCommentRequest):
+    try:
+        folder_scan.save_comment(req.manifest_path, req.row_index, req.comment)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to save comment: {e}")
+    return {"ok": True}
+
+
 # ---- Serve the built React client (production) ----
 _client_dist = os.path.join(os.path.dirname(__file__), "..", "client", "dist")
 if os.path.isdir(_client_dist):

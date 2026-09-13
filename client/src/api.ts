@@ -111,6 +111,15 @@ export async function getManifestPairs(params: {
   return data.rows
 }
 
+export async function saveManifestComment(manifestPath: string, rowIndex: number, comment: string): Promise<void> {
+  const res = await fetch('/api/manifest/comment', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ manifest_path: manifestPath, row_index: rowIndex, comment }),
+  })
+  await handleJson(res)
+}
+
 export async function createBlankMask(ctId: string): Promise<VolumeInfo> {
   const res = await fetch('/api/mask/new', {
     method: 'POST',

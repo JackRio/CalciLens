@@ -10,6 +10,7 @@ import {
   regionGrowMask,
   refreshMaskLabels,
   saveMask,
+  saveManifestComment,
 } from '../api'
 import InfoPanel from './InfoPanel'
 import LabelColorEditor from './LabelColorEditor'
@@ -36,6 +37,10 @@ export default function Pane({
   const [probe, setProbe] = useState<{ hu: number | null; label: number | null; row: number; col: number } | null>(
     null,
   )
+  const [commentOpen, setCommentOpen] = useState(false)
+  const [commentDraft, setCommentDraft] = useState('')
+  const [commentSaving, setCommentSaving] = useState(false)
+  const [commentError, setCommentError] = useState<string | null>(null)
   // Brush-cursor tracking deliberately bypasses React state: it's a
   // high-frequency, purely-visual value with no data anyone else reads, so
   // we write straight to the DOM node (via ref) in a requestAnimationFrame
@@ -64,6 +69,7 @@ export default function Pane({
   })
   const lastPaintTs = useRef(0)
   const lastRenderBumpTs = useRef(0)
+  const isHoveredRef = useRef(false)
   const editBoxDrag = useRef<{ active: boolean; offsetX: number; offsetY: number }>({
     active: false,
     offsetX: 0,
@@ -124,6 +130,31 @@ export default function Pane({
       onChange({ editBusy: false, editMessage: `Saved to ${res.path}` })
     } catch (e) {
       onChange({ editBusy: false, editMessage: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  function openCommentModal() {
+    setCommentDraft(currentRow?.comment || '')
+    setCommentError(null)
+    setCommentOpen(true)
+  }
+
+  async function handleSaveComment() {
+    if (!currentRow) return
+    setCommentSaving(true)
+    setCommentError(null)
+    try {
+      await saveManifestComment(pane.manifestConfig.manifestPath, currentRow.index, commentDraft)
+      onChange({
+        manifestRows: pane.manifestRows.map((r) =>
+          r.index === currentRow.index ? { ...r, comment: commentDraft } : r,
+        ),
+      })
+      setCommentSaving(false)
+      setCommentOpen(false)
+    } catch (e) {
+      setCommentSaving(false)
+      setCommentError(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -268,6 +299,29 @@ export default function Pane({
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
   }, [onWheel])
+
+  // Up/Down arrow slice scrubbing, active only while the mouse is over this
+  // pane (so in split view the un-hovered pane's keys don't also move) and
+  // not while the user is typing in a text field/select anywhere on the
+  // page. Uses the same liveRef.index as the wheel handler so holding a key
+  // down (rapid key-repeat events) compounds correctly instead of every
+  // repeat reading the same stale pane.index.
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+      if (!isHoveredRef.current || !pane.ctInfo) return
+      const active = document.activeElement as HTMLElement | null
+      if (active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) return
+      e.preventDefault()
+      const len = pane.ctInfo.plane_lengths[pane.plane]
+      const delta = e.key === 'ArrowUp' ? -1 : 1
+      const next = Math.max(0, Math.min(len - 1, liveRef.current.index + delta))
+      liveRef.current.index = next
+      onChange({ index: next })
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [pane.ctInfo, pane.plane, onChange])
 
   function isOverUIBox(target: EventTarget | null): boolean {
     const node = target as Node | null
@@ -551,6 +605,14 @@ export default function Pane({
             >
               Next ▸
             </button>
+            <button
+              className={currentRow?.comment ? 'has-comment' : ''}
+              onClick={openCommentModal}
+              disabled={!currentRow}
+              title={currentRow?.comment ? 'Edit comment for this case' : 'Add a comment for this case'}
+            >
+              {currentRow?.comment ? '💬 Comment' : 'Comment'}
+            </button>
           </div>
         )}
         <div className="pane-toolbar-right">
@@ -582,7 +644,11 @@ export default function Pane({
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
+          onMouseEnter={() => {
+            isHoveredRef.current = true
+          }}
           onMouseLeave={() => {
+            isHoveredRef.current = false
             onMouseUp()
             hideCursor()
           }}
@@ -772,6 +838,32 @@ export default function Pane({
           </div>
         )}
       </div>
+
+      {commentOpen && (
+        <div className="comment-modal-backdrop" onClick={() => setCommentOpen(false)}>
+          <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="comment-modal-title">
+              Comment{currentRow ? ` — ${currentRow.patient_id || currentRow.label}` : ''}
+            </div>
+            <textarea
+              autoFocus
+              rows={6}
+              value={commentDraft}
+              onChange={(e) => setCommentDraft(e.target.value)}
+              placeholder="Reason / notes for this case..."
+            />
+            {commentError && <div className="busy-msg manifest-error">{commentError}</div>}
+            <div className="comment-modal-buttons">
+              <button onClick={() => setCommentOpen(false)} disabled={commentSaving}>
+                Cancel
+              </button>
+              <button className="add-label-btn" onClick={handleSaveComment} disabled={commentSaving}>
+                {commentSaving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

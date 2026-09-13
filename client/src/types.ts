@@ -75,6 +75,7 @@ export interface ManifestRow {
   mask_path: string
   image_exists: boolean
   mask_exists: boolean
+  comment: string
 }
 
 export interface PaneState {

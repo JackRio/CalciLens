@@ -125,6 +125,58 @@
   cursor: default;
 }
 
+.case-nav-tabs button.has-comment {
+  background: #4a3b1f;
+  border-color: #a67c2e;
+  color: #ffd873;
+}
+
+.comment-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.comment-modal {
+  background: #1e1f27;
+  border: 1px solid #3c3e4d;
+  border-radius: 8px;
+  padding: 16px;
+  width: 420px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+.comment-modal-title {
+  font-weight: 600;
+  color: #d7d8de;
+}
+
+.comment-modal textarea {
+  width: 100%;
+  resize: vertical;
+  background: #14151a;
+  color: #d7d8de;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.comment-modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .pane-toolbar-right {
   display: flex;
   align-items: center;

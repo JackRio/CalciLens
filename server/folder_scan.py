@@ -15,6 +15,7 @@ from pathutil import clean_path
 
 DEFAULT_IMAGE_COLUMN = "image_path"
 DEFAULT_MASK_COLUMN = "mask_path"
+COMMENT_COLUMN = "Comment"
 
 
 def _read_table(manifest_path: str) -> pd.DataFrame:
@@ -24,10 +25,26 @@ def _read_table(manifest_path: str) -> pd.DataFrame:
     return pd.read_csv(manifest_path)
 
 
+def _write_table(manifest_path: str, df: pd.DataFrame) -> None:
+    ext = os.path.splitext(manifest_path)[1].lower()
+    if ext in (".xlsx", ".xls", ".xlsm"):
+        df.to_excel(manifest_path, index=False)
+    else:
+        df.to_csv(manifest_path, index=False)
+
+
 def _cell_str(value) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)) or pd.isna(value):
         return ""
     return clean_path(str(value))
+
+
+def _cell_text(value) -> str:
+    """Like _cell_str but without clean_path's quote/whitespace stripping —
+    for free-text fields (e.g. a reviewer's comment), not paths."""
+    if value is None or (isinstance(value, float) and pd.isna(value)) or pd.isna(value):
+        return ""
+    return str(value)
 
 
 def list_manifest_columns(manifest_path: str) -> list:
@@ -73,6 +90,7 @@ def list_manifest_pairs(
             label = os.path.splitext(os.path.basename(image_path))[0]
 
         patient_id = _cell_str(row[patient_id_column]) if patient_id_column else ""
+        comment = _cell_text(row[COMMENT_COLUMN]) if COMMENT_COLUMN in df.columns else ""
 
         rows.append(
             {
@@ -83,6 +101,29 @@ def list_manifest_pairs(
                 "mask_path": mask_path,
                 "image_exists": os.path.isfile(image_path),
                 "mask_exists": bool(mask_path) and os.path.isfile(mask_path),
+                "comment": comment,
             }
         )
     return rows
+
+
+def save_comment(manifest_path: str, row_index: int, comment: str) -> None:
+    """Write a reviewer comment back into the manifest file itself, creating
+    the Comment column if it doesn't already exist. row_index is the raw
+    pandas row index returned as `index` in list_manifest_pairs (the row's
+    position in this same file), so this must be reading the identical file
+    the rows were listed from."""
+    manifest_path = clean_path(manifest_path)
+    if not os.path.isfile(manifest_path):
+        raise FileNotFoundError(manifest_path)
+
+    df = _read_table(manifest_path)
+    if row_index not in df.index:
+        raise ValueError(f"Row {row_index} not found in manifest (it may have changed on disk)")
+
+    if COMMENT_COLUMN not in df.columns:
+        df[COMMENT_COLUMN] = ""
+
+    df[COMMENT_COLUMN] = df[COMMENT_COLUMN].astype(object)
+    df.loc[row_index, COMMENT_COLUMN] = comment
+    _write_table(manifest_path, df)

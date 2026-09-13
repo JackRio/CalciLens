@@ -51,17 +51,44 @@ export default function CaseLoader({
   async function handleBrowseManifest() {
     const picked = await pickPath({ properties: ['openFile'], filters: MANIFEST_FILTERS })
     if (picked) {
-      updateConfig({ manifestPath: picked })
-      tryDetectColumns(picked)
+      // Pass the just-picked path (and the config it belongs on) explicitly
+      // instead of relying on the `cfg` closure — by the time the async
+      // column fetch below resolves, `cfg` here is stale (captured at this
+      // render), so reading it after the await would silently drop this
+      // manifestPath update.
+      tryDetectColumns(picked, { ...cfg, manifestPath: picked })
     }
   }
 
-  async function tryDetectColumns(path: string) {
+  async function tryDetectColumns(path: string, baseConfig: typeof cfg) {
     try {
       const cols = await getManifestColumns(path)
       onChange({ manifestColumns: cols })
+
+      // The select shows whichever column the underlying config value
+      // matches, but a case-mismatch (e.g. default "PatientId" vs. an actual
+      // "PatientID" column) makes the browser silently fall back to
+      // displaying the first <option> while the real config value stays
+      // wrong — so the dropdown *looks* correct but submits the stale value.
+      // Reconcile every configured column name against what's actually in
+      // the file (case-insensitively) so what's shown is what gets sent.
+      const resolve = (current: string, keywords: string[]) => {
+        if (cols.includes(current)) return current
+        const ci = cols.find((c) => c.toLowerCase() === current.toLowerCase())
+        if (ci) return ci
+        const byKeyword = cols.find((c) => keywords.some((k) => c.toLowerCase().includes(k)))
+        return byKeyword || current
+      }
+      onChange({
+        manifestConfig: {
+          ...baseConfig,
+          imageColumn: resolve(baseConfig.imageColumn, ['image', 'ct_path', 'img']),
+          maskColumn: resolve(baseConfig.maskColumn, ['mask', 'seg']),
+          patientIdColumn: resolve(baseConfig.patientIdColumn, ['patient']),
+        },
+      })
     } catch {
-      onChange({ manifestColumns: [] })
+      onChange({ manifestColumns: [], manifestConfig: baseConfig })
     }
   }
 

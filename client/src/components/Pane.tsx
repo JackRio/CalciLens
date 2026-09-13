@@ -1,0 +1,660 @@
+import { useCallback, useRef, useState } from 'react'
+import type { PaneState, Plane } from '../types'
+import { WINDOW_PRESETS } from '../types'
+import {
+  loadVolume,
+  probeVoxel,
+  renderUrl,
+  createBlankMask,
+  paintMask,
+  regionGrowMask,
+  refreshMaskLabels,
+  saveMask,
+} from '../api'
+import InfoPanel from './InfoPanel'
+import LabelColorEditor from './LabelColorEditor'
+import CaseLoader from './CaseLoader'
+import AlphaSpinner from './AlphaSpinner'
+import MaskEditor from './MaskEditor'
+
+const PLANES: Plane[] = ['axial', 'sagittal', 'coronal']
+
+export default function Pane({
+  pane,
+  onChange,
+  onClose,
+  closable,
+}: {
+  pane: PaneState
+  onChange: (partial: Partial<PaneState>) => void
+  onClose: () => void
+  closable: boolean
+}) {
+  const [settingsOpen, setSettingsOpen] = useState(true)
+  const [probe, setProbe] = useState<{ hu: number | null; label: number | null; row: number; col: number } | null>(
+    null,
+  )
+  const [cursorPos, setCursorPos] = useState<{ x: number; y: number; diameter: number } | null>(null)
+  const lastCursorTs = useRef(0)
+  const imgRef = useRef<HTMLImageElement>(null)
+  const viewerAreaRef = useRef<HTMLDivElement>(null)
+  const wlBoxRef = useRef<HTMLDivElement>(null)
+  const bottomLeftRef = useRef<HTMLDivElement>(null)
+  const editBoxRef = useRef<HTMLDivElement>(null)
+  const lastProbeTs = useRef(0)
+  const rightDrag = useRef<{
+    active: boolean
+    startX: number
+    startY: number
+    startZoom: number
+    startLevel: number
+    axis: 'zoom' | 'brightness' | null
+  }>({ active: false, startX: 0, startY: 0, startZoom: 1, startLevel: 40, axis: null })
+  const paintDrag = useRef<{ active: boolean; didPaint: boolean; erasing: boolean }>({
+    active: false,
+    didPaint: false,
+    erasing: false,
+  })
+  const lastPaintTs = useRef(0)
+  const lastRenderBumpTs = useRef(0)
+  const editBoxDrag = useRef<{ active: boolean; offsetX: number; offsetY: number }>({
+    active: false,
+    offsetX: 0,
+    offsetY: 0,
+  })
+
+  const planeLength = pane.ctInfo ? pane.ctInfo.plane_lengths[pane.plane] : 1
+
+  async function doLoadCt(path: string) {
+    onChange({ loading: true, error: null })
+    try {
+      const info = await loadVolume(path, false)
+      onChange({
+        ctPath: path,
+        ctInfo: info,
+        loading: false,
+        index: Math.floor(info.plane_lengths[pane.plane] / 2),
+      })
+    } catch (e) {
+      onChange({ loading: false, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  async function doLoadMask(path: string) {
+    onChange({ loading: true, error: null })
+    try {
+      const info = await loadVolume(path, true)
+      onChange({ maskPath: path, maskInfo: info, loading: false, showMask: true })
+    } catch (e) {
+      onChange({ loading: false, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  async function doCreateMask() {
+    if (!pane.ctInfo) return
+    onChange({ loading: true, error: null })
+    try {
+      const info = await createBlankMask(pane.ctInfo.volume_id)
+      onChange({ maskPath: '', maskInfo: info, loading: false, showMask: true, editMode: true })
+    } catch (e) {
+      onChange({ loading: false, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  async function doSaveMask() {
+    if (!pane.maskInfo) return
+    onChange({ editBusy: true, editMessage: null })
+    try {
+      const res = await saveMask(pane.maskInfo.volume_id)
+      onChange({ editBusy: false, editMessage: `Saved to ${res.path}` })
+    } catch (e) {
+      onChange({ editBusy: false, editMessage: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  function getDisplayCoords(clientX: number, clientY: number): { row: number; col: number } | null {
+    const img = imgRef.current
+    if (!img) return null
+    const rect = img.getBoundingClientRect()
+    const relX = (clientX - rect.left) / rect.width
+    const relY = (clientY - rect.top) / rect.height
+    if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return null
+    return { col: relX * img.naturalWidth, row: relY * img.naturalHeight }
+  }
+
+  async function doPaint(row: number, col: number, forceRefresh = false) {
+    if (!pane.ctInfo || !pane.maskInfo) return
+    const erasing = paintDrag.current.erasing
+    try {
+      await paintMask({
+        maskId: pane.maskInfo.volume_id,
+        ctId: pane.ctInfo.volume_id,
+        plane: pane.plane,
+        index: pane.index,
+        row,
+        col,
+        radius: pane.editBrushRadius,
+        newLabel: erasing ? 0 : pane.editActiveLabel,
+        overwriteMode: erasing ? 'any' : pane.editOverwriteMode,
+        overwriteLabel: pane.editOverwriteLabel,
+        thresholdMin: pane.editThresholdMin,
+      })
+      paintDrag.current.didPaint = true
+      // Mutations are cheap (~5ms) but each visual refresh re-encodes a full
+      // PNG (tens of ms) — so during a drag we keep mutating on every dab
+      // but only pull a fresh image at a capped rate, or the render requests
+      // queue up faster than the server can produce them. forceRefresh
+      // (mousedown's first dab, and mouseup's final catch-up) bypasses that.
+      const now = performance.now()
+      if (forceRefresh || now - lastRenderBumpTs.current >= 100) {
+        lastRenderBumpTs.current = now
+        onChange({ editVersion: pane.editVersion + 1 })
+      }
+    } catch {
+      /* ignore transient paint errors during a drag */
+    }
+  }
+
+  async function doRegionGrow(row: number, col: number) {
+    if (!pane.ctInfo || !pane.maskInfo) return
+    try {
+      const res = await regionGrowMask({
+        maskId: pane.maskInfo.volume_id,
+        ctId: pane.ctInfo.volume_id,
+        plane: pane.plane,
+        index: pane.index,
+        row,
+        col,
+        thresholdMin: pane.editRegionGrowThreshold,
+        newLabel: pane.editActiveLabel,
+      })
+      onChange({
+        editVersion: pane.editVersion + 1,
+        maskInfo: { ...pane.maskInfo, labels: res.labels },
+        editMessage: `Region grow changed ${res.changed} voxels`,
+      })
+    } catch (e) {
+      onChange({ editMessage: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  function changeIndex(delta: number) {
+    if (!pane.ctInfo) return
+    const len = pane.ctInfo.plane_lengths[pane.plane]
+    const next = Math.max(0, Math.min(len - 1, pane.index + delta))
+    onChange({ index: next })
+  }
+
+  function setPlane(plane: Plane) {
+    if (!pane.ctInfo) {
+      onChange({ plane })
+      return
+    }
+    const len = pane.ctInfo.plane_lengths[plane]
+    onChange({ plane, index: Math.min(pane.index, len - 1) })
+  }
+
+  const onWheel = useCallback(
+    (e: React.WheelEvent) => {
+      e.preventDefault()
+      if (e.ctrlKey) {
+        const factor = e.deltaY > 0 ? 0.9 : 1.1
+        onChange({ zoom: Math.max(0.2, Math.min(10, pane.zoom * factor)) })
+      } else {
+        changeIndex(e.deltaY > 0 ? 1 : -1)
+      }
+    },
+    [pane.zoom, pane.index, pane.plane, pane.ctInfo, onChange],
+  )
+
+  function isOverUIBox(target: EventTarget | null): boolean {
+    const node = target as Node | null
+    if (!node) return false
+    return Boolean(
+      (wlBoxRef.current && wlBoxRef.current.contains(node)) ||
+        (editBoxRef.current && editBoxRef.current.contains(node)) ||
+        (bottomLeftRef.current && bottomLeftRef.current.contains(node)),
+    )
+  }
+
+  function onMouseDown(e: React.MouseEvent) {
+    if (isOverUIBox(e.target)) return
+    if (e.button === 2) {
+      e.preventDefault()
+      rightDrag.current = {
+        active: true,
+        startX: e.clientX,
+        startY: e.clientY,
+        startZoom: pane.zoom,
+        startLevel: pane.windowLevel,
+        axis: null,
+      }
+      return
+    }
+    if (e.button === 0 && pane.editMode && pane.ctInfo && pane.maskInfo) {
+      const coords = getDisplayCoords(e.clientX, e.clientY)
+      if (!coords) return
+      if (pane.editTool === 'brush') {
+        paintDrag.current.active = true
+        paintDrag.current.didPaint = false
+        paintDrag.current.erasing = e.ctrlKey
+        doPaint(coords.row, coords.col, true)
+      } else {
+        doRegionGrow(coords.row, coords.col)
+      }
+    }
+  }
+
+  function handleEditBoxDragStart(e: React.MouseEvent) {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const box = editBoxRef.current
+    if (!box) return
+    const boxRect = box.getBoundingClientRect()
+    editBoxDrag.current = {
+      active: true,
+      offsetX: e.clientX - boxRect.left,
+      offsetY: e.clientY - boxRect.top,
+    }
+  }
+
+  function rectsOverlap(
+    a: { x: number; y: number; w: number; h: number },
+    b: { x: number; y: number; w: number; h: number },
+  ) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+  }
+
+  function onMouseMove(e: React.MouseEvent) {
+    if (pane.editMode && pane.editTool === 'brush' && !isOverUIBox(e.target)) {
+      const now = performance.now()
+      if (now - lastCursorTs.current >= 30) {
+        lastCursorTs.current = now
+        const container = viewerAreaRef.current
+        const img = imgRef.current
+        if (container && img) {
+          const containerRect = container.getBoundingClientRect()
+          const imgRect = img.getBoundingClientRect()
+          const scale = imgRect.width / (img.naturalWidth || 1)
+          const diameter = Math.max(4, 2 * pane.editBrushRadius * scale)
+          setCursorPos({ x: e.clientX - containerRect.left, y: e.clientY - containerRect.top, diameter })
+        }
+      }
+    } else if (cursorPos) {
+      setCursorPos(null)
+    }
+
+    if (editBoxDrag.current.active) {
+      const container = viewerAreaRef.current
+      const box = editBoxRef.current
+      if (!container || !box) return
+      const containerRect = container.getBoundingClientRect()
+      const boxRect = box.getBoundingClientRect()
+      let x = e.clientX - containerRect.left - editBoxDrag.current.offsetX
+      let y = e.clientY - containerRect.top - editBoxDrag.current.offsetY
+      x = Math.max(0, Math.min(containerRect.width - boxRect.width, x))
+      y = Math.max(0, Math.min(containerRect.height - boxRect.height, y))
+
+      const proposed = { x, y, w: boxRect.width, h: boxRect.height }
+      const exclusions: { x: number; y: number; w: number; h: number }[] = []
+      if (wlBoxRef.current) {
+        const r = wlBoxRef.current.getBoundingClientRect()
+        exclusions.push({ x: r.left - containerRect.left, y: r.top - containerRect.top, w: r.width, h: r.height })
+      }
+      if (bottomLeftRef.current) {
+        const r = bottomLeftRef.current.getBoundingClientRect()
+        exclusions.push({ x: r.left - containerRect.left, y: r.top - containerRect.top, w: r.width, h: r.height })
+      }
+      const blocked = exclusions.some((ex) => rectsOverlap(proposed, ex))
+      if (!blocked) {
+        onChange({ editBoxPos: { x, y } })
+      }
+      return
+    }
+
+    if (rightDrag.current.active) {
+      const dx = e.clientX - rightDrag.current.startX
+      const dy = e.clientY - rightDrag.current.startY
+      // Axis-lock: decide zoom vs. brightness from whichever direction
+      // dominates once the drag clears a small deadzone, then commit to
+      // that axis for the rest of the drag — otherwise diagonal hand jitter
+      // nudges both at once.
+      if (rightDrag.current.axis === null) {
+        if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return
+        rightDrag.current.axis = Math.abs(dy) > Math.abs(dx) ? 'zoom' : 'brightness'
+      }
+      if (rightDrag.current.axis === 'zoom') {
+        const newZoom = Math.max(0.2, Math.min(10, rightDrag.current.startZoom * Math.exp(-dy * 0.01)))
+        onChange({ zoom: newZoom })
+      } else {
+        onChange({ windowLevel: rightDrag.current.startLevel + dx })
+      }
+      return
+    }
+    if (paintDrag.current.active) {
+      const now = performance.now()
+      if (now - lastPaintTs.current < 40) return
+      lastPaintTs.current = now
+      const coords = getDisplayCoords(e.clientX, e.clientY)
+      if (coords) doPaint(coords.row, coords.col)
+      return
+    }
+    const img = imgRef.current
+    if (!img || !pane.ctInfo) return
+    const now = performance.now()
+    if (now - lastProbeTs.current < 80) return
+    lastProbeTs.current = now
+    const rect = img.getBoundingClientRect()
+    const relX = (e.clientX - rect.left) / rect.width
+    const relY = (e.clientY - rect.top) / rect.height
+    if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return
+    const col = Math.floor(relX * img.naturalWidth)
+    const row = Math.floor(relY * img.naturalHeight)
+    probeVoxel({
+      ctId: pane.ctInfo.volume_id,
+      maskId: pane.maskInfo?.volume_id,
+      plane: pane.plane,
+      index: pane.index,
+      row,
+      col,
+    })
+      .then((res) => setProbe({ ...res, row, col }))
+      .catch(() => {})
+  }
+
+  function onMouseUp() {
+    rightDrag.current.active = false
+    editBoxDrag.current.active = false
+    if (paintDrag.current.active) {
+      paintDrag.current.active = false
+      if (paintDrag.current.didPaint && pane.maskInfo) {
+        // Catch up the visual in case the throttle skipped a refresh for
+        // the last dab or two, then refresh the (expensive, full-volume)
+        // label list once now that the stroke is actually done.
+        onChange({ editVersion: pane.editVersion + 1 })
+        const maskId = pane.maskInfo.volume_id
+        refreshMaskLabels(maskId)
+          .then((res) => {
+            onChange({ maskInfo: pane.maskInfo?.volume_id === maskId ? { ...pane.maskInfo, labels: res.labels } : pane.maskInfo })
+          })
+          .catch(() => {})
+      }
+      paintDrag.current.didPaint = false
+      paintDrag.current.erasing = false
+    }
+  }
+
+  function resetView() {
+    onChange({ zoom: 1, windowLevel: 40, windowWidth: 400 })
+  }
+
+  function stopWheel(e: React.WheelEvent) {
+    e.stopPropagation()
+  }
+
+  function wheelStep(current: number, step: number, set: (v: number) => void) {
+    return (e: React.WheelEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      set(current + (e.deltaY < 0 ? step : -step))
+    }
+  }
+
+  const imgSrc = pane.ctInfo
+    ? renderUrl({
+        ctId: pane.ctInfo.volume_id,
+        maskId: pane.maskInfo?.volume_id ?? null,
+        plane: pane.plane,
+        index: pane.index,
+        ww: pane.windowWidth,
+        wl: pane.windowLevel,
+        maskColors: pane.maskColors,
+        maskAlpha: pane.maskAlpha,
+        showMask: pane.showMask,
+        thresholdEnabled: pane.thresholdEnabled,
+        thresholdValue: pane.thresholdValue,
+        thresholdColor: pane.thresholdColor,
+        thresholdAlpha: pane.thresholdAlpha,
+        editVersion: pane.editVersion,
+      })
+    : null
+
+  return (
+    <div className="pane">
+      <div className="pane-toolbar">
+        <div className="plane-tabs">
+          {PLANES.map((p) => (
+            <button
+              key={p}
+              className={p === pane.plane ? 'active' : ''}
+              onClick={() => setPlane(p)}
+            >
+              {p[0].toUpperCase() + p.slice(1)}
+            </button>
+          ))}
+        </div>
+        <div className="pane-toolbar-right">
+          {pane.loading && <span className="loading-tag">Loading...</span>}
+          {pane.ctInfo && (pane.zoom !== 1 || pane.windowLevel !== 40 || pane.windowWidth !== 400) && (
+            <button onClick={resetView} title="Reset zoom and window/level to defaults">
+              Reset view
+            </button>
+          )}
+          <button onClick={() => setSettingsOpen((v) => !v)}>{settingsOpen ? 'Hide settings' : 'Settings'}</button>
+          {closable && (
+            <button onClick={onClose} title="Close pane">
+              ✕
+            </button>
+          )}
+        </div>
+      </div>
+
+      {pane.error && <div className="pane-error">{pane.error}</div>}
+
+      <div className="pane-body">
+        <div
+          ref={viewerAreaRef}
+          className="viewer-area"
+          style={pane.editMode && pane.editTool === 'brush' ? { cursor: 'none' } : undefined}
+          onWheel={onWheel}
+          onMouseDown={onMouseDown}
+          onMouseMove={onMouseMove}
+          onMouseUp={onMouseUp}
+          onMouseLeave={() => {
+            onMouseUp()
+            setCursorPos(null)
+          }}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          {imgSrc ? (
+            <img
+              ref={imgRef}
+              src={imgSrc}
+              alt="slice"
+              draggable={false}
+              className="slice-image"
+              style={{ transform: `scale(${pane.zoom})` }}
+            />
+          ) : (
+            <div className="viewer-placeholder">No CT loaded — open Settings to load a scan</div>
+          )}
+          {pane.editMode && cursorPos && (
+            <div
+              className="brush-cursor"
+              style={{
+                width: cursorPos.diameter,
+                height: cursorPos.diameter,
+                // transform (not left/top) so repositioning on every mouse
+                // move is a compositor-only operation — no layout recalc.
+                transform: `translate(${cursorPos.x - cursorPos.diameter / 2}px, ${
+                  cursorPos.y - cursorPos.diameter / 2
+                }px)`,
+              }}
+            />
+          )}
+          {pane.ctInfo && (
+            <div className="viewer-left-controls">
+              <div className="wl-box" ref={wlBoxRef} onWheel={stopWheel}>
+                <div className="wl-title">
+                  <span>Window / Level</span>
+                  <button
+                    className="wl-minimize-btn"
+                    onClick={() => onChange({ wlMinimized: !pane.wlMinimized })}
+                    title={pane.wlMinimized ? 'Expand' : 'Minimize'}
+                  >
+                    {pane.wlMinimized ? '+' : '−'}
+                  </button>
+                </div>
+                {!pane.wlMinimized && (
+                  <>
+                    <label className="wl-field">
+                      L
+                      <input
+                        type="number"
+                        value={pane.windowLevel}
+                        onChange={(e) => onChange({ windowLevel: Number(e.target.value) })}
+                        onWheel={wheelStep(pane.windowLevel, 10, (v) => onChange({ windowLevel: v }))}
+                      />
+                    </label>
+                    <label className="wl-field">
+                      W
+                      <input
+                        type="number"
+                        value={pane.windowWidth}
+                        onChange={(e) => onChange({ windowWidth: Number(e.target.value) })}
+                        onWheel={wheelStep(pane.windowWidth, 10, (v) => onChange({ windowWidth: v }))}
+                      />
+                    </label>
+                    <div className="wl-presets">
+                      {WINDOW_PRESETS.map((p) => (
+                        <button
+                          key={p.name}
+                          onClick={() => onChange({ windowLevel: p.level, windowWidth: p.width })}
+                        >
+                          {p.name}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+          {pane.ctInfo && (
+            <div className="viewer-top-right">
+              <span>
+                {pane.plane} {pane.index + 1}/{planeLength}
+              </span>
+              {probe && (
+                <span>
+                  {' '}
+                  · row {probe.row}, col {probe.col} · HU {probe.hu !== null ? probe.hu.toFixed(0) : '-'}
+                  {probe.label !== null && probe.label !== 0 ? ` · label ${probe.label}` : ''}
+                </span>
+              )}
+            </div>
+          )}
+          {pane.ctInfo && (
+            <div className="viewer-bottom-left" ref={bottomLeftRef}>
+              <div className="viewer-alpha-controls">
+                <div className="overlay-box" onWheel={stopWheel}>
+                  <label className="overlay-toggle">
+                    <input
+                      type="checkbox"
+                      checked={pane.showMask}
+                      onChange={(e) => onChange({ showMask: e.target.checked })}
+                    />
+                    Mask
+                  </label>
+                  <AlphaSpinner label="α" value={pane.maskAlpha} onChange={(v) => onChange({ maskAlpha: v })} />
+                </div>
+                <div className="overlay-box" onWheel={stopWheel}>
+                  <label className="overlay-toggle">
+                    <input
+                      type="checkbox"
+                      checked={pane.thresholdEnabled}
+                      onChange={(e) => onChange({ thresholdEnabled: e.target.checked })}
+                    />
+                    Thresh
+                  </label>
+                  <div className="overlay-box-row">
+                    <input
+                      type="number"
+                      className="overlay-hu-input"
+                      value={pane.thresholdValue}
+                      onChange={(e) => onChange({ thresholdValue: Number(e.target.value) })}
+                      onWheel={wheelStep(pane.thresholdValue, 5, (v) => onChange({ thresholdValue: v }))}
+                      title="Threshold (HU)"
+                    />
+                    <AlphaSpinner
+                      label="α"
+                      value={pane.thresholdAlpha}
+                      onChange={(v) => onChange({ thresholdAlpha: v })}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          {pane.ctInfo && (
+            <div
+              ref={editBoxRef}
+              className="viewer-bottom-right"
+              style={
+                pane.editBoxPos
+                  ? { left: pane.editBoxPos.x, top: pane.editBoxPos.y, right: 'auto', bottom: 'auto' }
+                  : undefined
+              }
+            >
+              <MaskEditor
+                pane={pane}
+                onChange={onChange}
+                onCreateMask={doCreateMask}
+                onSave={doSaveMask}
+                onDragHandleDown={handleEditBoxDragStart}
+              />
+            </div>
+          )}
+        </div>
+
+        {pane.ctInfo && (
+          <input
+            className="slice-slider"
+            type="range"
+            min={0}
+            max={planeLength - 1}
+            value={pane.index}
+            onChange={(e) => onChange({ index: Number(e.target.value) })}
+          />
+        )}
+
+        {settingsOpen && (
+          <div className="pane-settings">
+            <CaseLoader pane={pane} onChange={onChange} onLoadCt={doLoadCt} onLoadMask={doLoadMask} />
+
+            <div className="settings-section">
+              <LabelColorEditor colors={pane.maskColors} onChange={(colors) => onChange({ maskColors: colors })} />
+            </div>
+
+            <div className="settings-section">
+              <div className="settings-title">HU threshold overlay color</div>
+              <label>
+                Color
+                <input
+                  type="color"
+                  value={pane.thresholdColor}
+                  onChange={(e) => onChange({ thresholdColor: e.target.value })}
+                />
+              </label>
+            </div>
+
+            <div className="settings-section">
+              <InfoPanel title="CT image" info={pane.ctInfo} />
+              <InfoPanel title="Segmentation mask" info={pane.maskInfo} />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

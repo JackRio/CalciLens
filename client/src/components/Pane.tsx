@@ -193,13 +193,6 @@ export default function Pane({
     }
   }
 
-  function changeIndex(delta: number) {
-    if (!pane.ctInfo) return
-    const len = pane.ctInfo.plane_lengths[pane.plane]
-    const next = Math.max(0, Math.min(len - 1, pane.index + delta))
-    onChange({ index: next })
-  }
-
   function setPlane(plane: Plane) {
     if (!pane.ctInfo) {
       onChange({ plane })
@@ -209,18 +202,72 @@ export default function Pane({
     onChange({ plane, index: Math.min(pane.index, len - 1) })
   }
 
+  // Wheel events can arrive in a rapid burst (a trackpad flick easily fires
+  // many within one React batch) — computing the next zoom/index from the
+  // `pane` prop would have every event in that burst read the same
+  // not-yet-updated value and land on the same result instead of
+  // compounding, making fast scroll-zoom/scroll-scrub silently "stick".
+  // liveRef tracks the authoritative current value synchronously across a
+  // burst; effects below resync it whenever the real value changes for any
+  // other reason (slider drag, cross-pane sync, Prev/Next, plane switch).
+  const liveRef = useRef({
+    zoom: pane.zoom,
+    index: pane.index,
+    windowLevel: pane.windowLevel,
+    windowWidth: pane.windowWidth,
+    thresholdValue: pane.thresholdValue,
+  })
+  useEffect(() => {
+    liveRef.current.zoom = pane.zoom
+  }, [pane.zoom])
+  useEffect(() => {
+    liveRef.current.index = pane.index
+  }, [pane.index, pane.plane])
+  useEffect(() => {
+    liveRef.current.windowLevel = pane.windowLevel
+  }, [pane.windowLevel])
+  useEffect(() => {
+    liveRef.current.windowWidth = pane.windowWidth
+  }, [pane.windowWidth])
+  useEffect(() => {
+    liveRef.current.thresholdValue = pane.thresholdValue
+  }, [pane.thresholdValue])
+
   const onWheel = useCallback(
-    (e: React.WheelEvent) => {
+    (e: WheelEvent) => {
+      // React 19 registers its delegated wheel listener as passive (matching
+      // the browser default, for scroll perf), so e.preventDefault() here
+      // silently no-ops and logs a console warning — the page/ancestor could
+      // still scroll on every zoom/slice-scrub. Bypassed below by attaching
+      // this as a real { passive: false } native listener instead of a JSX
+      // onWheel prop. Because it's attached directly on viewerAreaRef (a
+      // descendant of wherever React's own delegated listener lives), it
+      // would otherwise fire before the W/L and overlay boxes' own onWheel
+      // stopPropagation() guards get a chance to run — so re-check
+      // isOverUIBox here rather than relying on propagation order.
+      if (isOverUIBox(e.target)) return
       e.preventDefault()
       if (e.ctrlKey) {
         const factor = e.deltaY > 0 ? 0.9 : 1.1
-        onChange({ zoom: Math.max(0.2, Math.min(10, pane.zoom * factor)) })
-      } else {
-        changeIndex(e.deltaY > 0 ? 1 : -1)
+        const next = Math.max(0.2, Math.min(10, liveRef.current.zoom * factor))
+        liveRef.current.zoom = next
+        onChange({ zoom: next })
+      } else if (pane.ctInfo) {
+        const len = pane.ctInfo.plane_lengths[pane.plane]
+        const next = Math.max(0, Math.min(len - 1, liveRef.current.index + (e.deltaY > 0 ? 1 : -1)))
+        liveRef.current.index = next
+        onChange({ index: next })
       }
     },
-    [pane.zoom, pane.index, pane.plane, pane.ctInfo, onChange],
+    [pane.ctInfo, pane.plane, onChange],
   )
+
+  useEffect(() => {
+    const el = viewerAreaRef.current
+    if (!el) return
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [onWheel])
 
   function isOverUIBox(target: EventTarget | null): boolean {
     const node = target as Node | null
@@ -442,11 +489,13 @@ export default function Pane({
     e.stopPropagation()
   }
 
-  function wheelStep(current: number, step: number, set: (v: number) => void) {
+  function wheelStep(key: 'windowLevel' | 'windowWidth' | 'thresholdValue', step: number, set: (v: number) => void) {
     return (e: React.WheelEvent) => {
       e.preventDefault()
       e.stopPropagation()
-      set(current + (e.deltaY < 0 ? step : -step))
+      const next = liveRef.current[key] + (e.deltaY < 0 ? step : -step)
+      liveRef.current[key] = next
+      set(next)
     }
   }
 
@@ -530,7 +579,6 @@ export default function Pane({
           ref={viewerAreaRef}
           className="viewer-area"
           style={pane.editMode && pane.editTool === 'brush' ? { cursor: 'none' } : undefined}
-          onWheel={onWheel}
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
@@ -577,7 +625,7 @@ export default function Pane({
                         type="number"
                         value={pane.windowLevel}
                         onChange={(e) => onChange({ windowLevel: Number(e.target.value) })}
-                        onWheel={wheelStep(pane.windowLevel, 10, (v) => onChange({ windowLevel: v }))}
+                        onWheel={wheelStep('windowLevel', 10, (v) => onChange({ windowLevel: v }))}
                       />
                     </label>
                     <label className="wl-field">
@@ -586,7 +634,7 @@ export default function Pane({
                         type="number"
                         value={pane.windowWidth}
                         onChange={(e) => onChange({ windowWidth: Number(e.target.value) })}
-                        onWheel={wheelStep(pane.windowWidth, 10, (v) => onChange({ windowWidth: v }))}
+                        onWheel={wheelStep('windowWidth', 10, (v) => onChange({ windowWidth: v }))}
                       />
                     </label>
                     <div className="wl-presets">
@@ -618,10 +666,8 @@ export default function Pane({
                   </span>
                 )}
               </div>
-              {currentRow && (currentRow.patient_id || currentRow.label) && (
-                <div className="viewer-patient-id">
-                  Patient ID: {currentRow.patient_id || currentRow.label}
-                </div>
+              {currentRow && currentRow.patient_id && (
+                <div className="viewer-patient-id">Patient ID: {currentRow.patient_id}</div>
               )}
             </div>
           )}
@@ -654,7 +700,7 @@ export default function Pane({
                       className="overlay-hu-input"
                       value={pane.thresholdValue}
                       onChange={(e) => onChange({ thresholdValue: Number(e.target.value) })}
-                      onWheel={wheelStep(pane.thresholdValue, 5, (v) => onChange({ thresholdValue: v }))}
+                      onWheel={wheelStep('thresholdValue', 5, (v) => onChange({ thresholdValue: v }))}
                       title="Threshold (HU)"
                     />
                     <AlphaSpinner

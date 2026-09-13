@@ -95,23 +95,39 @@ export default function App() {
     })
   }
 
-  async function loadRowIntoPane(paneId: string, row: ManifestRow) {
+  async function loadRowIntoPane(paneId: string, row: ManifestRow, currentPlane: PaneState['plane']) {
     updatePane(paneId, { activeRowIndex: row.index, manifestError: null, error: null, loading: true })
     if (!row.image_exists) {
-      updatePane(paneId, { loading: false, manifestError: `Image not found: ${row.image_path}` })
+      // Clear whatever scan was showing before rather than leaving it up
+      // under the new row's Patient ID/counter — a stale image next to a
+      // "not found" error would otherwise look like it belongs to this row.
+      updatePane(paneId, {
+        ctPath: '',
+        ctInfo: null,
+        maskPath: '',
+        maskInfo: null,
+        loading: false,
+        manifestError: `Image not found: ${row.image_path}`,
+      })
       return
     }
     try {
       const ctInfo = await loadVolume(row.image_path, false)
-      const targetPane = panes.find((p) => p.id === paneId)
       updatePane(paneId, {
         ctPath: row.image_path,
         ctInfo,
         loading: false,
-        index: Math.floor(ctInfo.plane_lengths[targetPane ? targetPane.plane : 'axial'] / 2),
+        index: Math.floor(ctInfo.plane_lengths[currentPlane] / 2),
       })
     } catch (e) {
-      updatePane(paneId, { loading: false, error: e instanceof Error ? e.message : String(e) })
+      updatePane(paneId, {
+        ctPath: '',
+        ctInfo: null,
+        maskPath: '',
+        maskInfo: null,
+        loading: false,
+        error: e instanceof Error ? e.message : String(e),
+      })
       return
     }
     if (row.mask_path) {
@@ -150,7 +166,7 @@ export default function App() {
     const nextPos = curPos + direction
     if (nextPos < 0 || nextPos >= rows.length) return
     const row = rows[nextPos]
-    loadRowIntoPane(paneId, row)
+    loadRowIntoPane(paneId, row, pane.plane)
 
     const canSyncByPatientId =
       syncNavByPatientId &&
@@ -164,7 +180,7 @@ export default function App() {
         if (!row.patient_id) return
         const match = other.manifestRows.find((r) => r.patient_id === row.patient_id)
         if (match) {
-          loadRowIntoPane(other.id, match)
+          loadRowIntoPane(other.id, match, other.plane)
         } else {
           clearPaneScan(other.id, `No image path for PatientID ${row.patient_id}`)
         }

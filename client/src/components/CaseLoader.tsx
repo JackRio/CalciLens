@@ -93,18 +93,29 @@ export default function CaseLoader({
   }
 
   function selectRow(row: ManifestRow) {
-    onChange({ activeRowIndex: row.index })
+    onChange({ activeRowIndex: row.index, manifestError: null })
     if (row.image_exists) {
       onLoadCt(row.image_path)
     } else {
-      onChange({ manifestError: `Image not found: ${row.image_path}` })
+      // Clear any previously-loaded scan instead of leaving it on screen —
+      // otherwise it can look like it belongs to the row just selected.
+      onChange({
+        ctPath: '',
+        ctInfo: null,
+        maskPath: '',
+        maskInfo: null,
+        manifestError: `Image not found: ${row.image_path}`,
+      })
+      return
     }
     if (row.mask_path) {
       if (row.mask_exists) {
         onLoadMask(row.mask_path)
       } else {
-        onChange({ manifestError: `Mask not found: ${row.mask_path}` })
+        onChange({ maskPath: '', maskInfo: null, manifestError: `Mask not found: ${row.mask_path}` })
       }
+    } else {
+      onChange({ maskPath: '', maskInfo: null })
     }
   }
 

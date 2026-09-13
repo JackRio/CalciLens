@@ -2,7 +2,14 @@ import { useState } from 'react'
 import './App.css'
 import Pane from './components/Pane'
 import type { ManifestRow, PaneState } from './types'
-import { CALCIFICATIONS_PRESET, DEFAULT_MANIFEST_CONFIG, DEFAULT_THRESHOLD_COLOR, DEFAULT_THRESHOLD_HU } from './types'
+import {
+  CALCIFICATIONS_PRESET,
+  DEFAULT_MANIFEST_CONFIG,
+  DEFAULT_THRESHOLD_COLOR,
+  DEFAULT_THRESHOLD_HU,
+  DEFAULT_WINDOW_LEVEL,
+  DEFAULT_WINDOW_WIDTH,
+} from './types'
 import { loadVolume } from './api'
 
 let paneCounter = 0
@@ -26,8 +33,8 @@ function makePane(): PaneState {
     plane: 'axial',
     index: 0,
 
-    windowLevel: 40,
-    windowWidth: 400,
+    windowLevel: DEFAULT_WINDOW_LEVEL,
+    windowWidth: DEFAULT_WINDOW_WIDTH,
 
     showMask: true,
     maskColors: CALCIFICATIONS_PRESET.map((c) => ({ ...c })),

@@ -50,18 +50,21 @@ export const WINDOW_PRESETS: WindowPreset[] = [
   { name: 'Calcium/Agatston', level: 90, width: 500 },
 ]
 
+export const DEFAULT_WINDOW_LEVEL = 400 // Bone
+export const DEFAULT_WINDOW_WIDTH = 1800 // Bone
+
 export interface ManifestConfig {
   manifestPath: string
   imageColumn: string
   maskColumn: string
-  patientIdColumn: string // used as the case-picker label/index; blank = derive label from image filename
+  patientIdColumn: string // required; used as the case-picker index/label and for split-view sync
 }
 
 export const DEFAULT_MANIFEST_CONFIG: ManifestConfig = {
   manifestPath: '',
   imageColumn: 'image_path',
   maskColumn: 'mask_path',
-  patientIdColumn: '',
+  patientIdColumn: 'PatientId',
 }
 
 export interface ManifestRow {

@@ -211,13 +211,12 @@ export default function CaseLoader({
               )}
             </label>
             <label>
-              Patient ID column (used to pick cases, optional)
+              Patient ID column
               {availableColumns.length > 0 ? (
                 <select
                   value={cfg.patientIdColumn}
                   onChange={(e) => updateConfig({ patientIdColumn: e.target.value })}
                 >
-                  <option value="">(none)</option>
                   {availableColumns.map((c) => (
                     <option key={c} value={c}>
                       {c}
@@ -235,7 +234,11 @@ export default function CaseLoader({
             </label>
           </div>
 
-          <button className="add-label-btn" onClick={handleLoadManifest} disabled={!cfg.manifestPath}>
+          <button
+            className="add-label-btn"
+            onClick={handleLoadManifest}
+            disabled={!cfg.manifestPath || !cfg.patientIdColumn}
+          >
             Load manifest
           </button>
 

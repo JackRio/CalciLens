@@ -57,10 +57,12 @@ function waitForServerReady(callback, attemptsLeft = 100) {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
+    title: 'CT Viewer',
     width: 1500,
     height: 950,
     minWidth: 900,
     minHeight: 600,
+    show: false,
     backgroundColor: '#14151a',
     webPreferences: {
       contextIsolation: true,
@@ -70,6 +72,10 @@ function createWindow() {
   })
   Menu.setApplicationMenu(null)
   mainWindow.loadURL(SERVER_URL)
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.maximize()
+    mainWindow.show()
+  })
   mainWindow.on('closed', () => {
     mainWindow = null
   })

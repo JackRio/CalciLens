@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PaneState, Plane } from '../types'
-import { WINDOW_PRESETS } from '../types'
+import { WINDOW_PRESETS, DEFAULT_WINDOW_LEVEL, DEFAULT_WINDOW_WIDTH } from '../types'
 import {
   loadVolume,
   probeVoxel,
@@ -435,7 +435,7 @@ export default function Pane({
   }
 
   function resetView() {
-    onChange({ zoom: 1, windowLevel: 40, windowWidth: 400 })
+    onChange({ zoom: 1, windowLevel: DEFAULT_WINDOW_LEVEL, windowWidth: DEFAULT_WINDOW_WIDTH })
   }
 
   function stopWheel(e: React.WheelEvent) {
@@ -506,7 +506,10 @@ export default function Pane({
         )}
         <div className="pane-toolbar-right">
           {pane.loading && <span className="loading-tag">Loading...</span>}
-          {pane.ctInfo && (pane.zoom !== 1 || pane.windowLevel !== 40 || pane.windowWidth !== 400) && (
+          {pane.ctInfo &&
+            (pane.zoom !== 1 ||
+              pane.windowLevel !== DEFAULT_WINDOW_LEVEL ||
+              pane.windowWidth !== DEFAULT_WINDOW_WIDTH) && (
             <button onClick={resetView} title="Reset zoom and window/level to defaults">
               Reset view
             </button>

@@ -300,21 +300,25 @@ export default function Pane({
     return () => el.removeEventListener('wheel', onWheel)
   }, [onWheel])
 
-  // Up/Down arrow slice scrubbing, active only while the mouse is over this
-  // pane (so in split view the un-hovered pane's keys don't also move) and
-  // not while the user is typing in a text field/select anywhere on the
-  // page. Uses the same liveRef.index as the wheel handler so holding a key
-  // down (rapid key-repeat events) compounds correctly instead of every
-  // repeat reading the same stale pane.index.
+  // Left/Right arrow (or A/D) slice scrubbing, active only while the mouse
+  // is over this pane (so in split view the un-hovered pane's keys don't
+  // also move) and not while the user is typing in a text field/select
+  // anywhere on the page. Uses the same liveRef.index as the wheel handler
+  // so holding a key down (rapid key-repeat events) compounds correctly
+  // instead of every repeat reading the same stale pane.index.
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
+      let delta = 0
+      if (key === 'ArrowLeft' || key === 'a') delta = -1
+      else if (key === 'ArrowRight' || key === 'd') delta = 1
+      else return
       if (!isHoveredRef.current || !pane.ctInfo) return
       const active = document.activeElement as HTMLElement | null
       if (active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) return
       e.preventDefault()
       const len = pane.ctInfo.plane_lengths[pane.plane]
-      const delta = e.key === 'ArrowUp' ? -1 : 1
       const next = Math.max(0, Math.min(len - 1, liveRef.current.index + delta))
       liveRef.current.index = next
       onChange({ index: next })
@@ -609,9 +613,9 @@ export default function Pane({
               className={currentRow?.comment ? 'has-comment' : ''}
               onClick={openCommentModal}
               disabled={!currentRow}
-              title={currentRow?.comment ? 'Edit comment for this case' : 'Add a comment for this case'}
+              title={currentRow?.comment ? 'Read/edit comment for this case' : 'Add a comment for this case'}
             >
-              {currentRow?.comment ? '💬 Comment' : 'Comment'}
+              {currentRow?.comment ? 'Read' : 'Comment'}
             </button>
           </div>
         )}

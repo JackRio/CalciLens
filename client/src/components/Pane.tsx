@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PaneState, Plane } from '../types'
 import { WINDOW_PRESETS } from '../types'
 import {
@@ -34,8 +34,13 @@ export default function Pane({
   const [probe, setProbe] = useState<{ hu: number | null; label: number | null; row: number; col: number } | null>(
     null,
   )
-  const [cursorPos, setCursorPos] = useState<{ x: number; y: number; diameter: number } | null>(null)
-  const lastCursorTs = useRef(0)
+  // Brush-cursor tracking deliberately bypasses React state: it's a
+  // high-frequency, purely-visual value with no data anyone else reads, so
+  // we write straight to the DOM node (via ref) in a requestAnimationFrame
+  // callback instead of paying for a React re-render on every mouse move.
+  const cursorDivRef = useRef<HTMLDivElement>(null)
+  const pendingCursor = useRef<{ x: number; y: number; diameter: number } | null>(null)
+  const cursorRafId = useRef<number | null>(null)
   const imgRef = useRef<HTMLImageElement>(null)
   const viewerAreaRef = useRef<HTMLDivElement>(null)
   const wlBoxRef = useRef<HTMLDivElement>(null)
@@ -64,6 +69,12 @@ export default function Pane({
   })
 
   const planeLength = pane.ctInfo ? pane.ctInfo.plane_lengths[pane.plane] : 1
+
+  useEffect(() => {
+    return () => {
+      if (cursorRafId.current !== null) cancelAnimationFrame(cursorRafId.current)
+    }
+  }, [])
 
   async function doLoadCt(path: string) {
     onChange({ loading: true, error: null })
@@ -265,23 +276,48 @@ export default function Pane({
     return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
   }
 
+  // Applies pendingCursor.current to the DOM directly (no setState), run
+  // inside a requestAnimationFrame so any number of mousemove events between
+  // two rendered frames collapse into a single style write.
+  function scheduleCursorApply() {
+    if (cursorRafId.current !== null) return
+    cursorRafId.current = requestAnimationFrame(() => {
+      cursorRafId.current = null
+      const el = cursorDivRef.current
+      if (!el) return
+      const p = pendingCursor.current
+      if (!p) {
+        el.hidden = true
+        return
+      }
+      el.hidden = false
+      el.style.width = `${p.diameter}px`
+      el.style.height = `${p.diameter}px`
+      el.style.transform = `translate(${p.x - p.diameter / 2}px, ${p.y - p.diameter / 2}px)`
+    })
+  }
+
+  function hideCursor() {
+    if (pendingCursor.current !== null) {
+      pendingCursor.current = null
+      scheduleCursorApply()
+    }
+  }
+
   function onMouseMove(e: React.MouseEvent) {
     if (pane.editMode && pane.editTool === 'brush' && !isOverUIBox(e.target)) {
-      const now = performance.now()
-      if (now - lastCursorTs.current >= 30) {
-        lastCursorTs.current = now
-        const container = viewerAreaRef.current
-        const img = imgRef.current
-        if (container && img) {
-          const containerRect = container.getBoundingClientRect()
-          const imgRect = img.getBoundingClientRect()
-          const scale = imgRect.width / (img.naturalWidth || 1)
-          const diameter = Math.max(4, 2 * pane.editBrushRadius * scale)
-          setCursorPos({ x: e.clientX - containerRect.left, y: e.clientY - containerRect.top, diameter })
-        }
+      const container = viewerAreaRef.current
+      const img = imgRef.current
+      if (container && img) {
+        const containerRect = container.getBoundingClientRect()
+        const imgRect = img.getBoundingClientRect()
+        const scale = imgRect.width / (img.naturalWidth || 1)
+        const diameter = Math.max(4, 2 * pane.editBrushRadius * scale)
+        pendingCursor.current = { x: e.clientX - containerRect.left, y: e.clientY - containerRect.top, diameter }
+        scheduleCursorApply()
       }
-    } else if (cursorPos) {
-      setCursorPos(null)
+    } else {
+      hideCursor()
     }
 
     if (editBoxDrag.current.active) {
@@ -462,7 +498,7 @@ export default function Pane({
           onMouseUp={onMouseUp}
           onMouseLeave={() => {
             onMouseUp()
-            setCursorPos(null)
+            hideCursor()
           }}
           onContextMenu={(e) => e.preventDefault()}
         >
@@ -478,20 +514,10 @@ export default function Pane({
           ) : (
             <div className="viewer-placeholder">No CT loaded — open Settings to load a scan</div>
           )}
-          {pane.editMode && cursorPos && (
-            <div
-              className="brush-cursor"
-              style={{
-                width: cursorPos.diameter,
-                height: cursorPos.diameter,
-                // transform (not left/top) so repositioning on every mouse
-                // move is a compositor-only operation — no layout recalc.
-                transform: `translate(${cursorPos.x - cursorPos.diameter / 2}px, ${
-                  cursorPos.y - cursorPos.diameter / 2
-                }px)`,
-              }}
-            />
-          )}
+          {/* Always mounted (just hidden) so cursorDivRef is available the
+              moment a mouse move needs it — positioned and shown/hidden via
+              direct DOM writes in scheduleCursorApply, not React state. */}
+          <div ref={cursorDivRef} className="brush-cursor" hidden />
           {pane.ctInfo && (
             <div className="viewer-left-controls">
               <div className="wl-box" ref={wlBoxRef} onWheel={stopWheel}>

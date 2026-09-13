@@ -291,6 +291,7 @@ class ManifestPairsRequest(BaseModel):
     image_column: str = folder_scan.DEFAULT_IMAGE_COLUMN
     mask_column: str = folder_scan.DEFAULT_MASK_COLUMN
     id_column: Optional[str] = None
+    patient_id_column: Optional[str] = None
 
 
 @app.post("/api/manifest_pairs")
@@ -301,6 +302,7 @@ def manifest_pairs(req: ManifestPairsRequest):
             image_column=req.image_column,
             mask_column=req.mask_column,
             id_column=req.id_column,
+            patient_id_column=req.patient_id_column,
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")

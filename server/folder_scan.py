@@ -43,6 +43,7 @@ def list_manifest_pairs(
     image_column: str = DEFAULT_IMAGE_COLUMN,
     mask_column: str = DEFAULT_MASK_COLUMN,
     id_column: Optional[str] = None,
+    patient_id_column: Optional[str] = None,
 ) -> list:
     manifest_path = clean_path(manifest_path)
     if not os.path.isfile(manifest_path):
@@ -56,6 +57,8 @@ def list_manifest_pairs(
         raise ValueError(f"Column '{mask_column}' not found. Available columns: {list(df.columns)}")
     if id_column and id_column not in df.columns:
         raise ValueError(f"Column '{id_column}' not found. Available columns: {list(df.columns)}")
+    if patient_id_column and patient_id_column not in df.columns:
+        raise ValueError(f"Column '{patient_id_column}' not found. Available columns: {list(df.columns)}")
 
     rows = []
     for i, row in df.iterrows():
@@ -69,10 +72,13 @@ def list_manifest_pairs(
         else:
             label = os.path.splitext(os.path.basename(image_path))[0]
 
+        patient_id = _cell_str(row[patient_id_column]) if patient_id_column else ""
+
         rows.append(
             {
                 "index": int(i),
                 "label": label,
+                "patient_id": patient_id,
                 "image_path": image_path,
                 "mask_path": mask_path,
                 "image_exists": os.path.isfile(image_path),

@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import './App.css'
 import Pane from './components/Pane'
-import type { PaneState } from './types'
+import type { ManifestRow, PaneState } from './types'
 import { CALCIFICATIONS_PRESET, DEFAULT_MANIFEST_CONFIG, DEFAULT_THRESHOLD_COLOR, DEFAULT_THRESHOLD_HU } from './types'
+import { loadVolume } from './api'
 
 let paneCounter = 0
 function makePane(): PaneState {
@@ -61,6 +62,7 @@ function makePane(): PaneState {
 export default function App() {
   const [panes, setPanes] = useState<PaneState[]>([makePane()])
   const [linked, setLinked] = useState(true)
+  const [syncNavByPatientId, setSyncNavByPatientId] = useState(false)
 
   function updatePane(id: string, partial: Partial<PaneState>) {
     setPanes((prev) => {
@@ -86,6 +88,83 @@ export default function App() {
     })
   }
 
+  async function loadRowIntoPane(paneId: string, row: ManifestRow) {
+    updatePane(paneId, { activeRowIndex: row.index, manifestError: null, error: null, loading: true })
+    if (!row.image_exists) {
+      updatePane(paneId, { loading: false, manifestError: `Image not found: ${row.image_path}` })
+      return
+    }
+    try {
+      const ctInfo = await loadVolume(row.image_path, false)
+      const targetPane = panes.find((p) => p.id === paneId)
+      updatePane(paneId, {
+        ctPath: row.image_path,
+        ctInfo,
+        loading: false,
+        index: Math.floor(ctInfo.plane_lengths[targetPane ? targetPane.plane : 'axial'] / 2),
+      })
+    } catch (e) {
+      updatePane(paneId, { loading: false, error: e instanceof Error ? e.message : String(e) })
+      return
+    }
+    if (row.mask_path) {
+      if (row.mask_exists) {
+        try {
+          const maskInfo = await loadVolume(row.mask_path, true)
+          updatePane(paneId, { maskPath: row.mask_path, maskInfo, showMask: true })
+        } catch (e) {
+          updatePane(paneId, { manifestError: e instanceof Error ? e.message : String(e) })
+        }
+      } else {
+        updatePane(paneId, { maskPath: '', maskInfo: null, manifestError: `Mask not found: ${row.mask_path}` })
+      }
+    } else {
+      updatePane(paneId, { maskPath: '', maskInfo: null })
+    }
+  }
+
+  function clearPaneScan(paneId: string, errorMsg: string) {
+    updatePane(paneId, {
+      activeRowIndex: null,
+      ctInfo: null,
+      maskInfo: null,
+      ctPath: '',
+      maskPath: '',
+      manifestError: errorMsg,
+      error: null,
+    })
+  }
+
+  function navigate(paneId: string, direction: 1 | -1) {
+    const pane = panes.find((p) => p.id === paneId)
+    if (!pane || pane.manifestRows.length === 0) return
+    const rows = pane.manifestRows
+    const curPos = rows.findIndex((r) => r.index === pane.activeRowIndex)
+    const nextPos = curPos + direction
+    if (nextPos < 0 || nextPos >= rows.length) return
+    const row = rows[nextPos]
+    loadRowIntoPane(paneId, row)
+
+    const canSyncByPatientId =
+      syncNavByPatientId &&
+      panes.length > 1 &&
+      !!pane.manifestConfig.patientIdColumn &&
+      pane.manifestRows.length > 0
+
+    if (canSyncByPatientId) {
+      const other = panes.find((p) => p.id !== paneId)
+      if (other && other.manifestRows.length > 0 && other.manifestConfig.patientIdColumn) {
+        if (!row.patient_id) return
+        const match = other.manifestRows.find((r) => r.patient_id === row.patient_id)
+        if (match) {
+          loadRowIntoPane(other.id, match)
+        } else {
+          clearPaneScan(other.id, `No image path for PatientID ${row.patient_id}`)
+        }
+      }
+    }
+  }
+
   function addSplit() {
     setPanes((prev) => (prev.length >= 2 ? prev : [...prev, makePane()]))
   }
@@ -105,6 +184,16 @@ export default function App() {
               Sync scroll / plane / zoom across panes
             </label>
           )}
+          {panes.length > 1 && (
+            <label className="link-toggle" title="When on, clicking Previous/Next in one pane also loads the matching Patient ID case in the other pane">
+              <input
+                type="checkbox"
+                checked={syncNavByPatientId}
+                onChange={(e) => setSyncNavByPatientId(e.target.checked)}
+              />
+              Sync Previous/Next by Patient ID
+            </label>
+          )}
           {panes.length < 2 ? (
             <button onClick={addSplit}>+ Split view</button>
           ) : (
@@ -120,6 +209,7 @@ export default function App() {
             onChange={(partial) => updatePane(pane.id, partial)}
             onClose={() => closePane(pane.id)}
             closable={panes.length > 1}
+            onNavigate={(direction) => navigate(pane.id, direction)}
           />
         ))}
       </div>

@@ -107,6 +107,24 @@
   border-color: #3b5bdb;
 }
 
+.case-nav-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.case-nav-tabs button {
+  background: #2f3140;
+  color: #d7d8de;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  padding: 4px 10px;
+}
+
+.case-nav-tabs button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .pane-toolbar-right {
   display: flex;
   align-items: center;

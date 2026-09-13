@@ -1,4 +1,4 @@
-import type { PaneState } from '../types'
+import type { ManifestRow, PaneState } from '../types'
 import { DEFAULT_MANIFEST_CONFIG } from '../types'
 import { getManifestColumns, getManifestPairs } from '../api'
 import { IMAGE_FILE_FILTERS, isElectron, pickPath } from '../electronApi'
@@ -65,29 +65,8 @@ export default function CaseLoader({
     }
   }
 
-  async function handleLoadManifest() {
-    onChange({ manifestError: null, manifestRows: [], activeRowIndex: null })
-    try {
-      const rows = await getManifestPairs({
-        manifestPath: cfg.manifestPath,
-        imageColumn: cfg.imageColumn,
-        maskColumn: cfg.maskColumn,
-        idColumn: cfg.idColumn,
-      })
-      onChange({ manifestRows: rows })
-      if (rows.length === 0) {
-        onChange({ manifestError: 'Manifest loaded but no valid rows found (check the image column has paths).' })
-      }
-    } catch (e) {
-      onChange({ manifestError: e instanceof Error ? e.message : String(e) })
-    }
-  }
-
-  function handleSelectRow(indexStr: string) {
-    const idx = Number(indexStr)
-    onChange({ activeRowIndex: idx })
-    const row = pane.manifestRows.find((r) => r.index === idx)
-    if (!row) return
+  function selectRow(row: ManifestRow) {
+    onChange({ activeRowIndex: row.index })
     if (row.image_exists) {
       onLoadCt(row.image_path)
     } else {
@@ -100,6 +79,33 @@ export default function CaseLoader({
         onChange({ manifestError: `Mask not found: ${row.mask_path}` })
       }
     }
+  }
+
+  async function handleLoadManifest() {
+    onChange({ manifestError: null, manifestRows: [], activeRowIndex: null })
+    try {
+      const rows = await getManifestPairs({
+        manifestPath: cfg.manifestPath,
+        imageColumn: cfg.imageColumn,
+        maskColumn: cfg.maskColumn,
+        idColumn: cfg.idColumn,
+        patientIdColumn: cfg.patientIdColumn,
+      })
+      onChange({ manifestRows: rows })
+      if (rows.length === 0) {
+        onChange({ manifestError: 'Manifest loaded but no valid rows found (check the image column has paths).' })
+      } else {
+        selectRow(rows[0])
+      }
+    } catch (e) {
+      onChange({ manifestError: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  function handleSelectRow(indexStr: string) {
+    const idx = Number(indexStr)
+    const row = pane.manifestRows.find((r) => r.index === idx)
+    if (row) selectRow(row)
   }
 
   return (
@@ -225,6 +231,29 @@ export default function CaseLoader({
                 />
               )}
             </label>
+            <label>
+              Patient ID column (optional)
+              {availableColumns.length > 0 ? (
+                <select
+                  value={cfg.patientIdColumn}
+                  onChange={(e) => updateConfig({ patientIdColumn: e.target.value })}
+                >
+                  <option value="">(none)</option>
+                  {availableColumns.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  placeholder="e.g. PatientId"
+                  value={cfg.patientIdColumn}
+                  onChange={(e) => updateConfig({ patientIdColumn: e.target.value })}
+                />
+              )}
+            </label>
           </div>
 
           <button className="add-label-btn" onClick={handleLoadManifest} disabled={!cfg.manifestPath}>
@@ -250,6 +279,7 @@ export default function CaseLoader({
             {pane.manifestRows.map((r) => (
               <option key={r.index} value={r.index}>
                 {r.label}
+                {r.patient_id ? ` (${r.patient_id})` : ''}
                 {!r.image_exists ? ' (image missing)' : !r.mask_path ? ' (no mask)' : !r.mask_exists ? ' (mask missing)' : ''}
               </option>
             ))}

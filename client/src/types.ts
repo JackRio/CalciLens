@@ -55,6 +55,7 @@ export interface ManifestConfig {
   imageColumn: string
   maskColumn: string
   idColumn: string // optional; blank = derive label from image filename
+  patientIdColumn: string // optional; blank = no patient-id-based sync
 }
 
 export const DEFAULT_MANIFEST_CONFIG: ManifestConfig = {
@@ -62,11 +63,13 @@ export const DEFAULT_MANIFEST_CONFIG: ManifestConfig = {
   imageColumn: 'image_path',
   maskColumn: 'mask_path',
   idColumn: '',
+  patientIdColumn: '',
 }
 
 export interface ManifestRow {
   index: number
   label: string
+  patient_id: string
   image_path: string
   mask_path: string
   image_exists: boolean

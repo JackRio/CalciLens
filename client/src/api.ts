@@ -95,6 +95,7 @@ export async function getManifestPairs(params: {
   imageColumn: string
   maskColumn: string
   idColumn?: string
+  patientIdColumn?: string
 }): Promise<ManifestRow[]> {
   const res = await fetch('/api/manifest_pairs', {
     method: 'POST',
@@ -104,6 +105,7 @@ export async function getManifestPairs(params: {
       image_column: params.imageColumn,
       mask_column: params.maskColumn,
       id_column: params.idColumn || null,
+      patient_id_column: params.patientIdColumn || null,
     }),
   })
   const data = await handleJson<{ rows: ManifestRow[] }>(res)

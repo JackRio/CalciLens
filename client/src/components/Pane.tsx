@@ -24,11 +24,13 @@ export default function Pane({
   onChange,
   onClose,
   closable,
+  onNavigate,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
   onClose: () => void
   closable: boolean
+  onNavigate: (direction: 1 | -1) => void
 }) {
   const [settingsOpen, setSettingsOpen] = useState(true)
   const [probe, setProbe] = useState<{ hu: number | null; label: number | null; row: number; col: number } | null>(
@@ -69,6 +71,7 @@ export default function Pane({
   })
 
   const planeLength = pane.ctInfo ? pane.ctInfo.plane_lengths[pane.plane] : 1
+  const currentRowPos = pane.manifestRows.findIndex((r) => r.index === pane.activeRowIndex)
 
   useEffect(() => {
     return () => {
@@ -479,6 +482,24 @@ export default function Pane({
             </button>
           ))}
         </div>
+        {pane.manifestRows.length > 0 && (
+          <div className="case-nav-tabs">
+            <button
+              onClick={() => onNavigate(-1)}
+              disabled={currentRowPos <= 0}
+              title="Load previous case in manifest"
+            >
+              ◂ Previous
+            </button>
+            <button
+              onClick={() => onNavigate(1)}
+              disabled={currentRowPos < 0 || currentRowPos >= pane.manifestRows.length - 1}
+              title="Load next case in manifest"
+            >
+              Next ▸
+            </button>
+          </div>
+        )}
         <div className="pane-toolbar-right">
           {pane.loading && <span className="loading-tag">Loading...</span>}
           {pane.ctInfo && (pane.zoom !== 1 || pane.windowLevel !== 40 || pane.windowWidth !== 400) && (

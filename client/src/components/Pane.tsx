@@ -305,6 +305,16 @@ export default function Pane({
   }
 
   function onMouseMove(e: React.MouseEvent) {
+    // Self-heal against a missed mouseup (e.g. the button was released while
+    // briefly outside the window, or a fast click dropped/coalesced the
+    // event): if our own flag says a drag is still active but the browser
+    // says the button that started it is no longer actually held, end the
+    // drag right here instead of continuing to paint/zoom/drag wherever the
+    // cursor travels next with no button down at all.
+    if (paintDrag.current.active && !(e.buttons & 1)) onMouseUp()
+    if (rightDrag.current.active && !(e.buttons & 2)) onMouseUp()
+    if (editBoxDrag.current.active && !(e.buttons & 1)) onMouseUp()
+
     if (pane.editMode && pane.editTool === 'brush' && !isOverUIBox(e.target)) {
       const container = viewerAreaRef.current
       const img = imgRef.current

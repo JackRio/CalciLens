@@ -45,54 +45,81 @@ def _read_table(manifest_path: str) -> pd.DataFrame:
 
 
 def _write_table(manifest_path: str, df: pd.DataFrame) -> None:
+    """Writes to a temp file in the same directory and atomically replaces
+    manifest_path only once that's fully written — so a process kill,
+    crash, or restart at any point during the write leaves the real file
+    exactly as it was before, instead of a half-written/corrupted result.
+    (os.replace is atomic on both POSIX and Windows.)"""
     ext = os.path.splitext(manifest_path)[1].lower()
-    if ext in (".xlsx", ".xls", ".xlsm"):
-        df.to_excel(manifest_path, index=False)
-        if ext in (".xlsx", ".xlsm"):
-            # Data validation (a real in-cell dropdown) is an openpyxl/xlsx
-            # feature with no CSV equivalent, and pandas' to_excel doesn't
-            # carry it over from a previous save — so it must be re-applied
-            # after every write that could have touched this file. Best
-            # effort: a manifest opened by something else entirely (a
-            # workbook openpyxl can't parse) shouldn't block the save.
+    # pandas' to_excel() picks its writer engine from the path's own
+    # extension, so the temp file must still end in the real one (e.g.
+    # "file.xlsx") rather than something generic like "file.xlsx.tmp".
+    dirname, basename = os.path.split(manifest_path)
+    tmp_path = os.path.join(dirname, f".tmp_{basename}")
+    try:
+        if ext in (".xlsx", ".xls", ".xlsm"):
+            df.to_excel(tmp_path, index=False)
+            if ext in (".xlsx", ".xlsm"):
+                # Data validation (a real in-cell dropdown) is an
+                # openpyxl/xlsx feature with no CSV equivalent, and pandas'
+                # to_excel doesn't carry it over from a previous save — so
+                # it must be re-applied on every write. Best effort: a
+                # manifest opened by something else entirely (a workbook
+                # openpyxl can't parse) shouldn't block the save.
+                try:
+                    _apply_list_dropdowns(
+                        tmp_path,
+                        df,
+                        {
+                            STATUS_COLUMN: STATUS_OPTIONS,
+                            REASON_COLUMN: _collect_reason_tags(df),
+                        },
+                    )
+                except Exception:
+                    pass
+        else:
+            df.to_csv(tmp_path, index=False)
+        os.replace(tmp_path, manifest_path)
+    finally:
+        if os.path.exists(tmp_path):
             try:
-                _apply_list_dropdown(manifest_path, df, STATUS_COLUMN, STATUS_OPTIONS)
-                _apply_list_dropdown(manifest_path, df, REASON_COLUMN, _collect_reason_tags(df))
-            except Exception:
+                os.remove(tmp_path)
+            except OSError:
                 pass
-    else:
-        df.to_csv(manifest_path, index=False)
 
 
-def _apply_list_dropdown(manifest_path: str, df: pd.DataFrame, column: str, options: list) -> None:
-    """Attach an Excel in-cell dropdown listing `options` to every data row
-    of `column`. Note Excel's list validation only ever lets a *single*
-    value be picked through its own UI — for Reason (which this app stores
-    as multiple tags joined in one cell) it's still applied as a reference/
-    suggestion list, but picking an option directly in Excel will replace
-    the whole cell rather than add to it."""
+def _apply_list_dropdowns(path: str, df: pd.DataFrame, columns_and_options: dict) -> None:
+    """Attach an Excel in-cell dropdown listing the given options to every
+    data row of each column, in one load/save round trip. Note Excel's list
+    validation only ever lets a *single* value be picked through its own
+    UI — for Reason (which this app stores as multiple tags joined in one
+    cell) it's still applied as a reference/suggestion list, but picking an
+    option directly in Excel will replace the whole cell rather than add to
+    it."""
     from openpyxl import load_workbook
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.datavalidation import DataValidation
 
-    if column not in df.columns or not options:
+    applicable = {c: o for c, o in columns_and_options.items() if c in df.columns and o}
+    if not applicable:
         return
-    formula1 = '"' + ",".join(options) + '"'
-    if len(formula1) > 255:  # Excel's hard cap on an inline list formula
-        return
-    col_letter = get_column_letter(list(df.columns).index(column) + 1)
 
-    wb = load_workbook(manifest_path)
+    wb = load_workbook(path)
     ws = wb.active
-    dv = DataValidation(
-        type="list",
-        formula1=formula1,
-        allow_blank=True,
-        showDropDown=False,  # openpyxl quirk: False is what actually shows the dropdown arrow
-    )
-    ws.add_data_validation(dv)
-    dv.add(f"{col_letter}2:{col_letter}{len(df) + 1}")
-    wb.save(manifest_path)
+    for column, options in applicable.items():
+        formula1 = '"' + ",".join(options) + '"'
+        if len(formula1) > 255:  # Excel's hard cap on an inline list formula
+            continue
+        col_letter = get_column_letter(list(df.columns).index(column) + 1)
+        dv = DataValidation(
+            type="list",
+            formula1=formula1,
+            allow_blank=True,
+            showDropDown=False,  # openpyxl quirk: False is what actually shows the dropdown arrow
+        )
+        ws.add_data_validation(dv)
+        dv.add(f"{col_letter}2:{col_letter}{max(len(df), 1) + 1}")
+    wb.save(path)
 
 
 def _split_reasons(value: str) -> list:

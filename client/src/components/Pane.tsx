@@ -21,6 +21,7 @@ import CaseLoader from './CaseLoader'
 import AlphaSpinner from './AlphaSpinner'
 import MaskEditor from './MaskEditor'
 import ReasonPicker from './ReasonPicker'
+import ScorePanel from './ScorePanel'
 
 const PLANES: Plane[] = ['axial', 'sagittal', 'coronal']
 
@@ -80,6 +81,7 @@ export default function Pane({
   const wlBoxRef = useRef<HTMLDivElement>(null)
   const bottomLeftRef = useRef<HTMLDivElement>(null)
   const editBoxRef = useRef<HTMLDivElement>(null)
+  const scorePanelRef = useRef<HTMLDivElement>(null)
   const lastProbeTs = useRef(0)
   const rightDrag = useRef<{
     active: boolean
@@ -97,6 +99,11 @@ export default function Pane({
   const lastPaintTs = useRef(0)
   const lastRenderBumpTs = useRef(0)
   const editBoxDrag = useRef<{ active: boolean; offsetX: number; offsetY: number }>({
+    active: false,
+    offsetX: 0,
+    offsetY: 0,
+  })
+  const scorePanelDrag = useRef<{ active: boolean; offsetX: number; offsetY: number }>({
     active: false,
     offsetX: 0,
     offsetY: 0,
@@ -513,7 +520,8 @@ export default function Pane({
     return Boolean(
       (wlBoxRef.current && wlBoxRef.current.contains(node)) ||
         (editBoxRef.current && editBoxRef.current.contains(node)) ||
-        (bottomLeftRef.current && bottomLeftRef.current.contains(node)),
+        (bottomLeftRef.current && bottomLeftRef.current.contains(node)) ||
+        (scorePanelRef.current && scorePanelRef.current.contains(node)),
     )
   }
 
@@ -552,6 +560,19 @@ export default function Pane({
     if (!box) return
     const boxRect = box.getBoundingClientRect()
     editBoxDrag.current = {
+      active: true,
+      offsetX: e.clientX - boxRect.left,
+      offsetY: e.clientY - boxRect.top,
+    }
+  }
+
+  function handleScorePanelDragStart(e: React.MouseEvent) {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const box = scorePanelRef.current
+    if (!box) return
+    const boxRect = box.getBoundingClientRect()
+    scorePanelDrag.current = {
       active: true,
       offsetX: e.clientX - boxRect.left,
       offsetY: e.clientY - boxRect.top,
@@ -603,6 +624,7 @@ export default function Pane({
     if (paintDrag.current.active && !(e.buttons & 1)) onMouseUp()
     if (rightDrag.current.active && !(e.buttons & 2)) onMouseUp()
     if (editBoxDrag.current.active && !(e.buttons & 1)) onMouseUp()
+    if (scorePanelDrag.current.active && !(e.buttons & 1)) onMouseUp()
 
     if (pane.editMode && pane.editTool === 'brush' && !isOverUIBox(e.target)) {
       const container = viewerAreaRef.current
@@ -644,6 +666,20 @@ export default function Pane({
       if (!blocked) {
         onChange({ editBoxPos: { x, y } })
       }
+      return
+    }
+
+    if (scorePanelDrag.current.active) {
+      const container = viewerAreaRef.current
+      const box = scorePanelRef.current
+      if (!container || !box) return
+      const containerRect = container.getBoundingClientRect()
+      const boxRect = box.getBoundingClientRect()
+      let x = e.clientX - containerRect.left - scorePanelDrag.current.offsetX
+      let y = e.clientY - containerRect.top - scorePanelDrag.current.offsetY
+      x = Math.max(0, Math.min(containerRect.width - boxRect.width, x))
+      y = Math.max(0, Math.min(containerRect.height - boxRect.height, y))
+      onChange({ scorePanelPos: { x, y } })
       return
     }
 
@@ -700,6 +736,7 @@ export default function Pane({
   function onMouseUp() {
     rightDrag.current.active = false
     editBoxDrag.current.active = false
+    scorePanelDrag.current.active = false
     if (paintDrag.current.active) {
       paintDrag.current.active = false
       if (paintDrag.current.didPaint && pane.maskInfo) {
@@ -935,6 +972,22 @@ export default function Pane({
                 <div className="viewer-patient-id">Patient ID: {currentRow.patient_id}</div>
               )}
             </div>
+          )}
+          {pane.ctInfo && pane.scoreClasses.length > 0 && currentRow && (
+            <ScorePanel
+              ref={scorePanelRef}
+              style={
+                pane.scorePanelPos
+                  ? { left: pane.scorePanelPos.x, top: pane.scorePanelPos.y, transform: 'none' }
+                  : undefined
+              }
+              scoreClasses={pane.scoreClasses}
+              row={currentRow}
+              colorFor={(i) => pane.maskColors[i % pane.maskColors.length]?.color || '#6c6d7a'}
+              open={pane.scorePanelOpen}
+              onToggleOpen={() => onChange({ scorePanelOpen: !pane.scorePanelOpen })}
+              onDragHandleDown={handleScorePanelDragStart}
+            />
           )}
           {pane.ctInfo && (
             <div className="viewer-bottom-left" ref={bottomLeftRef}>

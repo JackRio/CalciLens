@@ -360,6 +360,12 @@
   border-radius: 6px;
   padding: 8px;
   width: fit-content;
+  /* .viewer-area sets cursor:none in brush mode so the custom brush circle
+     can stand in for the pointer over the image — but that's inherited by
+     every child, and this box hides the brush circle over itself too
+     (isOverUIBox), so without this override hovering it shows no cursor
+     at all. */
+  cursor: default;
 }
 
 .wl-box:has(.wl-field) {
@@ -623,6 +629,7 @@
   border: 1px solid #3c3e4d;
   border-radius: 6px;
   padding: 9px 11px;
+  cursor: default;
 }
 
 .overlay-toggle {

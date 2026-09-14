@@ -365,6 +365,26 @@ def manifest_status(req: ManifestStatusRequest):
     return {"ok": True}
 
 
+class ManifestMaskPathRequest(BaseModel):
+    manifest_path: str
+    row_index: int
+    mask_column: str
+    mask_path: str
+
+
+@app.post("/api/manifest/mask_path")
+def manifest_mask_path(req: ManifestMaskPathRequest):
+    try:
+        folder_scan.save_mask_path(req.manifest_path, req.row_index, req.mask_column, req.mask_path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to update manifest mask path: {e}")
+    return {"ok": True}
+
+
 # ---- Serve the built React client (production) ----
 _client_dist = os.path.join(os.path.dirname(__file__), "..", "client", "dist")
 if os.path.isdir(_client_dist):

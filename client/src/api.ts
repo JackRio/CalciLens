@@ -129,6 +129,20 @@ export async function saveManifestStatus(manifestPath: string, rowIndex: number,
   await handleJson(res)
 }
 
+export async function saveManifestMaskPath(
+  manifestPath: string,
+  rowIndex: number,
+  maskColumn: string,
+  maskPath: string,
+): Promise<void> {
+  const res = await fetch('/api/manifest/mask_path', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ manifest_path: manifestPath, row_index: rowIndex, mask_column: maskColumn, mask_path: maskPath }),
+  })
+  await handleJson(res)
+}
+
 export async function createBlankMask(ctId: string): Promise<VolumeInfo> {
   const res = await fetch('/api/mask/new', {
     method: 'POST',

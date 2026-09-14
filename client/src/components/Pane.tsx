@@ -12,6 +12,7 @@ import {
   saveMask,
   saveManifestComment,
   saveManifestStatus,
+  saveManifestMaskPath,
 } from '../api'
 import InfoPanel from './InfoPanel'
 import LabelColorEditor from './LabelColorEditor'
@@ -158,9 +159,34 @@ export default function Pane({
     onChange({ editBusy: true, editMessage: null })
     try {
       const res = await saveMask(pane.maskInfo.volume_id)
-      onChange({ editBusy: false, editMessage: `Saved to ${res.path}` })
+      let message = `Saved to ${res.path}`
       setMaskBaseline({ volumeId: pane.maskInfo.volume_id, version: pane.editVersion })
       setLastSavedAt(new Date())
+
+      // This case had no mask configured in the manifest — record the
+      // newly-saved file as its mask path, both in the manifest on disk and
+      // in this pane's own row list, so navigating away and back (or
+      // reopening the manifest later) picks it up instead of showing "no
+      // mask" again.
+      if (currentRow && !currentRow.mask_path && pane.manifestConfig.manifestPath) {
+        try {
+          await saveManifestMaskPath(
+            pane.manifestConfig.manifestPath,
+            currentRow.index,
+            pane.manifestConfig.maskColumn,
+            res.path,
+          )
+          onChange({
+            maskPath: res.path,
+            manifestRows: pane.manifestRows.map((r) =>
+              r.index === currentRow.index ? { ...r, mask_path: res.path, mask_exists: true } : r,
+            ),
+          })
+        } catch (e) {
+          message += ` (but failed to update the manifest: ${e instanceof Error ? e.message : String(e)})`
+        }
+      }
+      onChange({ editBusy: false, editMessage: message })
     } catch (e) {
       onChange({ editBusy: false, editMessage: e instanceof Error ? e.message : String(e) })
     }

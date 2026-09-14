@@ -32,8 +32,41 @@ def _write_table(manifest_path: str, df: pd.DataFrame) -> None:
     ext = os.path.splitext(manifest_path)[1].lower()
     if ext in (".xlsx", ".xls", ".xlsm"):
         df.to_excel(manifest_path, index=False)
+        if ext in (".xlsx", ".xlsm"):
+            # Data validation (a real in-cell dropdown) is an openpyxl/xlsx
+            # feature with no CSV equivalent, and pandas' to_excel doesn't
+            # carry it over from a previous save — so it must be re-applied
+            # after every write that could have touched this file. Best
+            # effort: a manifest opened by something else entirely (a
+            # workbook openpyxl can't parse) shouldn't block the save.
+            try:
+                _apply_status_dropdown(manifest_path, df)
+            except Exception:
+                pass
     else:
         df.to_csv(manifest_path, index=False)
+
+
+def _apply_status_dropdown(manifest_path: str, df: pd.DataFrame) -> None:
+    from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    if STATUS_COLUMN not in df.columns:
+        return
+    col_letter = get_column_letter(list(df.columns).index(STATUS_COLUMN) + 1)
+
+    wb = load_workbook(manifest_path)
+    ws = wb.active
+    dv = DataValidation(
+        type="list",
+        formula1='"' + ",".join(STATUS_OPTIONS) + '"',
+        allow_blank=True,
+        showDropDown=False,  # openpyxl quirk: False is what actually shows the dropdown arrow
+    )
+    ws.add_data_validation(dv)
+    dv.add(f"{col_letter}2:{col_letter}{len(df) + 1}")
+    wb.save(manifest_path)
 
 
 def _cell_str(value) -> str:
@@ -144,3 +177,11 @@ def save_status(manifest_path: str, row_index: int, status: str) -> None:
     if status not in STATUS_OPTIONS:
         raise ValueError(f"Invalid status '{status}'; must be one of {STATUS_OPTIONS}")
     _save_cell(manifest_path, row_index, STATUS_COLUMN, status)
+
+
+def save_mask_path(manifest_path: str, row_index: int, mask_column: str, mask_path: str) -> None:
+    """Record a newly-saved annotation's file path into the manifest's mask
+    column — for a row that had no mask configured yet, so re-opening this
+    manifest (or navigating back to this case) picks the saved file up
+    automatically instead of showing "no mask" again."""
+    _save_cell(manifest_path, row_index, mask_column, mask_path)

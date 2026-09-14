@@ -16,8 +16,8 @@ export default function CaseLoader({
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
-  onLoadCt: (path: string) => void
-  onLoadMask: (path: string) => void
+  onLoadCt: (path: string) => Promise<void>
+  onLoadMask: (path: string) => Promise<void>
 }) {
   const electronAvailable = isElectron()
 
@@ -92,10 +92,14 @@ export default function CaseLoader({
     }
   }
 
-  function selectRow(row: ManifestRow) {
+  // Sequential (not fire-and-forget-both-at-once) so only one load is ever
+  // actually in flight — running them concurrently let whichever request
+  // finished first flip `loading` back off while the other one was still
+  // going, turning the loading indicator off early.
+  async function selectRow(row: ManifestRow) {
     onChange({ activeRowIndex: row.index, manifestError: null })
     if (row.image_exists) {
-      onLoadCt(row.image_path)
+      await onLoadCt(row.image_path)
     } else {
       // Clear any previously-loaded scan instead of leaving it on screen —
       // otherwise it can look like it belongs to the row just selected.
@@ -110,7 +114,7 @@ export default function CaseLoader({
     }
     if (row.mask_path) {
       if (row.mask_exists) {
-        onLoadMask(row.mask_path)
+        await onLoadMask(row.mask_path)
       } else {
         onChange({ maskPath: '', maskInfo: null, manifestError: `Mask not found: ${row.mask_path}` })
       }
@@ -120,7 +124,15 @@ export default function CaseLoader({
   }
 
   async function handleLoadManifest() {
-    onChange({ manifestError: null, manifestRows: [], activeRowIndex: null, reasonOptions: [], scoreClasses: [] })
+    onChange({
+      manifestError: null,
+      manifestRows: [],
+      activeRowIndex: null,
+      reasonOptions: [],
+      scoreClasses: [],
+      loading: true,
+      loadingMessage: 'Loading manifest...',
+    })
     try {
       const { rows, reasonOptions, scoreClasses } = await getManifestPairs({
         manifestPath: cfg.manifestPath,
@@ -130,12 +142,13 @@ export default function CaseLoader({
       })
       onChange({ manifestRows: rows, reasonOptions, scoreClasses })
       if (rows.length === 0) {
-        onChange({ manifestError: 'Manifest loaded but no valid rows found (check the image column has paths).' })
+        onChange({ loading: false, loadingMessage: null, manifestError: 'Manifest loaded but no valid rows found (check the image column has paths).' })
       } else {
-        selectRow(rows[0])
+        await selectRow(rows[0])
+        onChange({ loading: false, loadingMessage: null })
       }
     } catch (e) {
-      onChange({ manifestError: e instanceof Error ? e.message : String(e) })
+      onChange({ loading: false, loadingMessage: null, manifestError: e instanceof Error ? e.message : String(e) })
     }
   }
 

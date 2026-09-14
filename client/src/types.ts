@@ -117,6 +117,8 @@ export interface PaneState {
   scorePanelOpen: boolean
   scorePanelPos: { x: number; y: number } | null
 
+  loadingMessage: string | null // shown alongside the loading tag/overlay while `loading` is true
+
   ctPath: string
   maskPath: string
   ctInfo: VolumeInfo | null

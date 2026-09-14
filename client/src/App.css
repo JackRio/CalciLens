@@ -389,8 +389,40 @@
 }
 
 .loading-tag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   color: #ffd43b;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 212, 59, 0.25);
+  border-top-color: #ffd43b;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.viewer-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.loading-spinner-lg {
+  width: 28px;
+  height: 28px;
+  border-width: 3px;
 }
 
 .pane-error {
@@ -528,7 +560,8 @@
 }
 
 .score-group-label {
-  font-size: 11px;
+  font-size: 13px;
+  font-weight: 600;
   color: #9c9dab;
   white-space: nowrap;
   padding-bottom: 4px;
@@ -559,7 +592,7 @@
 }
 
 .score-tile-value {
-  font-size: 14px;
+  font-size: 17px;
   color: #d7d8de;
   font-family: ui-monospace, Consolas, monospace;
 }

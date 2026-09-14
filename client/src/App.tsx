@@ -30,6 +30,7 @@ function makePane(): PaneState {
     scoreClasses: [],
     scorePanelOpen: false,
     scorePanelPos: null,
+    loadingMessage: null,
 
     ctPath: '',
     maskPath: '',
@@ -106,7 +107,13 @@ export default function App() {
   }
 
   async function loadRowIntoPane(paneId: string, row: ManifestRow, currentPlane: PaneState['plane']) {
-    updatePane(paneId, { activeRowIndex: row.index, manifestError: null, error: null, loading: true })
+    updatePane(paneId, {
+      activeRowIndex: row.index,
+      manifestError: null,
+      error: null,
+      loading: true,
+      loadingMessage: 'Loading CT scan...',
+    })
     if (!row.image_exists) {
       // Clear whatever scan was showing before rather than leaving it up
       // under the new row's Patient ID/counter — a stale image next to a
@@ -117,6 +124,7 @@ export default function App() {
         maskPath: '',
         maskInfo: null,
         loading: false,
+        loadingMessage: null,
         manifestError: `Image not found: ${row.image_path}`,
       })
       return
@@ -126,7 +134,6 @@ export default function App() {
       updatePane(paneId, {
         ctPath: row.image_path,
         ctInfo,
-        loading: false,
         index: Math.floor(ctInfo.plane_lengths[currentPlane] / 2),
       })
     } catch (e) {
@@ -136,12 +143,14 @@ export default function App() {
         maskPath: '',
         maskInfo: null,
         loading: false,
+        loadingMessage: null,
         error: e instanceof Error ? e.message : String(e),
       })
       return
     }
     if (row.mask_path) {
       if (row.mask_exists) {
+        updatePane(paneId, { loadingMessage: 'Loading mask...' })
         try {
           const maskInfo = await loadVolume(row.mask_path, true)
           updatePane(paneId, { maskPath: row.mask_path, maskInfo, showMask: true })
@@ -154,6 +163,7 @@ export default function App() {
     } else {
       updatePane(paneId, { maskPath: '', maskInfo: null })
     }
+    updatePane(paneId, { loading: false, loadingMessage: null })
   }
 
   function clearPaneScan(paneId: string, errorMsg: string) {

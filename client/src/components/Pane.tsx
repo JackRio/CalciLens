@@ -134,38 +134,39 @@ export default function Pane({
   }, [pane.maskInfo?.volume_id])
 
   async function doLoadCt(path: string) {
-    onChange({ loading: true, error: null })
+    onChange({ loading: true, loadingMessage: 'Loading CT scan...', error: null })
     try {
       const info = await loadVolume(path, false)
       onChange({
         ctPath: path,
         ctInfo: info,
         loading: false,
+        loadingMessage: null,
         index: Math.floor(info.plane_lengths[pane.plane] / 2),
       })
     } catch (e) {
-      onChange({ loading: false, error: e instanceof Error ? e.message : String(e) })
+      onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
     }
   }
 
   async function doLoadMask(path: string) {
-    onChange({ loading: true, error: null })
+    onChange({ loading: true, loadingMessage: 'Loading mask...', error: null })
     try {
       const info = await loadVolume(path, true)
-      onChange({ maskPath: path, maskInfo: info, loading: false, showMask: true })
+      onChange({ maskPath: path, maskInfo: info, loading: false, loadingMessage: null, showMask: true })
     } catch (e) {
-      onChange({ loading: false, error: e instanceof Error ? e.message : String(e) })
+      onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
     }
   }
 
   async function doCreateMask() {
     if (!pane.ctInfo) return
-    onChange({ loading: true, error: null })
+    onChange({ loading: true, loadingMessage: 'Creating new mask...', error: null })
     try {
       const info = await createBlankMask(pane.ctInfo.volume_id)
-      onChange({ maskPath: '', maskInfo: info, loading: false, showMask: true, editMode: true })
+      onChange({ maskPath: '', maskInfo: info, loading: false, loadingMessage: null, showMask: true, editMode: true })
     } catch (e) {
-      onChange({ loading: false, error: e instanceof Error ? e.message : String(e) })
+      onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
     }
   }
 
@@ -214,7 +215,7 @@ export default function Pane({
   // never changes underneath it — reloading it is exactly "last saved").
   async function doResetMask() {
     if (!pane.ctInfo || !pane.maskInfo) return
-    onChange({ loading: true, error: null, editMessage: null })
+    onChange({ loading: true, loadingMessage: 'Resetting mask...', error: null, editMessage: null })
     try {
       if (pane.maskInfo.is_new_mask) {
         const info = await createBlankMask(pane.ctInfo.volume_id)
@@ -222,18 +223,25 @@ export default function Pane({
           maskPath: '',
           maskInfo: info,
           loading: false,
+          loadingMessage: null,
           editVersion: pane.editVersion + 1,
           editMessage: 'Reset to blank',
         })
       } else {
         const info = await loadVolume(pane.maskPath, true, true)
         const nextVersion = pane.editVersion + 1
-        onChange({ maskInfo: info, loading: false, editVersion: nextVersion, editMessage: 'Reset to last saved state' })
+        onChange({
+          maskInfo: info,
+          loading: false,
+          loadingMessage: null,
+          editVersion: nextVersion,
+          editMessage: 'Reset to last saved state',
+        })
         setMaskBaseline({ volumeId: info.volume_id, version: nextVersion })
         setLastSavedAt(null)
       }
     } catch (e) {
-      onChange({ loading: false, error: e instanceof Error ? e.message : String(e) })
+      onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
     }
   }
 
@@ -856,7 +864,12 @@ export default function Pane({
           </div>
         )}
         <div className="pane-toolbar-right">
-          {pane.loading && <span className="loading-tag">Loading...</span>}
+          {pane.loading && (
+            <span className="loading-tag">
+              <span className="loading-spinner" />
+              {pane.loadingMessage || 'Loading...'}
+            </span>
+          )}
           {pane.ctInfo &&
             (pane.zoom !== 1 ||
               pane.windowLevel !== DEFAULT_WINDOW_LEVEL ||
@@ -899,6 +912,11 @@ export default function Pane({
               className="slice-image"
               style={{ transform: `scale(${pane.zoom})` }}
             />
+          ) : pane.loading ? (
+            <div className="viewer-placeholder viewer-loading">
+              <span className="loading-spinner loading-spinner-lg" />
+              {pane.loadingMessage || 'Loading...'}
+            </div>
           ) : (
             <div className="viewer-placeholder">No CT loaded — open Settings to load a scan</div>
           )}

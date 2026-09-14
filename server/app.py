@@ -36,6 +36,21 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def no_cache_index_html(request, call_next):
+    """The Electron window's Chromium profile persists on disk across app
+    restarts (user-data-dir), so without this, index.html — which is what
+    points the browser at the current build's hashed JS/CSS filenames — can
+    be served from that cache after an update, silently showing a stale
+    build even on a fresh launch. The hashed asset files themselves are
+    still free to be cached indefinitely; only the HTML entry point (that
+    names them) needs to always be revalidated."""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.endswith("/index.html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 class LoadRequest(BaseModel):
     path: str
     is_mask: bool = False

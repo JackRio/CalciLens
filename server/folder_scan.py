@@ -91,6 +91,33 @@ def list_manifest_columns(manifest_path: str) -> list:
     return [str(c) for c in df.columns]
 
 
+def _ensure_tracking_columns(manifest_path: str, df: pd.DataFrame) -> pd.DataFrame:
+    """Make sure Status and Comment exist and every Status cell holds a
+    valid value, writing the manifest immediately if anything was missing —
+    so both columns (Status pre-filled "Not Started", Comment blank) are
+    visible in the file itself as soon as it's loaded, not only after the
+    first edit made through the app."""
+    changed = False
+
+    if STATUS_COLUMN not in df.columns:
+        df[STATUS_COLUMN] = DEFAULT_STATUS
+        changed = True
+    else:
+        df[STATUS_COLUMN] = df[STATUS_COLUMN].astype(object)
+        blank = df[STATUS_COLUMN].apply(lambda v: _cell_text(v) not in STATUS_OPTIONS)
+        if blank.any():
+            df.loc[blank, STATUS_COLUMN] = DEFAULT_STATUS
+            changed = True
+
+    if COMMENT_COLUMN not in df.columns:
+        df[COMMENT_COLUMN] = ""
+        changed = True
+
+    if changed:
+        _write_table(manifest_path, df)
+    return df
+
+
 def list_manifest_pairs(
     manifest_path: str,
     image_column: str = DEFAULT_IMAGE_COLUMN,
@@ -112,6 +139,8 @@ def list_manifest_pairs(
         raise ValueError(f"Column '{id_column}' not found. Available columns: {list(df.columns)}")
     if patient_id_column and patient_id_column not in df.columns:
         raise ValueError(f"Column '{patient_id_column}' not found. Available columns: {list(df.columns)}")
+
+    df = _ensure_tracking_columns(manifest_path, df)
 
     rows = []
     for i, row in df.iterrows():

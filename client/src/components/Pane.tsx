@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AnnotationStatus, PaneState, Plane } from '../types'
-import { WINDOW_PRESETS, DEFAULT_WINDOW_LEVEL, DEFAULT_WINDOW_WIDTH, STATUS_OPTIONS } from '../types'
+import type { AnnotationStatus, KeybindMap, PaneState, Plane } from '../types'
+import { WINDOW_PRESETS, DEFAULT_WINDOW_LEVEL, DEFAULT_WINDOW_WIDTH, STATUS_OPTIONS, comboMatches } from '../types'
 import {
   loadVolume,
   probeVoxel,
@@ -33,12 +33,18 @@ export default function Pane({
   onClose,
   closable,
   onNavigate,
+  isActive,
+  onActivate,
+  keybinds,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
   onClose: () => void
   closable: boolean
   onNavigate: (direction: 1 | -1) => void
+  isActive: boolean
+  onActivate: () => void
+  keybinds: KeybindMap
 }) {
   const [settingsOpen, setSettingsOpen] = useState(true)
   const [probe, setProbe] = useState<{ hu: number | null; label: number | null; row: number; col: number } | null>(
@@ -87,7 +93,6 @@ export default function Pane({
   })
   const lastPaintTs = useRef(0)
   const lastRenderBumpTs = useRef(0)
-  const isHoveredRef = useRef(false)
   const editBoxDrag = useRef<{ active: boolean; offsetX: number; offsetY: number }>({
     active: false,
     offsetX: 0,
@@ -427,32 +432,48 @@ export default function Pane({
     return () => el.removeEventListener('wheel', onWheel)
   }, [onWheel])
 
-  // Left/Right arrow (or A/D) slice scrubbing, active only while the mouse
-  // is over this pane (so in split view the un-hovered pane's keys don't
-  // also move) and not while the user is typing in a text field/select
-  // anywhere on the page. Uses the same liveRef.index as the wheel handler
-  // so holding a key down (rapid key-repeat events) compounds correctly
-  // instead of every repeat reading the same stale pane.index.
+  // Configurable keyboard shortcuts (see KeybindSettings), active only for
+  // whichever pane was last clicked into (isActive — App.tsx tracks this
+  // globally) and not while the user is typing in a text field/select
+  // anywhere on the page. Slice-scrub uses the same liveRef.index as the
+  // wheel handler so holding a key down (rapid key-repeat events) compounds
+  // correctly instead of every repeat reading the same stale pane.index.
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.ctrlKey || e.metaKey || e.altKey) return
-      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
-      let delta = 0
-      if (key === 'ArrowLeft' || key === 'a') delta = -1
-      else if (key === 'ArrowRight' || key === 'd') delta = 1
-      else return
-      if (!isHoveredRef.current || !pane.ctInfo) return
+      if (!isActive) return
       const active = document.activeElement as HTMLElement | null
       if (active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) return
-      e.preventDefault()
-      const len = pane.ctInfo.plane_lengths[pane.plane]
-      const next = Math.max(0, Math.min(len - 1, liveRef.current.index + delta))
-      liveRef.current.index = next
-      onChange({ index: next })
+
+      if (pane.ctInfo && keybinds.prevSlice.some((c) => comboMatches(e, c))) {
+        e.preventDefault()
+        const len = pane.ctInfo.plane_lengths[pane.plane]
+        const next = Math.max(0, Math.min(len - 1, liveRef.current.index - 1))
+        liveRef.current.index = next
+        onChange({ index: next })
+        return
+      }
+      if (pane.ctInfo && keybinds.nextSlice.some((c) => comboMatches(e, c))) {
+        e.preventDefault()
+        const len = pane.ctInfo.plane_lengths[pane.plane]
+        const next = Math.max(0, Math.min(len - 1, liveRef.current.index + 1))
+        liveRef.current.index = next
+        onChange({ index: next })
+        return
+      }
+      if (keybinds.toggleMask.some((c) => comboMatches(e, c))) {
+        e.preventDefault()
+        onChange({ showMask: !pane.showMask })
+        return
+      }
+      if (keybinds.toggleThresh.some((c) => comboMatches(e, c))) {
+        e.preventDefault()
+        onChange({ thresholdEnabled: !pane.thresholdEnabled })
+        return
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [pane.ctInfo, pane.plane, onChange])
+  }, [isActive, keybinds, pane.ctInfo, pane.plane, pane.showMask, pane.thresholdEnabled, onChange])
 
   function isOverUIBox(target: EventTarget | null): boolean {
     const node = target as Node | null
@@ -704,7 +725,7 @@ export default function Pane({
     : null
 
   return (
-    <div className="pane">
+    <div className={isActive ? 'pane pane-active' : 'pane'} onMouseDownCapture={onActivate}>
       <div className="pane-toolbar">
         <div className="plane-tabs">
           {PLANES.map((p) => (
@@ -775,11 +796,7 @@ export default function Pane({
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
-          onMouseEnter={() => {
-            isHoveredRef.current = true
-          }}
           onMouseLeave={() => {
-            isHoveredRef.current = false
             onMouseUp()
             hideCursor()
           }}

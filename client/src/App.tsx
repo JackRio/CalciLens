@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import './App.css'
 import Pane from './components/Pane'
+import KeybindSettings from './components/KeybindSettings'
 import type { ManifestRow, PaneState } from './types'
 import {
   CALCIFICATIONS_PRESET,
@@ -11,6 +12,7 @@ import {
   DEFAULT_WINDOW_WIDTH,
 } from './types'
 import { loadVolume } from './api'
+import { useKeybinds } from './useKeybinds'
 
 let paneCounter = 0
 function makePane(): PaneState {
@@ -70,6 +72,10 @@ export default function App() {
   const [panes, setPanes] = useState<PaneState[]>([makePane()])
   const [linked, setLinked] = useState(true)
   const [syncNavByPatientId, setSyncNavByPatientId] = useState(false)
+  const [activePaneId, setActivePaneId] = useState<string | null>(panes[0]?.id ?? null)
+  const [keybinds, setKeybinds] = useKeybinds()
+  const [keybindSettingsOpen, setKeybindSettingsOpen] = useState(false)
+  const effectiveActivePaneId = panes.some((p) => p.id === activePaneId) ? activePaneId : (panes[0]?.id ?? null)
 
   function updatePane(id: string, partial: Partial<PaneState>) {
     setPanes((prev) => {
@@ -189,7 +195,10 @@ export default function App() {
   }
 
   function addSplit() {
-    setPanes((prev) => (prev.length >= 2 ? prev : [...prev, makePane()]))
+    if (panes.length >= 2) return
+    const p = makePane()
+    setPanes((prev) => [...prev, p])
+    setActivePaneId(p.id)
   }
 
   function closePane(id: string) {
@@ -217,6 +226,9 @@ export default function App() {
               Sync Previous/Next by Patient ID
             </label>
           )}
+          <button onClick={() => setKeybindSettingsOpen(true)} title="Keyboard shortcut settings">
+            ⌨ Shortcuts
+          </button>
           {panes.length < 2 ? (
             <button onClick={addSplit}>+ Split view</button>
           ) : (
@@ -233,9 +245,15 @@ export default function App() {
             onClose={() => closePane(pane.id)}
             closable={panes.length > 1}
             onNavigate={(direction) => navigate(pane.id, direction)}
+            isActive={pane.id === effectiveActivePaneId}
+            onActivate={() => setActivePaneId(pane.id)}
+            keybinds={keybinds}
           />
         ))}
       </div>
+      {keybindSettingsOpen && (
+        <KeybindSettings keybinds={keybinds} onChange={setKeybinds} onClose={() => setKeybindSettingsOpen(false)} />
+      )}
     </div>
   )
 }

@@ -135,3 +135,60 @@ export interface PaneState {
 
 export type EditTool = 'brush' | 'region-grow'
 export type OverwriteMode = 'any' | 'label' | 'threshold'
+
+// ---- Keyboard shortcuts ----
+
+export type KeybindActionId = 'toggleMask' | 'toggleThresh' | 'prevSlice' | 'nextSlice'
+
+export interface KeyCombo {
+  key: string // e.g. "r", "ArrowLeft" — letters stored lowercase
+  ctrl?: boolean
+  alt?: boolean
+  shift?: boolean
+  meta?: boolean
+}
+
+export type KeybindMap = Record<KeybindActionId, KeyCombo[]>
+
+export const KEYBIND_LABELS: Record<KeybindActionId, string> = {
+  toggleMask: 'Toggle Mask overlay',
+  toggleThresh: 'Toggle Threshold overlay',
+  prevSlice: 'Previous slice',
+  nextSlice: 'Next slice',
+}
+
+export const DEFAULT_KEYBINDS: KeybindMap = {
+  toggleMask: [{ key: 'r' }],
+  toggleThresh: [{ key: 't' }],
+  prevSlice: [{ key: 'ArrowLeft' }, { key: 'a' }],
+  nextSlice: [{ key: 'ArrowRight' }, { key: 'd' }],
+}
+
+export function comboLabel(combo: KeyCombo): string {
+  const parts: string[] = []
+  if (combo.ctrl) parts.push('Ctrl')
+  if (combo.alt) parts.push('Alt')
+  if (combo.shift) parts.push('Shift')
+  if (combo.meta) parts.push('Meta')
+  const keyNames: Record<string, string> = { ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓', ' ': 'Space' }
+  parts.push(keyNames[combo.key] || (combo.key.length === 1 ? combo.key.toUpperCase() : combo.key))
+  return parts.join('+')
+}
+
+export function comboMatches(e: KeyboardEvent, combo: KeyCombo): boolean {
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
+  const comboKey = combo.key.length === 1 ? combo.key.toLowerCase() : combo.key
+  return (
+    key === comboKey &&
+    e.ctrlKey === !!combo.ctrl &&
+    e.altKey === !!combo.alt &&
+    e.shiftKey === !!combo.shift &&
+    e.metaKey === !!combo.meta
+  )
+}
+
+export function combosEqual(a: KeyCombo, b: KeyCombo): boolean {
+  const ka = a.key.length === 1 ? a.key.toLowerCase() : a.key
+  const kb = b.key.length === 1 ? b.key.toLowerCase() : b.key
+  return ka === kb && !!a.ctrl === !!b.ctrl && !!a.alt === !!b.alt && !!a.shift === !!b.shift && !!a.meta === !!b.meta
+}

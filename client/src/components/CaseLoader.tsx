@@ -208,6 +208,13 @@ export default function CaseLoader({
                 onChange={(e) => updateConfig({ manifestPath: e.target.value })}
               />
               {electronAvailable && <button onClick={handleBrowseManifest}>Browse...</button>}
+              <button
+                className="add-label-btn"
+                onClick={handleLoadManifest}
+                disabled={!cfg.manifestPath || !cfg.patientIdColumn}
+              >
+                Load manifest
+              </button>
             </div>
           </label>
 
@@ -271,14 +278,6 @@ export default function CaseLoader({
               )}
             </label>
           </div>
-
-          <button
-            className="add-label-btn"
-            onClick={handleLoadManifest}
-            disabled={!cfg.manifestPath || !cfg.patientIdColumn}
-          >
-            Load manifest
-          </button>
 
           <button
             className="advanced-toggle"

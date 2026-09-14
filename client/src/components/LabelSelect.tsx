@@ -11,11 +11,15 @@ export default function LabelSelect({
   value,
   placeholder,
   onChange,
+  grid,
 }: {
   options: LabelSelectOption[]
   value: number | null
   placeholder?: string
   onChange: (v: number) => void
+  // Lays out the menu as 2 columns (Background full-width on its own row,
+  // then the rest in pairs) instead of a plain vertical list.
+  grid?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -47,11 +51,13 @@ export default function LabelSelect({
         <span className="label-select-caret">▾</span>
       </button>
       {open && (
-        <div className="label-select-menu">
-          {options.map((o) => (
+        <div className={grid ? 'label-select-menu label-select-menu-grid' : 'label-select-menu'}>
+          {options.map((o, i) => (
             <div
               key={o.value}
-              className="label-select-option"
+              className={
+                grid && i === 0 ? 'label-select-option label-select-option-full' : 'label-select-option'
+              }
               onClick={() => {
                 onChange(o.value)
                 setOpen(false)

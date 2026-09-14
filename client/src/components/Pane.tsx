@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { PaneState, Plane } from '../types'
-import { WINDOW_PRESETS, DEFAULT_WINDOW_LEVEL, DEFAULT_WINDOW_WIDTH } from '../types'
+import type { AnnotationStatus, PaneState, Plane } from '../types'
+import { WINDOW_PRESETS, DEFAULT_WINDOW_LEVEL, DEFAULT_WINDOW_WIDTH, STATUS_OPTIONS } from '../types'
 import {
   loadVolume,
   probeVoxel,
@@ -11,6 +11,7 @@ import {
   refreshMaskLabels,
   saveMask,
   saveManifestComment,
+  saveManifestStatus,
 } from '../api'
 import InfoPanel from './InfoPanel'
 import LabelColorEditor from './LabelColorEditor'
@@ -19,6 +20,11 @@ import AlphaSpinner from './AlphaSpinner'
 import MaskEditor from './MaskEditor'
 
 const PLANES: Plane[] = ['axial', 'sagittal', 'coronal']
+
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+function formatShortDate(d: Date): string {
+  return `${d.getDate()} ${SHORT_MONTHS[d.getMonth()]} ${String(d.getFullYear()).slice(-2)}`
+}
 
 export default function Pane({
   pane,
@@ -41,6 +47,17 @@ export default function Pane({
   const [commentDraft, setCommentDraft] = useState('')
   const [commentSaving, setCommentSaving] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
+  // Tracks whether the currently-loaded mask has unsaved edits: baseline is
+  // the editVersion at the moment this exact mask (by volume_id) was loaded
+  // or last saved/reset; any later editVersion means it has diverged.
+  const [maskBaseline, setMaskBaseline] = useState<{ volumeId: string | null; version: number }>({
+    volumeId: null,
+    version: 0,
+  })
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
+  const [navModalDirection, setNavModalDirection] = useState<1 | -1 | null>(null)
+  const [statusSaving, setStatusSaving] = useState(false)
+  const [statusError, setStatusError] = useState<string | null>(null)
   // Brush-cursor tracking deliberately bypasses React state: it's a
   // high-frequency, purely-visual value with no data anyone else reads, so
   // we write straight to the DOM node (via ref) in a requestAnimationFrame
@@ -79,12 +96,26 @@ export default function Pane({
   const planeLength = pane.ctInfo ? pane.ctInfo.plane_lengths[pane.plane] : 1
   const currentRowPos = pane.manifestRows.findIndex((r) => r.index === pane.activeRowIndex)
   const currentRow = currentRowPos >= 0 ? pane.manifestRows[currentRowPos] : null
+  const hasUnsavedMaskChanges = !!pane.maskInfo && pane.editVersion !== maskBaseline.version
 
   useEffect(() => {
     return () => {
       if (cursorRafId.current !== null) cancelAnimationFrame(cursorRafId.current)
     }
   }, [])
+
+  // A newly-loaded (or newly-created) mask starts "clean" — its baseline is
+  // wherever editVersion happens to be right now (that pane-wide counter
+  // keeps climbing across every mask this pane has ever touched, so it's
+  // never itself a "changed since load" signal on its own).
+  useEffect(() => {
+    const id = pane.maskInfo?.volume_id ?? null
+    if (id !== maskBaseline.volumeId) {
+      setMaskBaseline({ volumeId: id, version: pane.editVersion })
+      setLastSavedAt(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pane.maskInfo?.volume_id])
 
   async function doLoadCt(path: string) {
     onChange({ loading: true, error: null })
@@ -128,8 +159,78 @@ export default function Pane({
     try {
       const res = await saveMask(pane.maskInfo.volume_id)
       onChange({ editBusy: false, editMessage: `Saved to ${res.path}` })
+      setMaskBaseline({ volumeId: pane.maskInfo.volume_id, version: pane.editVersion })
+      setLastSavedAt(new Date())
     } catch (e) {
       onChange({ editBusy: false, editMessage: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  // Reverts to the last actually-saved-to-disk state: a brand new (never
+  // saved) mask goes back to blank; an existing one is force-reloaded from
+  // its on-disk path, discarding every in-memory edit since it was loaded
+  // (Save always writes to a differently-named file, so the original path
+  // never changes underneath it — reloading it is exactly "last saved").
+  async function doResetMask() {
+    if (!pane.ctInfo || !pane.maskInfo) return
+    onChange({ loading: true, error: null, editMessage: null })
+    try {
+      if (pane.maskInfo.is_new_mask) {
+        const info = await createBlankMask(pane.ctInfo.volume_id)
+        onChange({
+          maskPath: '',
+          maskInfo: info,
+          loading: false,
+          editVersion: pane.editVersion + 1,
+          editMessage: 'Reset to blank',
+        })
+      } else {
+        const info = await loadVolume(pane.maskPath, true, true)
+        const nextVersion = pane.editVersion + 1
+        onChange({ maskInfo: info, loading: false, editVersion: nextVersion, editMessage: 'Reset to last saved state' })
+        setMaskBaseline({ volumeId: info.volume_id, version: nextVersion })
+        setLastSavedAt(null)
+      }
+    } catch (e) {
+      onChange({ loading: false, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  // Not a persistent toggle — just a shortcut that sets the active label to
+  // Background, since Brush/RG already paint with whatever editActiveLabel
+  // is, so this makes the very next stroke (in either tool) an erase. The
+  // Label dropdown reflects it immediately since it's driven by this same
+  // editActiveLabel value.
+  function doErase() {
+    onChange({ editActiveLabel: 0 })
+  }
+
+  function requestNavigate(direction: 1 | -1) {
+    if (pane.editMode && pane.maskInfo) {
+      setNavModalDirection(direction)
+    } else {
+      onNavigate(direction)
+    }
+  }
+
+  function confirmNavigate() {
+    if (navModalDirection !== null) onNavigate(navModalDirection)
+    setNavModalDirection(null)
+  }
+
+  async function handleSetStatus(status: AnnotationStatus) {
+    if (!currentRow) return
+    setStatusSaving(true)
+    setStatusError(null)
+    try {
+      await saveManifestStatus(pane.manifestConfig.manifestPath, currentRow.index, status)
+      onChange({
+        manifestRows: pane.manifestRows.map((r) => (r.index === currentRow.index ? { ...r, status } : r)),
+      })
+      setStatusSaving(false)
+    } catch (e) {
+      setStatusSaving(false)
+      setStatusError(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -593,7 +694,7 @@ export default function Pane({
         {pane.manifestRows.length > 0 && (
           <div className="case-nav-tabs">
             <button
-              onClick={() => onNavigate(-1)}
+              onClick={() => requestNavigate(-1)}
               disabled={currentRowPos <= 0}
               title="Load previous case in manifest"
             >
@@ -603,7 +704,7 @@ export default function Pane({
               {currentRowPos >= 0 ? currentRowPos + 1 : '-'}/{pane.manifestRows.length}
             </span>
             <button
-              onClick={() => onNavigate(1)}
+              onClick={() => requestNavigate(1)}
               disabled={currentRowPos < 0 || currentRowPos >= pane.manifestRows.length - 1}
               title="Load next case in manifest"
             >
@@ -800,6 +901,20 @@ export default function Pane({
                 onSave={doSaveMask}
                 onDragHandleDown={handleEditBoxDragStart}
               />
+              {pane.editMode && pane.maskInfo && (
+                <div className="edit-quick-actions" onWheel={(e) => e.stopPropagation()}>
+                  <button onClick={doResetMask} disabled={pane.loading} title="Reset to the last saved state">
+                    ⟲ Reset
+                  </button>
+                  <button
+                    className={pane.editActiveLabel === 0 ? 'active' : ''}
+                    onClick={doErase}
+                    title="Set the active label to Background so the next stroke erases"
+                  >
+                    ⌫ Erase mode
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -863,6 +978,50 @@ export default function Pane({
               </button>
               <button className="add-label-btn" onClick={handleSaveComment} disabled={commentSaving}>
                 {commentSaving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {navModalDirection !== null && (
+        <div className="comment-modal-backdrop" onClick={() => setNavModalDirection(null)}>
+          <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="comment-modal-title">Before you move on...</div>
+
+            <button
+              className="nav-modal-save-btn"
+              onClick={doSaveMask}
+              disabled={pane.editBusy || !hasUnsavedMaskChanges}
+              title={hasUnsavedMaskChanges ? 'Save the current annotation' : 'No changes since last save'}
+            >
+              {pane.editBusy
+                ? 'Saving...'
+                : hasUnsavedMaskChanges
+                  ? 'Save'
+                  : lastSavedAt
+                    ? `Saved ${formatShortDate(lastSavedAt)}`
+                    : 'No changes to save'}
+            </button>
+
+            <div className="nav-modal-status-row">
+              {STATUS_OPTIONS.map((s) => (
+                <button
+                  key={s}
+                  className={(currentRow?.status || 'Not Started') === s ? 'active' : ''}
+                  onClick={() => handleSetStatus(s)}
+                  disabled={statusSaving}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+            {statusError && <div className="busy-msg manifest-error">{statusError}</div>}
+
+            <div className="comment-modal-buttons">
+              <button onClick={() => setNavModalDirection(null)}>Cancel</button>
+              <button className="add-label-btn" onClick={confirmNavigate}>
+                {navModalDirection === 1 ? 'Continue to Next ▸' : '◂ Continue to Previous'}
               </button>
             </div>
           </div>

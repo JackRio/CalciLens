@@ -16,6 +16,9 @@ from pathutil import clean_path
 DEFAULT_IMAGE_COLUMN = "image_path"
 DEFAULT_MASK_COLUMN = "mask_path"
 COMMENT_COLUMN = "Comment"
+STATUS_COLUMN = "Status"
+STATUS_OPTIONS = ["Not Started", "Annotated", "InProgress", "Review"]
+DEFAULT_STATUS = STATUS_OPTIONS[0]
 
 
 def _read_table(manifest_path: str) -> pd.DataFrame:
@@ -91,6 +94,9 @@ def list_manifest_pairs(
 
         patient_id = _cell_str(row[patient_id_column]) if patient_id_column else ""
         comment = _cell_text(row[COMMENT_COLUMN]) if COMMENT_COLUMN in df.columns else ""
+        status = _cell_text(row[STATUS_COLUMN]) if STATUS_COLUMN in df.columns else ""
+        if status not in STATUS_OPTIONS:
+            status = DEFAULT_STATUS
 
         rows.append(
             {
@@ -102,17 +108,18 @@ def list_manifest_pairs(
                 "image_exists": os.path.isfile(image_path),
                 "mask_exists": bool(mask_path) and os.path.isfile(mask_path),
                 "comment": comment,
+                "status": status,
             }
         )
     return rows
 
 
-def save_comment(manifest_path: str, row_index: int, comment: str) -> None:
-    """Write a reviewer comment back into the manifest file itself, creating
-    the Comment column if it doesn't already exist. row_index is the raw
-    pandas row index returned as `index` in list_manifest_pairs (the row's
-    position in this same file), so this must be reading the identical file
-    the rows were listed from."""
+def _save_cell(manifest_path: str, row_index: int, column: str, value: str) -> None:
+    """Write a single cell back into the manifest file itself, creating the
+    column if it doesn't already exist. row_index is the raw pandas row
+    index returned as `index` in list_manifest_pairs (the row's position in
+    this same file), so this must be reading the identical file the rows
+    were listed from."""
     manifest_path = clean_path(manifest_path)
     if not os.path.isfile(manifest_path):
         raise FileNotFoundError(manifest_path)
@@ -121,9 +128,19 @@ def save_comment(manifest_path: str, row_index: int, comment: str) -> None:
     if row_index not in df.index:
         raise ValueError(f"Row {row_index} not found in manifest (it may have changed on disk)")
 
-    if COMMENT_COLUMN not in df.columns:
-        df[COMMENT_COLUMN] = ""
+    if column not in df.columns:
+        df[column] = ""
 
-    df[COMMENT_COLUMN] = df[COMMENT_COLUMN].astype(object)
-    df.loc[row_index, COMMENT_COLUMN] = comment
+    df[column] = df[column].astype(object)
+    df.loc[row_index, column] = value
     _write_table(manifest_path, df)
+
+
+def save_comment(manifest_path: str, row_index: int, comment: str) -> None:
+    _save_cell(manifest_path, row_index, COMMENT_COLUMN, comment)
+
+
+def save_status(manifest_path: str, row_index: int, status: str) -> None:
+    if status not in STATUS_OPTIONS:
+        raise ValueError(f"Invalid status '{status}'; must be one of {STATUS_OPTIONS}")
+    _save_cell(manifest_path, row_index, STATUS_COLUMN, status)

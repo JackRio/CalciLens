@@ -39,12 +39,13 @@ app.add_middleware(
 class LoadRequest(BaseModel):
     path: str
     is_mask: bool = False
+    force: bool = False
 
 
 @app.post("/api/volumes/load")
 def load_volume(req: LoadRequest):
     try:
-        vol = store.load(req.path, is_mask=req.is_mask)
+        vol = store.load(req.path, is_mask=req.is_mask, force=req.force)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Path not found: {req.path}")
     except Exception as e:
@@ -327,6 +328,25 @@ def manifest_comment(req: ManifestCommentRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to save comment: {e}")
+    return {"ok": True}
+
+
+class ManifestStatusRequest(BaseModel):
+    manifest_path: str
+    row_index: int
+    status: str
+
+
+@app.post("/api/manifest/status")
+def manifest_status(req: ManifestStatusRequest):
+    try:
+        folder_scan.save_status(req.manifest_path, req.row_index, req.status)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to save status: {e}")
     return {"ok": True}
 
 

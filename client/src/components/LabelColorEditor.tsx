@@ -32,34 +32,17 @@ export default function LabelColorEditor({
           Calcifications preset
         </button>
       </div>
-      <table className="label-table">
-        <thead>
-          <tr>
-            <th>Value</th>
-            <th>Color</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {colors.map((c) => (
-            <tr key={c.label}>
-              <td>{c.label}</td>
-              <td>
-                <input
-                  type="color"
-                  value={c.color}
-                  onChange={(e) => updateColor(c.label, e.target.value)}
-                />
-              </td>
-              <td>
-                <button type="button" className="icon-btn" onClick={() => removeLabel(c.label)}>
-                  ✕
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="label-grid">
+        {colors.map((c) => (
+          <div className="label-grid-item" key={c.label}>
+            <span className="label-grid-value">{c.label}</span>
+            <input type="color" value={c.color} onChange={(e) => updateColor(c.label, e.target.value)} />
+            <button type="button" className="icon-btn" onClick={() => removeLabel(c.label)}>
+              ✕
+            </button>
+          </div>
+        ))}
+      </div>
       <button type="button" className="add-label-btn" onClick={addLabel}>
         + Add label
       </button>

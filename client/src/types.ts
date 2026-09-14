@@ -67,6 +67,9 @@ export const DEFAULT_MANIFEST_CONFIG: ManifestConfig = {
   patientIdColumn: 'PatientId',
 }
 
+export const STATUS_OPTIONS = ['Not Started', 'Annotated', 'InProgress', 'Review'] as const
+export type AnnotationStatus = (typeof STATUS_OPTIONS)[number]
+
 export interface ManifestRow {
   index: number
   label: string
@@ -76,6 +79,7 @@ export interface ManifestRow {
   image_exists: boolean
   mask_exists: boolean
   comment: string
+  status: AnnotationStatus
 }
 
 export interface PaneState {

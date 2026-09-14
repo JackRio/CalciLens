@@ -14,11 +14,11 @@ async function handleJson<T>(res: Response): Promise<T> {
   return res.json()
 }
 
-export async function loadVolume(path: string, isMask: boolean): Promise<VolumeInfo> {
+export async function loadVolume(path: string, isMask: boolean, force = false): Promise<VolumeInfo> {
   const res = await fetch('/api/volumes/load', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, is_mask: isMask }),
+    body: JSON.stringify({ path, is_mask: isMask, force }),
   })
   return handleJson<VolumeInfo>(res)
 }
@@ -116,6 +116,15 @@ export async function saveManifestComment(manifestPath: string, rowIndex: number
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ manifest_path: manifestPath, row_index: rowIndex, comment }),
+  })
+  await handleJson(res)
+}
+
+export async function saveManifestStatus(manifestPath: string, rowIndex: number, status: string): Promise<void> {
+  const res = await fetch('/api/manifest/status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ manifest_path: manifestPath, row_index: rowIndex, status }),
   })
   await handleJson(res)
 }

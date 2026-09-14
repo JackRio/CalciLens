@@ -177,6 +177,45 @@
   gap: 8px;
 }
 
+.nav-modal-save-btn {
+  align-self: flex-start;
+  background: #2f3140;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 6px 14px;
+  font-size: 13px;
+}
+
+.nav-modal-save-btn:not(:disabled):hover {
+  background: #3a3d4f;
+}
+
+.nav-modal-save-btn:disabled {
+  opacity: 0.6;
+}
+
+.nav-modal-status-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.nav-modal-status-row button {
+  background: #2f3140;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.nav-modal-status-row button.active {
+  background: #1f4a2e;
+  border-color: #2ea678;
+  color: #7de3ab;
+}
+
 .pane-toolbar-right {
   display: flex;
   align-items: center;
@@ -261,8 +300,49 @@
 
 .viewer-bottom-right {
   position: absolute;
+  /* top is fixed (not just a max-height off the bottom) so a tall edit box
+     can never grow up into the top-right HUD's corner — it's clamped to
+     this band regardless of how much content it has, and scrolls
+     internally (see .edit-box below) if it still doesn't fit. */
+  top: 56px;
   bottom: 6px;
   right: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.viewer-bottom-right .edit-box {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.edit-quick-actions {
+  display: flex;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.edit-quick-actions button {
+  flex: 1;
+  background: #2f3140;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.edit-quick-actions button:hover {
+  background: #3a3d4f;
+}
+
+.edit-quick-actions button.active {
+  background: #4a3b1f;
+  border-color: #a67c2e;
+  color: #ffd873;
 }
 
 .viewer-left-controls {
@@ -363,7 +443,7 @@
   position: absolute;
   top: 6px;
   right: 8px;
-  font-size: 16px;
+  font-size: 19px;
   line-height: 1.1;
   color: #b8ffb0;
   background: rgba(0, 0, 0, 0.5);
@@ -389,8 +469,8 @@
 
 .viewer-alpha-controls {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 8px;
 }
 
@@ -514,6 +594,16 @@
   background: #2f3140;
 }
 
+.label-select-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  min-width: 160px;
+}
+
+.label-select-option-full {
+  grid-column: 1 / -1;
+}
+
 .edit-hint {
   font-size: 10px;
   color: #6c6d7a;
@@ -528,25 +618,25 @@
 .overlay-box {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   background: rgba(0, 0, 0, 0.6);
   border: 1px solid #3c3e4d;
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: 9px 11px;
 }
 
 .overlay-toggle {
   display: flex;
   align-items: center;
-  gap: 5px;
-  font-size: 13px;
+  gap: 6px;
+  font-size: 15px;
   color: #d7d8de;
   white-space: nowrap;
 }
 
 .overlay-toggle input[type='checkbox'] {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 
 .overlay-box-row {
@@ -556,14 +646,14 @@
 }
 
 .overlay-hu-input {
-  width: 56px;
+  width: 60px;
   background: #12131a;
   border: 1px solid #3c3e4d;
   color: #d7d8de;
   border-radius: 4px;
-  font-size: 14px;
+  font-size: 15px;
   font-family: ui-monospace, Consolas, monospace;
-  padding: 3px 5px;
+  padding: 4px 6px;
   text-align: right;
 }
 
@@ -638,7 +728,7 @@
 
 .settings-title {
   font-weight: 600;
-  font-size: 12px;
+  font-size: 14px;
   color: #c8c9d4;
   margin-bottom: 6px;
   display: flex;
@@ -666,7 +756,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 12px;
+  font-size: 13px;
   color: #9c9dab;
   margin-bottom: 6px;
 }
@@ -786,30 +876,40 @@
   font-size: 11px;
 }
 
-.label-table {
-  width: 100%;
-  font-size: 12px;
-  border-collapse: collapse;
+.label-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
   margin-bottom: 6px;
 }
 
-.label-table th {
-  text-align: left;
-  color: #6c6d7a;
-  font-weight: 500;
-  padding: 2px 4px;
+.label-grid-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  background: #14151a;
+  border: 1px solid #2a2c34;
+  border-radius: 4px;
+  padding: 4px 6px;
 }
 
-.label-table td {
-  padding: 2px 4px;
+.label-grid-value {
+  min-width: 14px;
+  color: #d7d8de;
 }
 
-.label-table input[type='color'] {
+.label-grid-item input[type='color'] {
   width: 32px;
   height: 20px;
   border: none;
   background: none;
   padding: 0;
+  flex-shrink: 0;
+}
+
+.label-grid-item .icon-btn {
+  margin-left: auto;
 }
 
 .icon-btn {

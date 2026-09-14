@@ -103,14 +103,18 @@ class VolumeStore:
         self._cache: "OrderedDict[str, LoadedVolume]" = OrderedDict()
         self._lock = threading.Lock()
 
-    def load(self, path: str, is_mask: bool = False) -> LoadedVolume:
+    def load(self, path: str, is_mask: bool = False, force: bool = False) -> LoadedVolume:
+        """force=True bypasses the cache hit and re-reads from disk even if
+        already loaded, discarding any in-memory edits — used by "Reset" to
+        revert a mask back to what's actually saved on disk."""
         path = os.path.abspath(clean_path(path))
         vol_id = _hash_id(path) + ("_mask" if is_mask else "")
-        with self._lock:
-            existing = self._cache.get(vol_id)
-            if existing is not None:
-                self._cache.move_to_end(vol_id)
-                return existing
+        if not force:
+            with self._lock:
+                existing = self._cache.get(vol_id)
+                if existing is not None:
+                    self._cache.move_to_end(vol_id)
+                    return existing
 
         if not os.path.exists(path):
             raise FileNotFoundError(path)

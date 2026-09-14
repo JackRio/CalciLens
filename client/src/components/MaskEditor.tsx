@@ -98,6 +98,7 @@ export default function MaskEditor({
               options={activeLabelOptions}
               value={pane.editActiveLabel}
               onChange={(v) => onChange({ editActiveLabel: v })}
+              grid
             />
           </div>
 

@@ -983,7 +983,7 @@ export default function Pane({
               }
               scoreClasses={pane.scoreClasses}
               row={currentRow}
-              colorFor={(i) => pane.maskColors[i % pane.maskColors.length]?.color || '#6c6d7a'}
+              maskColors={pane.maskColors}
               open={pane.scorePanelOpen}
               onToggleOpen={() => onChange({ scorePanelOpen: !pane.scorePanelOpen })}
               onDragHandleDown={handleScorePanelDragStart}

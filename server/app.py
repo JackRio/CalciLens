@@ -313,7 +313,7 @@ class ManifestPairsRequest(BaseModel):
 @app.post("/api/manifest_pairs")
 def manifest_pairs(req: ManifestPairsRequest):
     try:
-        rows = folder_scan.list_manifest_pairs(
+        result = folder_scan.list_manifest_pairs(
             req.manifest_path,
             image_column=req.image_column,
             mask_column=req.mask_column,
@@ -324,7 +324,7 @@ def manifest_pairs(req: ManifestPairsRequest):
         raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"rows": rows}
+    return result
 
 
 class ManifestCommentRequest(BaseModel):
@@ -362,6 +362,23 @@ def manifest_status(req: ManifestStatusRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to save status: {e}")
+    return {"ok": True}
+
+
+class ManifestReasonRequest(BaseModel):
+    manifest_path: str
+    row_index: int
+    reasons: list[str]
+
+
+@app.post("/api/manifest/reason")
+def manifest_reason(req: ManifestReasonRequest):
+    try:
+        folder_scan.save_reason(req.manifest_path, req.row_index, req.reasons)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to save reason: {e}")
     return {"ok": True}
 
 

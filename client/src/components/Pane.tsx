@@ -12,6 +12,7 @@ import {
   saveMask,
   saveManifestComment,
   saveManifestStatus,
+  saveManifestReason,
   saveManifestMaskPath,
 } from '../api'
 import InfoPanel from './InfoPanel'
@@ -19,6 +20,7 @@ import LabelColorEditor from './LabelColorEditor'
 import CaseLoader from './CaseLoader'
 import AlphaSpinner from './AlphaSpinner'
 import MaskEditor from './MaskEditor'
+import ReasonPicker from './ReasonPicker'
 
 const PLANES: Plane[] = ['axial', 'sagittal', 'coronal']
 
@@ -54,6 +56,7 @@ export default function Pane({
   const [commentDraft, setCommentDraft] = useState('')
   const [commentSaving, setCommentSaving] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
+  const [reasonPickerOpen, setReasonPickerOpen] = useState(false)
   // Tracks whether the currently-loaded mask has unsaved edits: baseline is
   // the editVersion at the moment this exact mask (by volume_id) was loaded
   // or last saved/reset; any later editVersion means it has diverged.
@@ -287,6 +290,35 @@ export default function Pane({
     } catch (e) {
       setCommentSaving(false)
       setCommentError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function handleToggleReason(tag: string) {
+    if (!currentRow) return
+    const next = currentRow.reason.includes(tag)
+      ? currentRow.reason.filter((t) => t !== tag)
+      : [...currentRow.reason, tag]
+    // Optimistic — the picker reads straight from manifestRows so it needs
+    // to reflect the click immediately, not just after the round trip.
+    onChange({
+      manifestRows: pane.manifestRows.map((r) => (r.index === currentRow.index ? { ...r, reason: next } : r)),
+    })
+    try {
+      await saveManifestReason(pane.manifestConfig.manifestPath, currentRow.index, next)
+    } catch (e) {
+      onChange({ manifestError: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  function handleAddReasonTag(tag: string) {
+    // Session-only: added to this pane's option list so it's pickable
+    // right away, but never written anywhere until actually assigned to a
+    // row (handleToggleReason below does that, and that's what persists).
+    if (!pane.reasonOptions.includes(tag)) {
+      onChange({ reasonOptions: [...pane.reasonOptions, tag] })
+    }
+    if (!currentRow?.reason.includes(tag)) {
+      handleToggleReason(tag)
     }
   }
 
@@ -765,6 +797,25 @@ export default function Pane({
             >
               {currentRow?.comment ? 'Read' : 'Comment'}
             </button>
+            <div className="reason-picker-anchor">
+              <button
+                className={currentRow?.reason.length ? 'has-comment' : ''}
+                onClick={() => setReasonPickerOpen((v) => !v)}
+                disabled={!currentRow}
+                title="Tag a reason for this case"
+              >
+                Reason{currentRow?.reason.length ? ` (${currentRow.reason.length})` : ''}
+              </button>
+              {reasonPickerOpen && currentRow && (
+                <ReasonPicker
+                  options={pane.reasonOptions}
+                  selected={currentRow.reason}
+                  onToggle={handleToggleReason}
+                  onAddTag={handleAddReasonTag}
+                  onClose={() => setReasonPickerOpen(false)}
+                />
+              )}
+            </div>
           </div>
         )}
         <div className="pane-toolbar-right">

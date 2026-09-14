@@ -1,4 +1,4 @@
-import type { LabelColor, ManifestRow, OverwriteMode, Plane, VolumeInfo } from './types'
+import type { LabelColor, ManifestPairsResult, OverwriteMode, Plane, VolumeInfo } from './types'
 
 async function handleJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -95,7 +95,7 @@ export async function getManifestPairs(params: {
   imageColumn: string
   maskColumn: string
   patientIdColumn?: string
-}): Promise<ManifestRow[]> {
+}): Promise<ManifestPairsResult> {
   const res = await fetch('/api/manifest_pairs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -107,8 +107,10 @@ export async function getManifestPairs(params: {
       patient_id_column: params.patientIdColumn || null,
     }),
   })
-  const data = await handleJson<{ rows: ManifestRow[] }>(res)
-  return data.rows
+  const data = await handleJson<{ rows: ManifestPairsResult['rows']; reason_options: string[]; score_classes: ManifestPairsResult['scoreClasses'] }>(
+    res,
+  )
+  return { rows: data.rows, reasonOptions: data.reason_options, scoreClasses: data.score_classes }
 }
 
 export async function saveManifestComment(manifestPath: string, rowIndex: number, comment: string): Promise<void> {
@@ -125,6 +127,15 @@ export async function saveManifestStatus(manifestPath: string, rowIndex: number,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ manifest_path: manifestPath, row_index: rowIndex, status }),
+  })
+  await handleJson(res)
+}
+
+export async function saveManifestReason(manifestPath: string, rowIndex: number, reasons: string[]): Promise<void> {
+  const res = await fetch('/api/manifest/reason', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ manifest_path: manifestPath, row_index: rowIndex, reasons }),
   })
   await handleJson(res)
 }

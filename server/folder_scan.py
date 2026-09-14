@@ -20,6 +20,22 @@ STATUS_COLUMN = "Status"
 STATUS_OPTIONS = ["Not Started", "Annotated", "InProgress", "Review"]
 DEFAULT_STATUS = STATUS_OPTIONS[0]
 
+REASON_COLUMN = "Reason"
+REASON_DELIMITER = "; "
+DEFAULT_REASON_TAGS = [
+    "Relabel Issue",
+    "Incorrect Prediction",
+    "Valve Class",
+    "Foreign Object",
+    "Corrupted Image",
+]
+
+# Score columns are named "<CLASS>_Agatston" in the manifest and are purely
+# optional/informational — a case's per-class Agatston calcium scores,
+# shown in the viewer if present, skipped entirely if not.
+SCORE_CLASSES = ["CAC", "LAD", "LCx", "RCA", "TAC", "AV", "MV"]
+SCORE_COLUMN_SUFFIX = "_Agatston"
+
 
 def _read_table(manifest_path: str) -> pd.DataFrame:
     ext = os.path.splitext(manifest_path)[1].lower()
@@ -40,33 +56,61 @@ def _write_table(manifest_path: str, df: pd.DataFrame) -> None:
             # effort: a manifest opened by something else entirely (a
             # workbook openpyxl can't parse) shouldn't block the save.
             try:
-                _apply_status_dropdown(manifest_path, df)
+                _apply_list_dropdown(manifest_path, df, STATUS_COLUMN, STATUS_OPTIONS)
+                _apply_list_dropdown(manifest_path, df, REASON_COLUMN, _collect_reason_tags(df))
             except Exception:
                 pass
     else:
         df.to_csv(manifest_path, index=False)
 
 
-def _apply_status_dropdown(manifest_path: str, df: pd.DataFrame) -> None:
+def _apply_list_dropdown(manifest_path: str, df: pd.DataFrame, column: str, options: list) -> None:
+    """Attach an Excel in-cell dropdown listing `options` to every data row
+    of `column`. Note Excel's list validation only ever lets a *single*
+    value be picked through its own UI — for Reason (which this app stores
+    as multiple tags joined in one cell) it's still applied as a reference/
+    suggestion list, but picking an option directly in Excel will replace
+    the whole cell rather than add to it."""
     from openpyxl import load_workbook
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.datavalidation import DataValidation
 
-    if STATUS_COLUMN not in df.columns:
+    if column not in df.columns or not options:
         return
-    col_letter = get_column_letter(list(df.columns).index(STATUS_COLUMN) + 1)
+    formula1 = '"' + ",".join(options) + '"'
+    if len(formula1) > 255:  # Excel's hard cap on an inline list formula
+        return
+    col_letter = get_column_letter(list(df.columns).index(column) + 1)
 
     wb = load_workbook(manifest_path)
     ws = wb.active
     dv = DataValidation(
         type="list",
-        formula1='"' + ",".join(STATUS_OPTIONS) + '"',
+        formula1=formula1,
         allow_blank=True,
         showDropDown=False,  # openpyxl quirk: False is what actually shows the dropdown arrow
     )
     ws.add_data_validation(dv)
     dv.add(f"{col_letter}2:{col_letter}{len(df) + 1}")
     wb.save(manifest_path)
+
+
+def _split_reasons(value: str) -> list:
+    return [t.strip() for t in value.split(REASON_DELIMITER.strip()) if t.strip()]
+
+
+def _collect_reason_tags(df: pd.DataFrame) -> list:
+    """Every reason tag currently in use anywhere in the sheet, plus the
+    built-in defaults — defaults first, then any additional tags actually
+    found (e.g. ones added as a one-off in a previous session), in the
+    order first encountered."""
+    tags = list(DEFAULT_REASON_TAGS)
+    if REASON_COLUMN in df.columns:
+        for value in df[REASON_COLUMN]:
+            for tag in _split_reasons(_cell_text(value)):
+                if tag not in tags:
+                    tags.append(tag)
+    return tags
 
 
 def _cell_str(value) -> str:
@@ -113,9 +157,26 @@ def _ensure_tracking_columns(manifest_path: str, df: pd.DataFrame) -> pd.DataFra
         df[COMMENT_COLUMN] = ""
         changed = True
 
+    if REASON_COLUMN not in df.columns:
+        df[REASON_COLUMN] = ""
+        changed = True
+
     if changed:
         _write_table(manifest_path, df)
     return df
+
+
+def _score_columns_present(df: pd.DataFrame) -> list:
+    return [c for c in SCORE_CLASSES if f"{c}{SCORE_COLUMN_SUFFIX}" in df.columns]
+
+
+def _score_value(value) -> Optional[float]:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def list_manifest_pairs(
@@ -124,7 +185,7 @@ def list_manifest_pairs(
     mask_column: str = DEFAULT_MASK_COLUMN,
     id_column: Optional[str] = None,
     patient_id_column: Optional[str] = None,
-) -> list:
+) -> dict:
     manifest_path = clean_path(manifest_path)
     if not os.path.isfile(manifest_path):
         raise FileNotFoundError(manifest_path)
@@ -141,6 +202,8 @@ def list_manifest_pairs(
         raise ValueError(f"Column '{patient_id_column}' not found. Available columns: {list(df.columns)}")
 
     df = _ensure_tracking_columns(manifest_path, df)
+    reason_options = _collect_reason_tags(df)
+    score_classes = _score_columns_present(df)
 
     rows = []
     for i, row in df.iterrows():
@@ -159,6 +222,8 @@ def list_manifest_pairs(
         status = _cell_text(row[STATUS_COLUMN]) if STATUS_COLUMN in df.columns else ""
         if status not in STATUS_OPTIONS:
             status = DEFAULT_STATUS
+        reason = _split_reasons(_cell_text(row[REASON_COLUMN])) if REASON_COLUMN in df.columns else []
+        scores = {c: _score_value(row[f"{c}{SCORE_COLUMN_SUFFIX}"]) for c in score_classes}
 
         rows.append(
             {
@@ -171,9 +236,11 @@ def list_manifest_pairs(
                 "mask_exists": bool(mask_path) and os.path.isfile(mask_path),
                 "comment": comment,
                 "status": status,
+                "reason": reason,
+                "scores": scores,
             }
         )
-    return rows
+    return {"rows": rows, "reason_options": reason_options, "score_classes": score_classes}
 
 
 def _save_cell(manifest_path: str, row_index: int, column: str, value: str) -> None:
@@ -206,6 +273,11 @@ def save_status(manifest_path: str, row_index: int, status: str) -> None:
     if status not in STATUS_OPTIONS:
         raise ValueError(f"Invalid status '{status}'; must be one of {STATUS_OPTIONS}")
     _save_cell(manifest_path, row_index, STATUS_COLUMN, status)
+
+
+def save_reason(manifest_path: str, row_index: int, reasons: list) -> None:
+    cleaned = [t.strip() for t in reasons if t and t.strip()]
+    _save_cell(manifest_path, row_index, REASON_COLUMN, REASON_DELIMITER.join(cleaned))
 
 
 def save_mask_path(manifest_path: str, row_index: int, mask_column: str, mask_path: str) -> None:

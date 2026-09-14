@@ -26,6 +26,10 @@ function makePane(): PaneState {
     manifestError: null,
     batchLoadCollapsed: false,
     wlMinimized: false,
+    reasonOptions: [],
+    scoreClasses: [],
+    scorePanelOpen: false,
+    scorePanelPos: null,
 
     ctPath: '',
     maskPath: '',

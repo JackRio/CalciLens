@@ -70,6 +70,19 @@ export const DEFAULT_MANIFEST_CONFIG: ManifestConfig = {
 export const STATUS_OPTIONS = ['Not Started', 'Annotated', 'InProgress', 'Review'] as const
 export type AnnotationStatus = (typeof STATUS_OPTIONS)[number]
 
+export const DEFAULT_REASON_TAGS = [
+  'Relabel Issue',
+  'Incorrect Prediction',
+  'Valve Class',
+  'Foreign Object',
+  'Corrupted Image',
+]
+
+// Score columns are named "<CLASS>_Agatston" in the manifest; purely
+// optional/informational, shown if present and skipped if not.
+export const SCORE_CLASSES = ['CAC', 'LAD', 'LCx', 'RCA', 'TAC', 'AV', 'MV'] as const
+export type ScoreClass = (typeof SCORE_CLASSES)[number]
+
 export interface ManifestRow {
   index: number
   label: string
@@ -80,6 +93,14 @@ export interface ManifestRow {
   mask_exists: boolean
   comment: string
   status: AnnotationStatus
+  reason: string[]
+  scores: Partial<Record<ScoreClass, number | null>>
+}
+
+export interface ManifestPairsResult {
+  rows: ManifestRow[]
+  reasonOptions: string[]
+  scoreClasses: ScoreClass[]
 }
 
 export interface PaneState {
@@ -91,6 +112,10 @@ export interface PaneState {
   manifestError: string | null
   batchLoadCollapsed: boolean
   wlMinimized: boolean
+  reasonOptions: string[] // base + discovered-in-sheet + session-added tags
+  scoreClasses: ScoreClass[] // which score columns are present in this manifest
+  scorePanelOpen: boolean
+  scorePanelPos: { x: number; y: number } | null
 
   ctPath: string
   maskPath: string

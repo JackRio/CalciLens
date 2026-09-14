@@ -138,6 +138,80 @@
   color: #ffd873;
 }
 
+.reason-picker-anchor {
+  position: relative;
+}
+
+.reason-picker {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  background: #1e1f27;
+  border: 1px solid #3c3e4d;
+  border-radius: 6px;
+  padding: 8px;
+  width: 220px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.reason-picker-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.reason-picker-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  color: #d7d8de;
+  cursor: pointer;
+}
+
+.reason-picker-option:hover {
+  background: #2f3140;
+}
+
+.reason-picker-add {
+  display: flex;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed #3c3e4d;
+}
+
+.reason-picker-add input {
+  flex: 1;
+  min-width: 0;
+  background: #12131a;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.reason-picker-add button {
+  background: #2f3140;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.reason-picker-add button:disabled {
+  opacity: 0.4;
+}
+
 .comment-modal-backdrop {
   position: fixed;
   inset: 0;

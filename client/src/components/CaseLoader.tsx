@@ -120,15 +120,15 @@ export default function CaseLoader({
   }
 
   async function handleLoadManifest() {
-    onChange({ manifestError: null, manifestRows: [], activeRowIndex: null })
+    onChange({ manifestError: null, manifestRows: [], activeRowIndex: null, reasonOptions: [], scoreClasses: [] })
     try {
-      const rows = await getManifestPairs({
+      const { rows, reasonOptions, scoreClasses } = await getManifestPairs({
         manifestPath: cfg.manifestPath,
         imageColumn: cfg.imageColumn,
         maskColumn: cfg.maskColumn,
         patientIdColumn: cfg.patientIdColumn,
       })
-      onChange({ manifestRows: rows })
+      onChange({ manifestRows: rows, reasonOptions, scoreClasses })
       if (rows.length === 0) {
         onChange({ manifestError: 'Manifest loaded but no valid rows found (check the image column has paths).' })
       } else {

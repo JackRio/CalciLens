@@ -49,9 +49,10 @@ export default function Pane({
   isActive: boolean
   onActivate: () => void
   keybinds: KeybindMap
-  onCopyToOtherPane?: () => void
+  onCopyToOtherPane?: () => Promise<void>
 }) {
   const [settingsOpen, setSettingsOpen] = useState(true)
+  const [copyingToOtherPane, setCopyingToOtherPane] = useState(false)
   const [probe, setProbe] = useState<{ hu: number | null; label: number | null; row: number; col: number } | null>(
     null,
   )
@@ -324,6 +325,16 @@ export default function Pane({
       await saveManifestReason(pane.manifestConfig.manifestPath, currentRow.index, next)
     } catch (e) {
       onChange({ manifestError: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  async function handleCopyToOtherPane() {
+    if (!onCopyToOtherPane) return
+    setCopyingToOtherPane(true)
+    try {
+      await onCopyToOtherPane()
+    } finally {
+      setCopyingToOtherPane(false)
     }
   }
 
@@ -865,11 +876,17 @@ export default function Pane({
             </div>
             {onCopyToOtherPane && (
               <button
-                onClick={onCopyToOtherPane}
-                disabled={!currentRow}
+                onClick={handleCopyToOtherPane}
+                disabled={!currentRow || copyingToOtherPane}
                 title="Copy this case's Comment and Reason to the other pane (and save it to that pane's manifest)"
               >
-                Copy ⇄
+                {copyingToOtherPane ? (
+                  <>
+                    <span className="loading-spinner" /> Copying...
+                  </>
+                ) : (
+                  'Copy ⇄'
+                )}
               </button>
             )}
           </div>

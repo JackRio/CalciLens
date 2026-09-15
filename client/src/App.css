@@ -41,6 +41,24 @@
   background: #3a3d4f;
 }
 
+.app-header-controls button.active {
+  background: #4a3b1f;
+  border-color: #a67c2e;
+  color: #ffd873;
+}
+
+.review-parent-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #9c9dab;
+}
+
+.review-parent-select .plane-tabs button {
+  padding: 4px 8px;
+}
+
 .link-toggle {
   display: flex;
   align-items: center;

@@ -121,11 +121,6 @@ export interface PaneState {
   scorePanelOpen: boolean
   scorePanelPos: { x: number; y: number } | null
 
-  // Review mode — when on, Previous/Next only stop on cases whose Reason
-  // tags intersect reviewTags, instead of moving one row at a time.
-  reviewModeOn: boolean
-  reviewTags: string[]
-
   loadingMessage: string | null // shown alongside the loading tag/overlay while `loading` is true
 
   ctPath: string

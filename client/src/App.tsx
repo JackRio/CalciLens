@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import './App.css'
 import Pane from './components/Pane'
 import KeybindSettings from './components/KeybindSettings'
+import ReviewTagsPicker from './components/ReviewTagsPicker'
 import type { ManifestRow, PaneState } from './types'
 import {
   CALCIFICATIONS_PRESET,
@@ -32,9 +33,6 @@ function makePane(): PaneState {
     scorePanelOpen: true,
     scorePanelPos: null,
     loadingMessage: null,
-
-    reviewModeOn: false,
-    reviewTags: [],
 
     ctPath: '',
     maskPath: '',
@@ -85,6 +83,22 @@ export default function App() {
   const [keybinds, setKeybinds] = useKeybinds()
   const [keybindSettingsOpen, setKeybindSettingsOpen] = useState(false)
   const effectiveActivePaneId = panes.some((p) => p.id === activePaneId) ? activePaneId : (panes[0]?.id ?? null)
+
+  // Review mode — global (not per-pane), so it applies the same way in
+  // single-pane view and to both panes in split view: Previous/Next only
+  // stop on cases whose Reason tags intersect reviewTags. In split view,
+  // reviewParentPaneId says whose Reason data actually drives the
+  // skip-ahead search — the other pane just tags along via the existing
+  // Patient-ID sync (if on) rather than independently searching its own,
+  // possibly different, manifest and jumping somewhere unrelated.
+  const [reviewModeOn, setReviewModeOn] = useState(false)
+  const [reviewTags, setReviewTags] = useState<string[]>([])
+  const [reviewTagsPickerOpen, setReviewTagsPickerOpen] = useState(false)
+  const [reviewParentPaneId, setReviewParentPaneId] = useState<string | null>(null)
+  const effectiveReviewParentId = panes.some((p) => p.id === reviewParentPaneId)
+    ? reviewParentPaneId
+    : (panes[0]?.id ?? null)
+  const allReasonOptions = Array.from(new Set(panes.flatMap((p) => p.reasonOptions)))
 
   // Re-reads the CT/mask straight from disk (force=true bypasses the
   // backend's in-memory volume cache), keeping the pane's current view
@@ -240,14 +254,19 @@ export default function App() {
     if (!pane || pane.manifestRows.length === 0) return
     const curPos = pane.manifestRows.findIndex((r) => r.index === pane.activeRowIndex)
 
-    if (pane.reviewModeOn) {
-      if (pane.reviewTags.length === 0) {
+    // Only the designated review-parent pane's Previous/Next actually skip
+    // by Reason tag — the other pane in split view navigates one row at a
+    // time as normal (and still follows along via Patient-ID sync, if on,
+    // through goToPosition below), rather than independently searching its
+    // own manifest and landing somewhere unrelated.
+    if (reviewModeOn && paneId === effectiveReviewParentId) {
+      if (reviewTags.length === 0) {
         updatePane(paneId, {
           manifestError: 'Review mode is on but no reason tags are selected — pick tags via the Review button.',
         })
         return
       }
-      const target = findReviewPosition(pane.manifestRows, curPos, direction, pane.reviewTags, false)
+      const target = findReviewPosition(pane.manifestRows, curPos, direction, reviewTags, false)
       if (target === -1) {
         updatePane(paneId, {
           manifestError: `No ${direction === 1 ? 'next' : 'previous'} case matches the selected review tags.`,
@@ -263,25 +282,29 @@ export default function App() {
     goToPosition(paneId, nextPos)
   }
 
-  function toggleReviewMode(paneId: string) {
-    const pane = panes.find((p) => p.id === paneId)
-    if (!pane) return
-    const next = !pane.reviewModeOn
-    updatePane(paneId, { reviewModeOn: next, manifestError: null })
-    if (!next || pane.manifestRows.length === 0) return
+  // Global toggle — jumps only the review-parent pane to its nearest
+  // matching case; the other pane (if any) follows via Patient-ID sync
+  // rather than doing its own independent search.
+  function toggleReviewMode() {
+    const next = !reviewModeOn
+    setReviewModeOn(next)
+    if (!next || !effectiveReviewParentId) return
 
-    if (pane.reviewTags.length === 0) {
-      updatePane(paneId, {
+    const pane = panes.find((p) => p.id === effectiveReviewParentId)
+    if (!pane || pane.manifestRows.length === 0) return
+
+    if (reviewTags.length === 0) {
+      updatePane(pane.id, {
         manifestError: 'Review mode is on — pick which reason tags to review via the Review button.',
       })
       return
     }
     const curPos = pane.manifestRows.findIndex((r) => r.index === pane.activeRowIndex)
-    const target = findReviewPosition(pane.manifestRows, curPos, 1, pane.reviewTags, true)
+    const target = findReviewPosition(pane.manifestRows, curPos, 1, reviewTags, true)
     if (target === -1) {
-      updatePane(paneId, { manifestError: 'No case matches the selected review tags.' })
+      updatePane(pane.id, { manifestError: 'No case matches the selected review tags.' })
     } else if (target !== curPos) {
-      goToPosition(paneId, target)
+      goToPosition(pane.id, target)
     }
   }
 
@@ -374,6 +397,54 @@ export default function App() {
               Iteration
             </label>
           )}
+          <button
+            className={reviewModeOn ? 'active' : ''}
+            onClick={toggleReviewMode}
+            title={
+              reviewModeOn
+                ? 'Review mode is on — Previous/Next only stop on cases matching the selected reason tags'
+                : 'Turn on Review mode — Previous/Next will only stop on cases matching the selected reason tags'
+            }
+          >
+            Review{reviewModeOn ? ' ●' : ''}
+          </button>
+          <div className="reason-picker-anchor">
+            <button
+              onClick={() => setReviewTagsPickerOpen((v) => !v)}
+              title="Choose which reason tags Review mode looks for"
+            >
+              Tags{reviewTags.length ? ` (${reviewTags.length})` : ''}
+            </button>
+            {reviewTagsPickerOpen && (
+              <ReviewTagsPicker
+                options={allReasonOptions}
+                selected={reviewTags}
+                onToggle={(tag) =>
+                  setReviewTags(reviewTags.includes(tag) ? reviewTags.filter((t) => t !== tag) : [...reviewTags, tag])
+                }
+                onClose={() => setReviewTagsPickerOpen(false)}
+              />
+            )}
+          </div>
+          {panes.length > 1 && (
+            <div
+              className="review-parent-select"
+              title="Which pane's Reason tags drive Review mode's Previous/Next skipping"
+            >
+              <span>Review pane</span>
+              <div className="plane-tabs">
+                {panes.map((p, i) => (
+                  <button
+                    key={p.id}
+                    className={effectiveReviewParentId === p.id ? 'active' : ''}
+                    onClick={() => setReviewParentPaneId(p.id)}
+                  >
+                    {i === 0 ? 'Left' : 'Right'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <button onClick={() => setKeybindSettingsOpen(true)} title="Keyboard shortcut settings">
             ⌨ Shortcuts
           </button>
@@ -398,7 +469,7 @@ export default function App() {
             onActivate={() => setActivePaneId(pane.id)}
             keybinds={keybinds}
             onCopyToOtherPane={panes.length > 1 ? () => copyReasonCommentToOtherPane(pane.id) : undefined}
-            onToggleReviewMode={() => toggleReviewMode(pane.id)}
+            onToggleReviewMode={toggleReviewMode}
           />
         ))}
       </div>

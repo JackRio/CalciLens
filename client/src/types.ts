@@ -78,7 +78,7 @@ export const DEFAULT_REASON_TAGS = [
   'Foreign Object',
   'Corrupted Image',
   'Artefacts',
-  'Region Growing',
+  'Region Growing Issue',
   'Image Noise',
 ]
 

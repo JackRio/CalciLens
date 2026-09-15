@@ -14,7 +14,9 @@ function colorForClass(cls: ScoreClass, maskColors: LabelColor[]): string {
 }
 
 function formatScore(val: number | null | undefined): string {
-  return val === null || val === undefined ? '—' : val.toFixed(2)
+  return val === null || val === undefined
+    ? '—'
+    : val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 function ScoreTile({ cls, value, color }: { cls: ScoreClass; value: number | null | undefined; color: string }) {

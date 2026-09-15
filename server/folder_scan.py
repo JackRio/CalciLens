@@ -25,11 +25,13 @@ DEFAULT_STATUS = STATUS_OPTIONS[0]
 REASON_COLUMN = "Reason"
 REASON_DELIMITER = "; "
 DEFAULT_REASON_TAGS = [
-    "Relabel Issue",
+    "Mislabel",
     "Incorrect Prediction",
-    "Valve Class",
+    "Empty Prediction",
+    "Valve Class Error",
     "Foreign Object",
     "Corrupted Image",
+    "Artefacts",
 ]
 
 # Score columns are named "<CLASS>_Agatston" in the manifest and are purely

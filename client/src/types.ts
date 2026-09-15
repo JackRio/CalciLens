@@ -71,11 +71,13 @@ export const STATUS_OPTIONS = ['Not Started', 'Annotated', 'InProgress', 'Review
 export type AnnotationStatus = (typeof STATUS_OPTIONS)[number]
 
 export const DEFAULT_REASON_TAGS = [
-  'Relabel Issue',
+  'Mislabel',
   'Incorrect Prediction',
-  'Valve Class',
+  'Empty Prediction',
+  'Valve Class Error',
   'Foreign Object',
   'Corrupted Image',
+  'Artefacts',
 ]
 
 // Score columns are named "<CLASS>_Agatston" in the manifest; purely

@@ -169,7 +169,7 @@ export type OverwriteMode = 'any' | 'label' | 'threshold'
 
 // ---- Keyboard shortcuts ----
 
-export type KeybindActionId = 'toggleMask' | 'toggleThresh' | 'prevSlice' | 'nextSlice'
+export type KeybindActionId = 'toggleMask' | 'toggleThresh' | 'prevSlice' | 'nextSlice' | 'reloadCurrent'
 
 export interface KeyCombo {
   key: string // e.g. "r", "ArrowLeft" — letters stored lowercase
@@ -186,6 +186,7 @@ export const KEYBIND_LABELS: Record<KeybindActionId, string> = {
   toggleThresh: 'Toggle Threshold overlay',
   prevSlice: 'Previous slice',
   nextSlice: 'Next slice',
+  reloadCurrent: 'Reload CT/mask from disk (both panes in split view)',
 }
 
 export const DEFAULT_KEYBINDS: KeybindMap = {
@@ -193,6 +194,7 @@ export const DEFAULT_KEYBINDS: KeybindMap = {
   toggleThresh: [{ key: 't' }],
   prevSlice: [{ key: 'ArrowLeft' }, { key: 'a' }],
   nextSlice: [{ key: 'ArrowRight' }, { key: 'd' }],
+  reloadCurrent: [{ key: 'r', ctrl: true, shift: true }],
 }
 
 export function comboLabel(combo: KeyCombo): string {

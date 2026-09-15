@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
 import Pane from './components/Pane'
 import KeybindSettings from './components/KeybindSettings'
@@ -10,6 +10,7 @@ import {
   DEFAULT_THRESHOLD_HU,
   DEFAULT_WINDOW_LEVEL,
   DEFAULT_WINDOW_WIDTH,
+  comboMatches,
 } from './types'
 import { loadVolume, saveManifestComment, saveManifestReason } from './api'
 import { useKeybinds } from './useKeybinds'
@@ -81,6 +82,39 @@ export default function App() {
   const [keybinds, setKeybinds] = useKeybinds()
   const [keybindSettingsOpen, setKeybindSettingsOpen] = useState(false)
   const effectiveActivePaneId = panes.some((p) => p.id === activePaneId) ? activePaneId : (panes[0]?.id ?? null)
+
+  // Re-reads the CT/mask straight from disk (force=true bypasses the
+  // backend's in-memory volume cache), keeping the pane's current view
+  // (slice/plane/zoom) instead of resetting it the way a fresh load does.
+  async function reloadPane(paneId: string) {
+    const pane = panes.find((p) => p.id === paneId)
+    if (!pane || !pane.ctPath) return
+    updatePane(paneId, { loading: true, loadingMessage: 'Reloading...', error: null })
+    try {
+      const ctInfo = await loadVolume(pane.ctPath, false, true)
+      const maskInfo = pane.maskPath ? await loadVolume(pane.maskPath, true, true) : pane.maskInfo
+      updatePane(paneId, { ctInfo, maskInfo, loading: false, loadingMessage: null })
+    } catch (e) {
+      updatePane(paneId, { loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  // Reloads every open pane — in split view that's both windows at once, not
+  // just whichever one was last clicked into (unlike the other per-pane
+  // shortcuts), since "refresh from disk" naturally applies wherever a scan
+  // is loaded rather than to one active viewport.
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const active = document.activeElement as HTMLElement | null
+      if (active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) return
+      if (keybinds.reloadCurrent.some((c) => comboMatches(e, c))) {
+        e.preventDefault()
+        panes.forEach((p) => reloadPane(p.id))
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [keybinds, panes])
 
   function updatePane(id: string, partial: Partial<PaneState>) {
     setPanes((prev) => {
@@ -265,7 +299,7 @@ export default function App() {
           {panes.length > 1 && (
             <label className="link-toggle" title="Sync scroll / plane / zoom across panes">
               <input type="checkbox" checked={linked} onChange={(e) => setLinked(e.target.checked)} />
-              Linked
+              Interaction
             </label>
           )}
           {panes.length > 1 && (
@@ -275,7 +309,7 @@ export default function App() {
                 checked={syncNavByPatientId}
                 onChange={(e) => setSyncNavByPatientId(e.target.checked)}
               />
-              Matched
+              Iteration
             </label>
           )}
           <button onClick={() => setKeybindSettingsOpen(true)} title="Keyboard shortcut settings">

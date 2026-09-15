@@ -773,7 +773,8 @@ button .loading-spinner {
 
 .viewer-patient-id {
   margin-top: 2px;
-  font-size: 13px;
+  font-size: 18px;
+  font-weight: 600;
   color: #ffd873;
 }
 

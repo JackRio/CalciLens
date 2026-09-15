@@ -39,6 +39,7 @@ export default function Pane({
   isActive,
   onActivate,
   keybinds,
+  onCopyToOtherPane,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -48,6 +49,7 @@ export default function Pane({
   isActive: boolean
   onActivate: () => void
   keybinds: KeybindMap
+  onCopyToOtherPane?: () => void
 }) {
   const [settingsOpen, setSettingsOpen] = useState(true)
   const [probe, setProbe] = useState<{ hu: number | null; label: number | null; row: number; col: number } | null>(
@@ -861,6 +863,15 @@ export default function Pane({
                 />
               )}
             </div>
+            {onCopyToOtherPane && (
+              <button
+                onClick={onCopyToOtherPane}
+                disabled={!currentRow}
+                title="Copy this case's Comment and Reason to the other pane (and save it to that pane's manifest)"
+              >
+                Copy ⇄
+              </button>
+            )}
           </div>
         )}
         <div className="pane-toolbar-right">

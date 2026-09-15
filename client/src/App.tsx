@@ -11,7 +11,7 @@ import {
   DEFAULT_WINDOW_LEVEL,
   DEFAULT_WINDOW_WIDTH,
 } from './types'
-import { loadVolume } from './api'
+import { loadVolume, saveManifestComment, saveManifestReason } from './api'
 import { useKeybinds } from './useKeybinds'
 
 let paneCounter = 0
@@ -210,6 +210,36 @@ export default function App() {
     }
   }
 
+  async function copyReasonCommentToOtherPane(sourcePaneId: string) {
+    const source = panes.find((p) => p.id === sourcePaneId)
+    const other = panes.find((p) => p.id !== sourcePaneId)
+    if (!source || !other) return
+    const sourceRow = source.manifestRows.find((r) => r.index === source.activeRowIndex)
+    const otherRow = other.manifestRows.find((r) => r.index === other.activeRowIndex)
+    if (!sourceRow) return
+    if (!otherRow || !other.manifestConfig.manifestPath) {
+      updatePane(other.id, { manifestError: 'No case loaded in the other pane to copy into.' })
+      return
+    }
+    try {
+      // Sequential, not Promise.all — both calls read-modify-write the same
+      // manifest row, and firing them concurrently risked one clobbering
+      // the other's change (or worse: racing on the same temp file during
+      // the write itself).
+      await saveManifestComment(other.manifestConfig.manifestPath, otherRow.index, sourceRow.comment)
+      await saveManifestReason(other.manifestConfig.manifestPath, otherRow.index, sourceRow.reason)
+      updatePane(other.id, {
+        manifestRows: other.manifestRows.map((r) =>
+          r.index === otherRow.index ? { ...r, comment: sourceRow.comment, reason: sourceRow.reason } : r,
+        ),
+        reasonOptions: Array.from(new Set([...other.reasonOptions, ...sourceRow.reason])),
+        manifestError: null,
+      })
+    } catch (e) {
+      updatePane(other.id, { manifestError: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
   function addSplit() {
     if (panes.length >= 2) return
     const p = makePane()
@@ -264,6 +294,7 @@ export default function App() {
             isActive={pane.id === effectiveActivePaneId}
             onActivate={() => setActivePaneId(pane.id)}
             keybinds={keybinds}
+            onCopyToOtherPane={panes.length > 1 ? () => copyReasonCommentToOtherPane(pane.id) : undefined}
           />
         ))}
       </div>

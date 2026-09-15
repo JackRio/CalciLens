@@ -63,6 +63,7 @@ export default function Pane({
   const [commentSaving, setCommentSaving] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
   const [reasonPickerOpen, setReasonPickerOpen] = useState(false)
+  const [reasonOptionsSnapshot, setReasonOptionsSnapshot] = useState<string[]>([])
   // Tracks whether the currently-loaded mask has unsaved edits: baseline is
   // the editVersion at the moment this exact mask (by volume_id) was loaded
   // or last saved/reset; any later editVersion means it has diverged.
@@ -124,18 +125,24 @@ export default function Pane({
   const hasUnsavedMaskChanges = !!pane.maskInfo && pane.editVersion !== maskBaseline.version
 
   // Most-used reason tags first, so the picker surfaces what's actually
-  // being picked as the session goes on — recomputed on every render off
-  // the live manifestRows, so it updates immediately as tags get toggled,
-  // not just on the next manifest load. Array.prototype.sort is stable, so
-  // tags with equal usage (including all-zero on a fresh load) keep their
-  // original defaults-first order.
-  const reasonOptionsByFrequency = (() => {
+  // being picked as the session goes on. Only recomputed when the picker is
+  // (re)opened, not on every render — reordering the list live while it's
+  // open would shuffle options out from under the user mid-click.
+  function computeReasonOptionsByFrequency(): string[] {
     const counts = new Map<string, number>()
     for (const row of pane.manifestRows) {
       for (const tag of row.reason) counts.set(tag, (counts.get(tag) || 0) + 1)
     }
     return [...pane.reasonOptions].sort((a, b) => (counts.get(b) || 0) - (counts.get(a) || 0))
-  })()
+  }
+
+  function toggleReasonPicker() {
+    setReasonPickerOpen((v) => {
+      const next = !v
+      if (next) setReasonOptionsSnapshot(computeReasonOptionsByFrequency())
+      return next
+    })
+  }
 
   // Keep the editable case-counter box showing the current position, except
   // while the user is actively typing in it (don't stomp on their input).
@@ -398,6 +405,12 @@ export default function Pane({
     // row (handleToggleReason below does that, and that's what persists).
     if (!pane.reasonOptions.includes(tag)) {
       onChange({ reasonOptions: [...pane.reasonOptions, tag] })
+    }
+    // Append rather than re-sort the open picker's list — the frequency
+    // order is frozen while it's open (see toggleReasonPicker) so a new tag
+    // just needs to appear, not trigger a reshuffle of everything else.
+    if (!reasonOptionsSnapshot.includes(tag)) {
+      setReasonOptionsSnapshot([...reasonOptionsSnapshot, tag])
     }
     if (!currentRow?.reason.includes(tag)) {
       handleToggleReason(tag)
@@ -937,7 +950,7 @@ export default function Pane({
             <div className="reason-picker-anchor">
               <button
                 className={currentRow?.reason.length ? 'has-comment' : ''}
-                onClick={() => setReasonPickerOpen((v) => !v)}
+                onClick={toggleReasonPicker}
                 disabled={!currentRow}
                 title="Tag a reason for this case"
               >
@@ -945,7 +958,7 @@ export default function Pane({
               </button>
               {reasonPickerOpen && currentRow && (
                 <ReasonPicker
-                  options={reasonOptionsByFrequency}
+                  options={reasonOptionsSnapshot}
                   selected={currentRow.reason}
                   onToggle={handleToggleReason}
                   onAddTag={handleAddReasonTag}

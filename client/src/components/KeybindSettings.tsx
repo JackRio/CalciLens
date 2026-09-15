@@ -2,7 +2,14 @@ import { useEffect, useState } from 'react'
 import type { KeyCombo, KeybindActionId, KeybindMap } from '../types'
 import { DEFAULT_KEYBINDS, KEYBIND_LABELS, comboLabel, combosEqual } from '../types'
 
-const ACTION_ORDER: KeybindActionId[] = ['toggleMask', 'toggleThresh', 'prevSlice', 'nextSlice', 'reloadCurrent']
+const ACTION_ORDER: KeybindActionId[] = [
+  'toggleMask',
+  'toggleThresh',
+  'prevSlice',
+  'nextSlice',
+  'reloadCurrent',
+  'toggleReviewMode',
+]
 
 export default function KeybindSettings({
   keybinds,

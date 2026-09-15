@@ -121,6 +121,11 @@ export interface PaneState {
   scorePanelOpen: boolean
   scorePanelPos: { x: number; y: number } | null
 
+  // Review mode — when on, Previous/Next only stop on cases whose Reason
+  // tags intersect reviewTags, instead of moving one row at a time.
+  reviewModeOn: boolean
+  reviewTags: string[]
+
   loadingMessage: string | null // shown alongside the loading tag/overlay while `loading` is true
 
   ctPath: string
@@ -169,7 +174,13 @@ export type OverwriteMode = 'any' | 'label' | 'threshold'
 
 // ---- Keyboard shortcuts ----
 
-export type KeybindActionId = 'toggleMask' | 'toggleThresh' | 'prevSlice' | 'nextSlice' | 'reloadCurrent'
+export type KeybindActionId =
+  | 'toggleMask'
+  | 'toggleThresh'
+  | 'prevSlice'
+  | 'nextSlice'
+  | 'reloadCurrent'
+  | 'toggleReviewMode'
 
 export interface KeyCombo {
   key: string // e.g. "r", "ArrowLeft" — letters stored lowercase
@@ -187,6 +198,7 @@ export const KEYBIND_LABELS: Record<KeybindActionId, string> = {
   prevSlice: 'Previous slice',
   nextSlice: 'Next slice',
   reloadCurrent: 'Reload CT/mask from disk (both panes in split view)',
+  toggleReviewMode: 'Toggle Review mode',
 }
 
 export const DEFAULT_KEYBINDS: KeybindMap = {
@@ -195,6 +207,7 @@ export const DEFAULT_KEYBINDS: KeybindMap = {
   prevSlice: [{ key: 'ArrowLeft' }, { key: 'a' }],
   nextSlice: [{ key: 'ArrowRight' }, { key: 'd' }],
   reloadCurrent: [{ key: 'r', ctrl: true, shift: true }],
+  toggleReviewMode: [{ key: 'v', ctrl: true, shift: true }],
 }
 
 export function comboLabel(combo: KeyCombo): string {

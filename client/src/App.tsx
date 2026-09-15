@@ -33,6 +33,9 @@ function makePane(): PaneState {
     scorePanelPos: null,
     loadingMessage: null,
 
+    reviewModeOn: false,
+    reviewTags: [],
+
     ctPath: '',
     maskPath: '',
     ctInfo: null,
@@ -214,13 +217,72 @@ export default function App() {
     })
   }
 
+  // Scans rows[fromPos + direction, ...] (or from fromPos itself when
+  // includeStart) for the first one carrying any of reviewTags. Returns -1
+  // if none found before running off the end of the list.
+  function findReviewPosition(
+    rows: ManifestRow[],
+    fromPos: number,
+    direction: 1 | -1,
+    reviewTags: string[],
+    includeStart: boolean,
+  ): number {
+    let pos = includeStart ? fromPos : fromPos + direction
+    while (pos >= 0 && pos < rows.length) {
+      if (rows[pos].reason.some((t) => reviewTags.includes(t))) return pos
+      pos += direction
+    }
+    return -1
+  }
+
   function navigate(paneId: string, direction: 1 | -1) {
     const pane = panes.find((p) => p.id === paneId)
     if (!pane || pane.manifestRows.length === 0) return
     const curPos = pane.manifestRows.findIndex((r) => r.index === pane.activeRowIndex)
+
+    if (pane.reviewModeOn) {
+      if (pane.reviewTags.length === 0) {
+        updatePane(paneId, {
+          manifestError: 'Review mode is on but no reason tags are selected — pick tags via the Review button.',
+        })
+        return
+      }
+      const target = findReviewPosition(pane.manifestRows, curPos, direction, pane.reviewTags, false)
+      if (target === -1) {
+        updatePane(paneId, {
+          manifestError: `No ${direction === 1 ? 'next' : 'previous'} case matches the selected review tags.`,
+        })
+        return
+      }
+      goToPosition(paneId, target)
+      return
+    }
+
     const nextPos = curPos + direction
     if (nextPos < 0 || nextPos >= pane.manifestRows.length) return
     goToPosition(paneId, nextPos)
+  }
+
+  function toggleReviewMode(paneId: string) {
+    const pane = panes.find((p) => p.id === paneId)
+    if (!pane) return
+    const next = !pane.reviewModeOn
+    updatePane(paneId, { reviewModeOn: next, manifestError: null })
+    if (!next || pane.manifestRows.length === 0) return
+
+    if (pane.reviewTags.length === 0) {
+      updatePane(paneId, {
+        manifestError: 'Review mode is on — pick which reason tags to review via the Review button.',
+      })
+      return
+    }
+    const curPos = pane.manifestRows.findIndex((r) => r.index === pane.activeRowIndex)
+    const target = findReviewPosition(pane.manifestRows, curPos, 1, pane.reviewTags, true)
+    if (target === -1) {
+      updatePane(paneId, { manifestError: 'No case matches the selected review tags.' })
+    } else if (target !== curPos) {
+      goToPosition(paneId, target)
+    }
   }
 
   function goToPosition(paneId: string, nextPos: number) {
@@ -336,6 +398,7 @@ export default function App() {
             onActivate={() => setActivePaneId(pane.id)}
             keybinds={keybinds}
             onCopyToOtherPane={panes.length > 1 ? () => copyReasonCommentToOtherPane(pane.id) : undefined}
+            onToggleReviewMode={() => toggleReviewMode(pane.id)}
           />
         ))}
       </div>

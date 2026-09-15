@@ -21,6 +21,7 @@ import CaseLoader from './CaseLoader'
 import AlphaSpinner from './AlphaSpinner'
 import MaskEditor from './MaskEditor'
 import ReasonPicker from './ReasonPicker'
+import ReviewTagsPicker from './ReviewTagsPicker'
 import ScorePanel from './ScorePanel'
 
 const PLANES: Plane[] = ['axial', 'sagittal', 'coronal']
@@ -41,6 +42,7 @@ export default function Pane({
   onActivate,
   keybinds,
   onCopyToOtherPane,
+  onToggleReviewMode,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -52,6 +54,7 @@ export default function Pane({
   onActivate: () => void
   keybinds: KeybindMap
   onCopyToOtherPane?: () => Promise<void>
+  onToggleReviewMode: () => void
 }) {
   const [settingsOpen, setSettingsOpen] = useState(true)
   const [copyingToOtherPane, setCopyingToOtherPane] = useState(false)
@@ -64,6 +67,7 @@ export default function Pane({
   const [commentError, setCommentError] = useState<string | null>(null)
   const [reasonPickerOpen, setReasonPickerOpen] = useState(false)
   const [reasonOptionsSnapshot, setReasonOptionsSnapshot] = useState<string[]>([])
+  const [reviewTagsPickerOpen, setReviewTagsPickerOpen] = useState(false)
   // Tracks whether the currently-loaded mask has unsaved edits: baseline is
   // the editVersion at the moment this exact mask (by volume_id) was loaded
   // or last saved/reset; any later editVersion means it has diverged.
@@ -597,10 +601,25 @@ export default function Pane({
         onChange({ thresholdEnabled: !pane.thresholdEnabled })
         return
       }
+      if (pane.manifestRows.length > 0 && keybinds.toggleReviewMode.some((c) => comboMatches(e, c))) {
+        e.preventDefault()
+        onToggleReviewMode()
+        return
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isActive, keybinds, pane.ctInfo, pane.plane, pane.showMask, pane.thresholdEnabled, onChange])
+  }, [
+    isActive,
+    keybinds,
+    pane.ctInfo,
+    pane.plane,
+    pane.showMask,
+    pane.thresholdEnabled,
+    pane.manifestRows.length,
+    onChange,
+    onToggleReviewMode,
+  ])
 
   function isOverUIBox(target: EventTarget | null): boolean {
     const node = target as Node | null
@@ -963,6 +982,39 @@ export default function Pane({
                   onToggle={handleToggleReason}
                   onAddTag={handleAddReasonTag}
                   onClose={() => setReasonPickerOpen(false)}
+                />
+              )}
+            </div>
+            <button
+              className={pane.reviewModeOn ? 'has-comment' : ''}
+              onClick={onToggleReviewMode}
+              title={
+                pane.reviewModeOn
+                  ? 'Review mode is on — Previous/Next only stop on cases matching the selected reason tags'
+                  : 'Turn on Review mode — Previous/Next will only stop on cases matching the selected reason tags'
+              }
+            >
+              Review{pane.reviewModeOn ? ' ●' : ''}
+            </button>
+            <div className="reason-picker-anchor">
+              <button
+                onClick={() => setReviewTagsPickerOpen((v) => !v)}
+                title="Choose which reason tags Review mode looks for"
+              >
+                Tags{pane.reviewTags.length ? ` (${pane.reviewTags.length})` : ''}
+              </button>
+              {reviewTagsPickerOpen && (
+                <ReviewTagsPicker
+                  options={pane.reasonOptions}
+                  selected={pane.reviewTags}
+                  onToggle={(tag) =>
+                    onChange({
+                      reviewTags: pane.reviewTags.includes(tag)
+                        ? pane.reviewTags.filter((t) => t !== tag)
+                        : [...pane.reviewTags, tag],
+                    })
+                  }
+                  onClose={() => setReviewTagsPickerOpen(false)}
                 />
               )}
             </div>

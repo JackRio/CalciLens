@@ -183,10 +183,16 @@ export default function App() {
   function navigate(paneId: string, direction: 1 | -1) {
     const pane = panes.find((p) => p.id === paneId)
     if (!pane || pane.manifestRows.length === 0) return
-    const rows = pane.manifestRows
-    const curPos = rows.findIndex((r) => r.index === pane.activeRowIndex)
+    const curPos = pane.manifestRows.findIndex((r) => r.index === pane.activeRowIndex)
     const nextPos = curPos + direction
-    if (nextPos < 0 || nextPos >= rows.length) return
+    if (nextPos < 0 || nextPos >= pane.manifestRows.length) return
+    goToPosition(paneId, nextPos)
+  }
+
+  function goToPosition(paneId: string, nextPos: number) {
+    const pane = panes.find((p) => p.id === paneId)
+    if (!pane || nextPos < 0 || nextPos >= pane.manifestRows.length) return
+    const rows = pane.manifestRows
     const row = rows[nextPos]
     loadRowIntoPane(paneId, row, pane.plane)
 
@@ -291,6 +297,7 @@ export default function App() {
             onClose={() => closePane(pane.id)}
             closable={panes.length > 1}
             onNavigate={(direction) => navigate(pane.id, direction)}
+            onJumpTo={(position) => goToPosition(pane.id, position)}
             isActive={pane.id === effectiveActivePaneId}
             onActivate={() => setActivePaneId(pane.id)}
             keybinds={keybinds}

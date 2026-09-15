@@ -36,6 +36,7 @@ export default function Pane({
   onClose,
   closable,
   onNavigate,
+  onJumpTo,
   isActive,
   onActivate,
   keybinds,
@@ -46,6 +47,7 @@ export default function Pane({
   onClose: () => void
   closable: boolean
   onNavigate: (direction: 1 | -1) => void
+  onJumpTo: (position: number) => void
   isActive: boolean
   onActivate: () => void
   keybinds: KeybindMap
@@ -70,6 +72,10 @@ export default function Pane({
   })
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
   const [navModalDirection, setNavModalDirection] = useState<1 | -1 | null>(null)
+  const [jumpPos, setJumpPos] = useState<number | null>(null)
+  const [counterDraft, setCounterDraft] = useState('')
+  const [counterFocused, setCounterFocused] = useState(false)
+  const [counterError, setCounterError] = useState<string | null>(null)
   const [statusSaving, setStatusSaving] = useState(false)
   const [statusError, setStatusError] = useState<string | null>(null)
   // Brush-cursor tracking deliberately bypasses React state: it's a
@@ -116,6 +122,28 @@ export default function Pane({
   const currentRowPos = pane.manifestRows.findIndex((r) => r.index === pane.activeRowIndex)
   const currentRow = currentRowPos >= 0 ? pane.manifestRows[currentRowPos] : null
   const hasUnsavedMaskChanges = !!pane.maskInfo && pane.editVersion !== maskBaseline.version
+
+  // Most-used reason tags first, so the picker surfaces what's actually
+  // being picked as the session goes on — recomputed on every render off
+  // the live manifestRows, so it updates immediately as tags get toggled,
+  // not just on the next manifest load. Array.prototype.sort is stable, so
+  // tags with equal usage (including all-zero on a fresh load) keep their
+  // original defaults-first order.
+  const reasonOptionsByFrequency = (() => {
+    const counts = new Map<string, number>()
+    for (const row of pane.manifestRows) {
+      for (const tag of row.reason) counts.set(tag, (counts.get(tag) || 0) + 1)
+    }
+    return [...pane.reasonOptions].sort((a, b) => (counts.get(b) || 0) - (counts.get(a) || 0))
+  })()
+
+  // Keep the editable case-counter box showing the current position, except
+  // while the user is actively typing in it (don't stomp on their input).
+  useEffect(() => {
+    if (!counterFocused) {
+      setCounterDraft(currentRowPos >= 0 ? String(currentRowPos + 1) : '')
+    }
+  }, [currentRowPos, counterFocused])
 
   useEffect(() => {
     return () => {
@@ -268,6 +296,32 @@ export default function Pane({
   function confirmNavigate() {
     if (navModalDirection !== null) onNavigate(navModalDirection)
     setNavModalDirection(null)
+  }
+
+  function requestJumpToPosition(targetPos: number) {
+    if (pane.editMode && pane.maskInfo) {
+      setJumpPos(targetPos)
+    } else {
+      onJumpTo(targetPos)
+    }
+  }
+
+  function confirmJump() {
+    if (jumpPos !== null) onJumpTo(jumpPos)
+    setJumpPos(null)
+  }
+
+  function submitCounterJump() {
+    const trimmed = counterDraft.trim()
+    const n = Number(trimmed)
+    const total = pane.manifestRows.length
+    if (trimmed === '' || !Number.isInteger(n) || n < 1 || n > total) {
+      setCounterError(`Enter a whole number between 1 and ${total}.`)
+      setCounterDraft(currentRowPos >= 0 ? String(currentRowPos + 1) : '')
+      return
+    }
+    const targetPos = n - 1
+    if (targetPos !== currentRowPos) requestJumpToPosition(targetPos)
   }
 
   async function handleSetStatus(status: AnnotationStatus) {
@@ -838,7 +892,32 @@ export default function Pane({
               ◂ Previous
             </button>
             <span className="case-nav-count">
-              {currentRowPos >= 0 ? currentRowPos + 1 : '-'}/{pane.manifestRows.length}
+              <input
+                type="text"
+                inputMode="numeric"
+                className="case-nav-count-input"
+                value={counterDraft}
+                onFocus={(e) => {
+                  setCounterFocused(true)
+                  e.target.select()
+                }}
+                onChange={(e) => setCounterDraft(e.target.value)}
+                onBlur={() => {
+                  setCounterFocused(false)
+                  submitCounterJump()
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    ;(e.target as HTMLInputElement).blur()
+                  } else if (e.key === 'Escape') {
+                    setCounterDraft(currentRowPos >= 0 ? String(currentRowPos + 1) : '')
+                    ;(e.target as HTMLInputElement).blur()
+                  }
+                }}
+                title="Jump to case number"
+              />
+              /{pane.manifestRows.length}
             </span>
             <button
               onClick={() => requestNavigate(1)}
@@ -866,7 +945,7 @@ export default function Pane({
               </button>
               {reasonPickerOpen && currentRow && (
                 <ReasonPicker
-                  options={pane.reasonOptions}
+                  options={reasonOptionsByFrequency}
                   selected={currentRow.reason}
                   onToggle={handleToggleReason}
                   onAddTag={handleAddReasonTag}
@@ -1177,8 +1256,14 @@ export default function Pane({
         </div>
       )}
 
-      {navModalDirection !== null && (
-        <div className="comment-modal-backdrop" onClick={() => setNavModalDirection(null)}>
+      {(navModalDirection !== null || jumpPos !== null) && (
+        <div
+          className="comment-modal-backdrop"
+          onClick={() => {
+            setNavModalDirection(null)
+            setJumpPos(null)
+          }}
+        >
           <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
             <div className="comment-modal-title">Before you move on...</div>
 
@@ -1212,9 +1297,37 @@ export default function Pane({
             {statusError && <div className="busy-msg manifest-error">{statusError}</div>}
 
             <div className="comment-modal-buttons">
-              <button onClick={() => setNavModalDirection(null)}>Cancel</button>
-              <button className="add-label-btn" onClick={confirmNavigate}>
-                {navModalDirection === 1 ? 'Continue to Next ▸' : '◂ Continue to Previous'}
+              <button
+                onClick={() => {
+                  setNavModalDirection(null)
+                  setJumpPos(null)
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                className="add-label-btn"
+                onClick={navModalDirection !== null ? confirmNavigate : confirmJump}
+              >
+                {navModalDirection === 1
+                  ? 'Continue to Next ▸'
+                  : navModalDirection === -1
+                    ? '◂ Continue to Previous'
+                    : 'Continue ▸'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {counterError && (
+        <div className="comment-modal-backdrop" onClick={() => setCounterError(null)}>
+          <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="comment-modal-title">Invalid case number</div>
+            <div className="busy-msg manifest-error">{counterError}</div>
+            <div className="comment-modal-buttons">
+              <button className="add-label-btn" onClick={() => setCounterError(null)}>
+                OK
               </button>
             </div>
           </div>

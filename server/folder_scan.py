@@ -7,6 +7,8 @@ names are user-configurable since every lab's spreadsheet is different.
 from __future__ import annotations
 
 import os
+import threading
+import uuid
 from typing import Optional
 
 import pandas as pd
@@ -55,7 +57,12 @@ def _write_table(manifest_path: str, df: pd.DataFrame) -> None:
     # extension, so the temp file must still end in the real one (e.g.
     # "file.xlsx") rather than something generic like "file.xlsx.tmp".
     dirname, basename = os.path.split(manifest_path)
-    tmp_path = os.path.join(dirname, f".tmp_{basename}")
+    # Unique per call (pid + thread id + a random token) — two saves landing
+    # close together (e.g. copying Comment+Reason to another pane, or just
+    # fast back-to-back edits) run in different FastAPI threadpool threads,
+    # and a shared temp filename let their writes interleave on disk and
+    # corrupt the file before either one's os.replace() ran.
+    tmp_path = os.path.join(dirname, f".tmp_{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}_{basename}")
     try:
         if ext in (".xlsx", ".xls", ".xlsm"):
             df.to_excel(tmp_path, index=False)

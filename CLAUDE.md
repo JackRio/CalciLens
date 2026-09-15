@@ -1,0 +1,166 @@
+# CT Viewer
+
+Desktop CT / segmentation-mask viewer. Electron wraps a React/TypeScript frontend and spawns a
+Python FastAPI backend as a subprocess; the frontend talks to the backend over HTTP on
+`localhost:8000`.
+
+## Stack
+
+- **Electron** (`electron/main.js`) — desktop shell. On startup it spawns the Python backend
+  (`.venv/Scripts/python.exe -m uvicorn app:app --port 8000`, cwd=`server/`), polls
+  `/api/defaults` until it's up, then loads `http://127.0.0.1:8000` into the window (the backend
+  also serves the built React app as static files — see `app.py`'s `StaticFiles` mount). No dev
+  server is used in normal runs; the frontend is always the production build in `client/dist`.
+- **Frontend**: React 19 + TypeScript, built with Vite, in `client/`.
+- **Backend**: FastAPI + SimpleITK + NumPy + Pillow + pandas + openpyxl, in `server/`.
+
+## Running / building
+
+```bash
+cd client && npm run build          # build the React app to client/dist
+cd .. && npm run app                # build client + launch Electron (or: npm start, after a build)
+```
+
+There is **no hot reload** — every frontend change requires `npm run build` in `client/`, and every
+backend change requires fully restarting the Electron/Python process (`taskkill //F //IM
+electron.exe //T` then relaunch `nohup npx electron . &`) since Python isn't running with
+`--reload`. Wait for `/api/defaults` to return 200 before assuming the backend is up.
+
+**Frontend-only changes**: just `npm run build` — no restart needed if Electron is already open,
+just reload the window (or it'll show on next navigate in a test browser).
+
+**Always run `npx tsc --noEmit -p tsconfig.json` from `client/` before building**, to catch type
+errors that `vite build` alone can surface less clearly.
+
+## Backend structure (`server/`)
+
+- **`app.py`** — FastAPI routes. Key groups:
+  - `/api/volumes/load`, `/api/volumes/{id}/info`, `/api/render`, `/api/probe` — volume
+    load/cache/render/pixel-probe. `render` composites CT + mask + threshold overlay into a PNG on
+    every request (no client-side caching of pixels).
+  - `/api/mask/new`, `/api/mask/paint`, `/api/mask/refresh_labels`, `/api/mask/region_grow`,
+    `/api/mask/save` — mask editing.
+  - `/api/manifest_columns`, `/api/manifest_pairs`, `/api/manifest/comment`,
+    `/api/manifest/status`, `/api/manifest/reason`, `/api/manifest/mask_path` — CSV/Excel
+    case-manifest read/write.
+- **`volume_store.py`** — `VolumeStore` (in-memory LRU-ish cache of loaded volumes keyed by a hash
+  of the path, `+"_mask"` suffix for masks), `LoadedVolume` dataclass, slice extraction
+  (`get_plane_slice`), mask painting/region-growing, PNG compositing (`render_composited_png` —
+  uses `compress_level=1` deliberately, since it's re-encoded on every request including every
+  brush dab). `store.load(path, is_mask, force)` — `force=True` bypasses the cache and re-reads
+  from disk (used by the reload shortcut and Reset).
+- **`folder_scan.py`** — the manifest (CSV/XLSX) system. `list_manifest_pairs()` reads the sheet,
+  auto-creates `Status`/`Comment`/`Reason` tracking columns if missing, returns rows + reason
+  options + which `*_Agatston` score columns are present. `save_comment`/`save_status`/
+  `save_reason`/`save_mask_path` each do a full read-modify-write of the sheet via `_save_cell`.
+  **`_write_table` is atomic**: writes to a per-call-unique temp file (`.tmp_<pid>_<threadid>_
+  <random>_<basename>`) in the same directory, then `os.replace()`s it into place — this
+  uniqueness matters because FastAPI runs sync `def` endpoints in a threadpool, so two saves
+  landing close together (e.g. the Copy-to-other-pane button) really do write concurrently; a
+  shared temp filename previously let them corrupt each other mid-write. Never regress this to a
+  shared/non-unique temp name.
+- **`pathutil.py`** — `clean_path()`, small path normalization helper used everywhere a path comes
+  from the frontend or a manifest cell.
+
+## Frontend structure (`client/src/`)
+
+- **`App.tsx`** — top-level state: the `panes` array (1 or 2 `PaneState` objects — `panes.length`
+  is capped at 2 via `addSplit`), split-view sync toggles (`linked`/"Interaction",
+  `syncNavByPatientId`/"Iteration"), global Review mode state (`reviewModeOn`, `reviewTags`,
+  `reviewParentPaneId`), keybinds, and the case-navigation logic (`navigate`, `goToPosition`,
+  `loadRowIntoPane`, `reloadPane`). `updatePane(id, partial)` is the single mutator; it also
+  handles cross-pane sync for a fixed set of `syncKeys` (`plane`, `index`, `zoom`, `wlMinimized`,
+  `showMask`, `thresholdEnabled`) when `linked` is on.
+- **`types.ts`** — `PaneState` (the full per-pane state shape), `ManifestRow`, keybind types
+  (`KeybindActionId`, `KeybindMap`, `DEFAULT_KEYBINDS`), constants (`DEFAULT_REASON_TAGS`,
+  `STATUS_OPTIONS`, `SCORE_CLASSES`, window presets, calcification label-color preset).
+- **`api.ts`** — every backend call as a typed async function. `renderUrl()` builds the
+  `/api/render` query string from a pane's current render params (window/level, mask colors,
+  threshold, `editVersion` as a cache-buster).
+- **`components/Pane.tsx`** (~1400 lines, the biggest file) — one CT viewport: toolbar, image
+  viewer, mask painting/region-grow, Window/Level box, Score panel, case comment/reason UI,
+  keyboard shortcut handling (`useEffect` + `window.addEventListener('keydown', ...)`, gated on
+  `isActive` — "whichever pane you last clicked into"). Per-pane keyboard shortcuts (toggle mask,
+  toggle threshold, prev/next slice, toggle review mode) live here; **global** shortcuts that
+  should apply regardless of which pane is active (reload-from-disk, in split view) live in
+  `App.tsx`'s own `window.addEventListener` instead.
+- **`components/CaseLoader.tsx`** — manifest file picker + column-mapping UI + case dropdown, and
+  the batch-load flow (`selectRow` sequentially awaits CT then mask load — never fire both
+  concurrently, that previously caused the loading indicator to clear early).
+- **`components/ScorePanel.tsx`**, **`ReasonPicker.tsx`**, **`ReviewTagsPicker.tsx`**,
+  **`MaskEditor.tsx`**, **`KeybindSettings.tsx`**, **`InfoPanel.tsx`**, **`LabelColorEditor.tsx`**,
+  **`LabelSelect.tsx`**, **`AlphaSpinner.tsx`** — smaller focused pieces, names are self-describing.
+- **`useKeybinds.ts`** — persists `KeybindMap` to `localStorage`.
+
+## Conventions / established patterns worth following
+
+- **PaneState is per-pane** unless a setting is explicitly meant to feel identical across split
+  view (e.g. Review mode is intentionally *global* app state, not per-pane — see below). When
+  adding a new per-pane toggle, decide up front whether split view should sync it via
+  `updatePane`'s `syncKeys` list or keep it independent (mask editing state is deliberately never
+  synced).
+- **Manifest writes are atomic and must stay that way.** Any new manifest-column feature should go
+  through `_save_cell`/`_write_table` in `folder_scan.py`, not a bespoke write path.
+- **Loading state**: `pane.loading` (bool) + `pane.loadingMessage` (phase text, e.g. "Loading
+  mask...") drive both a small toolbar spinner tag and a large centered overlay. Set both together;
+  clear both together on every success/error path.
+- **Keyboard shortcuts** are data-driven through `KeybindActionId`/`KEYBIND_LABELS`/
+  `DEFAULT_KEYBINDS` in `types.ts` + `ACTION_ORDER` in `KeybindSettings.tsx`, not hardcoded key
+  checks — add new shortcuts to all three places so they show up in the Shortcuts settings UI and
+  are user-remappable.
+- **Confirmation modal reuse**: the "Before you move on..." unsaved-mask-edits modal
+  (`navModalDirection`/`jumpPos` state in `Pane.tsx`) is shared by Previous/Next and the
+  jump-to-case-number box — extend its existing state rather than adding a parallel modal.
+- **Error popups** for user-input validation (e.g. invalid case number) reuse the
+  `.comment-modal-backdrop`/`.comment-modal` CSS classes, not a new modal system.
+- Frontend build artifacts (`client/dist`) are committed-adjacent but regenerated by `npm run
+  build` — always rebuild after a source change before testing in the Electron window or a test
+  browser.
+- When testing via the in-tool browser against `http://127.0.0.1:8000`, remember Electron must
+  already be running (it serves both the API and the static frontend on that port) — there's no
+  separate Vite dev server to point at.
+- Scratch test manifests/CSVs for manual testing go in `sample_data/` and should be deleted after
+  use; `sample_data/CASE001/` (a small synthetic 128×128×40 volume) and `sample_data/manifest.csv`
+  /`.xlsx` are the persistent fixtures, not scratch files.
+- Git commit messages end with `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` (or
+  whichever model attribution the session's system reminder specifies).
+
+## Feature inventory (so a fresh session doesn't need to rediscover these)
+
+- **Manifest-driven batch loading** with configurable image/mask/PatientID column names, Prev/Next
+  case navigation, and an editable case-counter box (type a number, Enter, jumps straight there;
+  invalid input shows an error popup) — all in `Pane.tsx`'s toolbar + `App.tsx`'s `goToPosition`.
+- **Status** (dropdown: Not Started/Annotated/InProgress/Review) and **Reason** (multi-select tag
+  picker, session-addable custom tags, Excel in-cell dropdown on save) columns, auto-created on
+  manifest load if missing.
+- **Reason tag picker sorts by usage frequency**, snapshotted when opened (not live-recomputed
+  while open, to avoid reordering under the user's cursor mid-click) — see `computeReason
+  OptionsByFrequency`/`reasonOptionsSnapshot` in `Pane.tsx`.
+- **Score panel**: per-class Agatston scores from `<CLASS>_Agatston` manifest columns, shown only
+  for classes actually present, grouped (coronary/aorta/valve), 2-decimal + thousands-separator
+  formatting, draggable, collapsible with fixed-size rail buttons regardless of open/collapsed
+  state, anchored bottom-center by default.
+- **Split view** (max 2 panes): "Interaction" (sync plane/index/zoom/W-L-minimized/mask-toggle/
+  threshold-toggle across panes), "Iteration" (sync Prev/Next by matching Patient ID across panes).
+- **Copy ⇄ button**: copies the active pane's Comment+Reason onto whatever case is active in the
+  other pane and saves it to that pane's manifest (sequential saves, not concurrent — see the
+  atomic-write note above for why).
+- **Review mode** (global, not per-pane): toggle in the app header + a Reason-tag multi-select
+  ("Tags" button) picks which tags count; Previous/Next then only stop on matching cases. In split
+  view, a "Review pane: Left/Right" selector designates which pane's Reason data drives the
+  skip-ahead search — the other pane navigates normally and only follows via Iteration sync if
+  that's also on, rather than both independently jumping to unrelated cases.
+- **Reload-from-disk shortcut** (default Ctrl+Shift+R, customizable): force-reloads the current
+  CT/mask bypassing the backend cache without resetting slice/plane/zoom; reloads **both** panes in
+  split view (it's a global App-level listener, not per-pane-scoped).
+- **Mask editing**: brush + region-grow tools, overwrite modes (any/label/threshold), undo via
+  `editVersion` counter, save/reset, never synced between split-view panes.
+
+## Known caveats
+
+- Repeatedly hard-killing Electron/Python (`taskkill /F`) mid-write used to corrupt manifest files
+  before the atomic-write fix; it's now safe, but still prefer waiting for in-flight saves to
+  settle before restarting when possible.
+- `/api/render` recomposites the full PNG server-side on every request; it's fast (~15ms) against
+  the small synthetic test volume, but scales with slice pixel count — full-resolution real
+  clinical volumes will be slower, especially with several mask labels active.

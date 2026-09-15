@@ -25,10 +25,10 @@ function makePane(): PaneState {
     activeRowIndex: null,
     manifestError: null,
     batchLoadCollapsed: false,
-    wlMinimized: false,
+    wlMinimized: true,
     reasonOptions: [],
     scoreClasses: [],
-    scorePanelOpen: false,
+    scorePanelOpen: true,
     scorePanelPos: null,
     loadingMessage: null,
 
@@ -76,7 +76,7 @@ function makePane(): PaneState {
 export default function App() {
   const [panes, setPanes] = useState<PaneState[]>([makePane()])
   const [linked, setLinked] = useState(true)
-  const [syncNavByPatientId, setSyncNavByPatientId] = useState(false)
+  const [syncNavByPatientId, setSyncNavByPatientId] = useState(true)
   const [activePaneId, setActivePaneId] = useState<string | null>(panes[0]?.id ?? null)
   const [keybinds, setKeybinds] = useKeybinds()
   const [keybindSettingsOpen, setKeybindSettingsOpen] = useState(false)
@@ -257,9 +257,9 @@ export default function App() {
         <h1>CT / Segmentation Viewer</h1>
         <div className="app-header-controls">
           {panes.length > 1 && (
-            <label className="link-toggle">
+            <label className="link-toggle" title="Sync scroll / plane / zoom across panes">
               <input type="checkbox" checked={linked} onChange={(e) => setLinked(e.target.checked)} />
-              Sync scroll / plane / zoom across panes
+              Linked
             </label>
           )}
           {panes.length > 1 && (
@@ -269,7 +269,7 @@ export default function App() {
                 checked={syncNavByPatientId}
                 onChange={(e) => setSyncNavByPatientId(e.target.checked)}
               />
-              Sync Previous/Next by Patient ID
+              Matched
             </label>
           )}
           <button onClick={() => setKeybindSettingsOpen(true)} title="Keyboard shortcut settings">

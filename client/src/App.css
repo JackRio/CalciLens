@@ -496,7 +496,7 @@ button .loading-spinner {
 
 .score-panel {
   position: absolute;
-  top: 6px;
+  bottom: 6px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -510,6 +510,11 @@ button .loading-spinner {
 
 .score-panel-rail {
   width: 26px;
+  /* Fixed floor so the drag handle / toggle button keep the same size
+     whether the panel is open (where align-items:stretch on .score-panel
+     would otherwise grow them to match the groups' height) or collapsed
+     (where the rail would otherwise shrink to its own tiny content size). */
+  min-height: 96px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;

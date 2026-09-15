@@ -32,6 +32,8 @@ DEFAULT_REASON_TAGS = [
     "Foreign Object",
     "Corrupted Image",
     "Artefacts",
+    "Region Growing",
+    "Image Noise",
 ]
 
 # Score columns are named "<CLASS>_Agatston" in the manifest and are purely

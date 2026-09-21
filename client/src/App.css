@@ -1316,10 +1316,14 @@ button .loading-spinner {
   flex-wrap: wrap;
 }
 
-.reason-defaults-toggle {
-  /* .settings-section label (below) sets flex-direction:column with higher
-     specificity (class + tag) than this single-class rule, which would
-     otherwise stack the checkbox above its text — override back to row. */
+/* Selector must be at least as specific as ".settings-section label" (class +
+   tag) below, or that rule's flex-direction:column wins and stacks the
+   checkbox above its own text regardless of source order — a single-class
+   ".reason-defaults-toggle" selector is NOT specific enough on its own
+   (verified via getComputedStyle; a prior attempt at this looked fixed in a
+   screenshot but wasn't). Two classes here (0,2,0) beats one class + one tag
+   (0,1,1). */
+.settings-section .reason-defaults-toggle {
   display: flex;
   flex-direction: row;
   align-items: center;

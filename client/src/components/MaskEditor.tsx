@@ -7,12 +7,14 @@ export default function MaskEditor({
   onCreateMask,
   onSave,
   onDragHandleDown,
+  thresholdLocked,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
   onCreateMask: () => void
   onSave: () => void
   onDragHandleDown: (e: React.MouseEvent) => void
+  thresholdLocked?: boolean
 }) {
   if (!pane.ctInfo) return null
 
@@ -137,11 +139,12 @@ export default function MaskEditor({
                 </div>
               )}
               {pane.editOverwriteMode === 'threshold' && (
-                <label className="edit-field">
+                <label className="edit-field" title={thresholdLocked ? 'Locked to the computed contrast threshold for this session' : undefined}>
                   HU &ge;
                   <input
                     type="number"
                     value={pane.editThresholdMin}
+                    disabled={thresholdLocked}
                     onChange={(e) => onChange({ editThresholdMin: Number(e.target.value) })}
                   />
                 </label>
@@ -159,11 +162,12 @@ export default function MaskEditor({
           )}
 
           {pane.editTool === 'region-grow' && (
-            <label className="edit-field">
+            <label className="edit-field" title={thresholdLocked ? 'Locked to the computed contrast threshold for this session' : undefined}>
               HU &ge; (grow)
               <input
                 type="number"
                 value={pane.editRegionGrowThreshold}
+                disabled={thresholdLocked}
                 onChange={(e) => onChange({ editRegionGrowThreshold: Number(e.target.value) })}
               />
             </label>

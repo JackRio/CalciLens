@@ -18,6 +18,9 @@ import {
   regionGrowMask,
   computeLesionScore,
   computeVolumeAgatston,
+  computeLesionVolume,
+  computeContrastThreshold,
+  loadContrastThreshold,
   refreshMaskLabels,
   saveMask,
   saveManifestComment,
@@ -26,6 +29,7 @@ import {
   saveManifestMaskPath,
 } from '../api'
 import { getCachedCac, setCachedCac } from '../lesionCache'
+import { useContrastSettings } from '../useContrastSettings'
 import InfoPanel from './InfoPanel'
 import LabelColorEditor from './LabelColorEditor'
 import CaseLoader from './CaseLoader'
@@ -34,6 +38,7 @@ import MaskEditor from './MaskEditor'
 import ReasonPicker from './ReasonPicker'
 import ScorePanel from './ScorePanel'
 import LesionScoreBox from './LesionScoreBox'
+import ContrastSeedBox from './ContrastSeedBox'
 
 const PLANES: Plane[] = ['axial', 'sagittal', 'coronal']
 
@@ -106,6 +111,10 @@ export default function Pane({
   } | null>(null)
   const [computingScore, setComputingScore] = useState(false)
   const [flashRowId, setFlashRowId] = useState<number | null>(null)
+  const [contrastSettings, setContrastSettings] = useContrastSettings()
+  const [contrastSaving, setContrastSaving] = useState(false)
+  const [contrastError, setContrastError] = useState<string | null>(null)
+  const [contrastBoxMinimized, setContrastBoxMinimized] = useState(false)
   const lesionIdCounter = useRef(0)
   const flashTimeoutRef = useRef<number | null>(null)
   const jumpMarkerTimeoutRef = useRef<number | null>(null)
@@ -124,6 +133,7 @@ export default function Pane({
   const editBoxRef = useRef<HTMLDivElement>(null)
   const scorePanelRef = useRef<HTMLDivElement>(null)
   const jumpMarkerRef = useRef<HTMLDivElement>(null)
+  const seedMarkerRef = useRef<HTMLDivElement>(null)
   const lastProbeTs = useRef(0)
   const rightDrag = useRef<{
     active: boolean
@@ -217,6 +227,70 @@ export default function Pane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.maskInfo?.volume_id])
 
+  // Contrast mode: whenever the loaded CT changes while contrast mode is on,
+  // check for a previously-saved seed/threshold sidecar next to it and, if
+  // found, recompute fresh from the current volume to both apply and verify
+  // it (rather than trusting the saved threshold_hu blindly) — "we also
+  // verify if the threshold matches the previous save as well."
+  useEffect(() => {
+    if (!pane.contrastMode || !pane.ctInfo || !pane.ctPath) return
+    let cancelled = false
+    const ctInfo = pane.ctInfo
+    const ctPath = pane.ctPath
+    ;(async () => {
+      const saved = await loadContrastThreshold(ctPath).catch(() => null)
+      if (cancelled) return
+      if (!saved) {
+        onChange({
+          contrastThreshold: null,
+          contrastThresholdLocked: false,
+          contrastMeta: null,
+          pendingSeed: null,
+        })
+        return
+      }
+      try {
+        const recomputed = await computeContrastThreshold({
+          ctId: ctInfo.volume_id,
+          plane: saved.plane,
+          index: saved.index,
+          row: saved.row,
+          col: saved.col,
+          targetVolumeMm3: saved.targetVolumeMm3,
+          kMultiplier: saved.kMultiplier,
+          save: false,
+        })
+        if (cancelled) return
+        const mismatch = Math.abs(recomputed.thresholdHu - saved.thresholdHu) > 0.5
+        onChange({
+          contrastThreshold: recomputed.thresholdHu,
+          contrastThresholdLocked: true,
+          thresholdValue: recomputed.thresholdHu,
+          thresholdEnabled: true,
+          editThresholdMin: recomputed.thresholdHu,
+          editRegionGrowThreshold: recomputed.thresholdHu,
+          pendingSeed: { plane: saved.plane, index: saved.index, row: saved.row, col: saved.col },
+          contrastMeta: {
+            meanHu: recomputed.meanHu,
+            stdHu: recomputed.stdHu,
+            voxelCount: recomputed.voxelCount,
+            actualVolumeMm3: recomputed.actualVolumeMm3,
+            targetVolumeMm3: recomputed.targetVolumeMm3,
+            kMultiplier: recomputed.kMultiplier,
+            savedAt: saved.savedAt || '',
+            mismatch,
+          },
+        })
+      } catch (e) {
+        if (!cancelled) setContrastError(e instanceof Error ? e.message : String(e))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pane.contrastMode, pane.ctInfo?.volume_id])
+
   async function doLoadCt(path: string) {
     onChange({ loading: true, loadingMessage: 'Loading CT scan...', error: null })
     try {
@@ -241,6 +315,67 @@ export default function Pane({
     } catch (e) {
       onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
     }
+  }
+
+  function toggleSeedPlacement() {
+    const next = !pane.seedPlacementMode
+    onChange(next ? { seedPlacementMode: true, editMode: false, scoreComputeMode: false } : { seedPlacementMode: false })
+  }
+
+  async function finalizeSeed() {
+    if (!pane.ctInfo || !pane.pendingSeed) return
+    setContrastSaving(true)
+    setContrastError(null)
+    try {
+      const result = await computeContrastThreshold({
+        ctId: pane.ctInfo.volume_id,
+        plane: pane.pendingSeed.plane,
+        index: pane.pendingSeed.index,
+        row: pane.pendingSeed.row,
+        col: pane.pendingSeed.col,
+        targetVolumeMm3: contrastSettings.targetVolumeMm3,
+        kMultiplier: contrastSettings.kMultiplier,
+        save: true,
+        ctPath: pane.ctPath,
+        maskPath: pane.maskPath || null,
+        patientId: currentRow?.patient_id || null,
+      })
+      onChange({
+        contrastThreshold: result.thresholdHu,
+        contrastThresholdLocked: true,
+        seedPlacementMode: false,
+        thresholdValue: result.thresholdHu,
+        thresholdEnabled: true,
+        editThresholdMin: result.thresholdHu,
+        editRegionGrowThreshold: result.thresholdHu,
+        contrastMeta: {
+          meanHu: result.meanHu,
+          stdHu: result.stdHu,
+          voxelCount: result.voxelCount,
+          actualVolumeMm3: result.actualVolumeMm3,
+          targetVolumeMm3: result.targetVolumeMm3,
+          kMultiplier: result.kMultiplier,
+          savedAt: result.savedAt || new Date().toISOString(),
+          mismatch: false,
+        },
+      })
+    } catch (e) {
+      setContrastError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setContrastSaving(false)
+    }
+  }
+
+  function reSeed() {
+    onChange({
+      contrastThreshold: null,
+      contrastThresholdLocked: false,
+      contrastMeta: null,
+      pendingSeed: null,
+      seedPlacementMode: true,
+      editMode: false,
+      scoreComputeMode: false,
+    })
   }
 
   async function doCreateMask() {
@@ -561,6 +696,35 @@ export default function Pane({
     }, 1600)
   }
 
+  // Positions the (persistent, non-fading) seed marker — same math as
+  // showJumpMarker above, but re-run on every relevant change via the effect
+  // below rather than a one-shot timeout, since the seed stays put until
+  // re-seeded.
+  function updateSeedMarkerPosition() {
+    const img = imgRef.current
+    const el = seedMarkerRef.current
+    const container = viewerAreaRef.current
+    if (!img || !el || !container) return
+    const seed = pane.pendingSeed
+    if (!seed || seed.plane !== pane.plane || seed.index !== pane.index) {
+      el.hidden = true
+      return
+    }
+    const imgRect = img.getBoundingClientRect()
+    const containerRect = container.getBoundingClientRect()
+    const scaleX = imgRect.width / (img.naturalWidth || 1)
+    const scaleY = imgRect.height / (img.naturalHeight || 1)
+    const x = imgRect.left - containerRect.left + seed.col * scaleX
+    const y = imgRect.top - containerRect.top + seed.row * scaleY
+    el.hidden = false
+    el.style.transform = `translate(${x}px, ${y}px)`
+  }
+
+  useEffect(() => {
+    updateSeedMarkerPosition()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pane.pendingSeed, pane.plane, pane.index, pane.zoom, pane.panX, pane.panY])
+
   function jumpToLesion(entry: LesionScoreResult) {
     const samePlaneAndIndex = pane.plane === entry.plane && pane.index === entry.index
     if (samePlaneAndIndex) {
@@ -588,6 +752,7 @@ export default function Pane({
       id: lesionIdCounter.current,
       label,
       voxelCount,
+      metric: 'agatston',
       agatstonScore,
       targetClass,
       oldScore,
@@ -655,6 +820,59 @@ export default function Pane({
         return
       }
       finishLesionScore(res.label, res.voxelCount, res.agatstonScore, pane.plane, pane.index, row, col)
+    } catch (e) {
+      onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  // Contrast mode's click-to-score path: same lesion-isolation call shape as
+  // doLesionScore, but computes a physical volume (mm3) instead of an
+  // Agatston score, and skips the manifest-baseline lookup/confirm-total
+  // dance entirely — there's no "existing manifest volume" concept to
+  // reconcile against, so every click just computes and appends fresh.
+  async function doLesionVolume(row: number, col: number) {
+    if (!pane.ctInfo || !pane.maskInfo || pane.contrastThreshold === null) return
+    onChange({ loading: true, loadingMessage: 'Computing lesion volume...' })
+    try {
+      const res = await computeLesionVolume({
+        maskId: pane.maskInfo.volume_id,
+        ctId: pane.ctInfo.volume_id,
+        plane: pane.plane,
+        index: pane.index,
+        row,
+        col,
+        huThreshold: pane.contrastThreshold,
+      })
+      onChange({ loading: false, loadingMessage: null })
+      if (!res.found || res.label === null) {
+        setLesionNotFound(true)
+        return
+      }
+      const existing = pane.lesionResults.find(
+        (r) => r.metric === 'volume' && r.label === res.label && r.voxelCount === res.voxelCount,
+      )
+      if (existing) {
+        flashRow(existing.id)
+        return
+      }
+      lesionIdCounter.current += 1
+      const entry: LesionScoreResult = {
+        id: lesionIdCounter.current,
+        label: res.label,
+        voxelCount: res.voxelCount,
+        metric: 'volume',
+        agatstonScore: 0,
+        volumeMm3: res.volumeMm3,
+        targetClass: targetClassForLabel(res.label),
+        oldScore: null,
+        newScore: null,
+        scoreSource: 'unavailable',
+        plane: pane.plane,
+        index: pane.index,
+        row,
+        col,
+      }
+      onChange({ lesionResults: [...pane.lesionResults, entry] })
     } catch (e) {
       onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
     }
@@ -900,14 +1118,25 @@ export default function Pane({
       }
       return
     }
-    if (e.button === 0 && pane.scoreComputeMode && pane.ctInfo && pane.maskInfo) {
+    if (e.button === 0 && pane.seedPlacementMode && pane.ctInfo) {
+      // Just record the candidate — never compute the sphere on the first
+      // click, the user may take several tries to find the ostium/aorta
+      // center before clicking "Finalize Seed".
       const coords = getDisplayCoords(e.clientX, e.clientY)
-      if (coords) doLesionScore(coords.row, coords.col)
+      if (coords) onChange({ pendingSeed: { plane: pane.plane, index: pane.index, row: coords.row, col: coords.col } })
       return
     }
-    if (e.button === 0 && !pane.editMode && !pane.scoreComputeMode) {
-      // Plain viewing (not painting/region-growing/lesion-scoring): left-drag
-      // pans too, so panning doesn't require a middle mouse button.
+    if (e.button === 0 && pane.scoreComputeMode && pane.ctInfo && pane.maskInfo) {
+      const coords = getDisplayCoords(e.clientX, e.clientY)
+      if (!coords) return
+      if (pane.contrastMode) doLesionVolume(coords.row, coords.col)
+      else doLesionScore(coords.row, coords.col)
+      return
+    }
+    if (e.button === 0 && !pane.editMode && !pane.scoreComputeMode && !pane.seedPlacementMode) {
+      // Plain viewing (not painting/region-growing/lesion-scoring/seed
+      // placement): left-drag pans too, so panning doesn't require a middle
+      // mouse button.
       startPan(e)
       return
     }
@@ -1323,6 +1552,21 @@ export default function Pane({
               Reset view
             </button>
           )}
+          {pane.ctInfo && (
+            <button
+              className={pane.contrastMode ? 'active' : ''}
+              onClick={() =>
+                onChange(
+                  pane.contrastMode
+                    ? { contrastMode: false, seedPlacementMode: false }
+                    : { contrastMode: true, editMode: false, scoreComputeMode: false },
+                )
+              }
+              title="Contrast CT: derive a per-scan calcium threshold from a seed point instead of the fixed 130 HU"
+            >
+              Contrast
+            </button>
+          )}
           <button onClick={() => setSettingsOpen((v) => !v)}>{settingsOpen ? 'Hide settings' : 'Settings'}</button>
           {closable && (
             <button onClick={onClose} title="Close pane">
@@ -1368,6 +1612,7 @@ export default function Pane({
                   pendingJumpMarkerRef.current = null
                   showJumpMarker(row, col)
                 }
+                updateSeedMarkerPosition()
               }}
             />
           ) : pane.loading ? (
@@ -1386,6 +1631,7 @@ export default function Pane({
               (showJumpMarker) when a Score-Compute-box row is clicked, to
               point at the lesion's location without a React re-render. */}
           <div ref={jumpMarkerRef} className="jump-marker" hidden />
+          <div ref={seedMarkerRef} className="seed-marker" hidden />
           {pane.ctInfo && (
             <div className="viewer-left-controls">
               <div className="wl-box" ref={wlBoxRef} onWheel={stopWheel}>
@@ -1432,6 +1678,20 @@ export default function Pane({
                   </>
                 )}
               </div>
+              {pane.contrastMode && (
+                <ContrastSeedBox
+                  pane={pane}
+                  contrastSettings={contrastSettings}
+                  onContrastSettingsChange={setContrastSettings}
+                  minimized={contrastBoxMinimized}
+                  onToggleMinimized={() => setContrastBoxMinimized((v) => !v)}
+                  saving={contrastSaving}
+                  error={contrastError}
+                  onFinalize={finalizeSeed}
+                  onReSeed={reSeed}
+                  onToggleSeedPlacement={toggleSeedPlacement}
+                />
+              )}
             </div>
           )}
           {pane.ctInfo && (
@@ -1453,7 +1713,7 @@ export default function Pane({
               )}
             </div>
           )}
-          {pane.ctInfo && pane.scoreClasses.length > 0 && currentRow && (
+          {pane.ctInfo && !pane.contrastMode && pane.scoreClasses.length > 0 && currentRow && (
             <ScorePanel
               ref={scorePanelRef}
               style={
@@ -1497,9 +1757,14 @@ export default function Pane({
                       type="number"
                       className="overlay-hu-input"
                       value={pane.thresholdValue}
+                      disabled={pane.contrastMode && pane.contrastThresholdLocked}
                       onChange={(e) => onChange({ thresholdValue: Number(e.target.value) })}
                       onWheel={wheelStep('thresholdValue', 5, (v) => onChange({ thresholdValue: v }))}
-                      title="Threshold (HU)"
+                      title={
+                        pane.contrastMode && pane.contrastThresholdLocked
+                          ? 'Locked to the computed contrast threshold for this session'
+                          : 'Threshold (HU)'
+                      }
                     />
                     <AlphaSpinner
                       label="α"
@@ -1527,6 +1792,7 @@ export default function Pane({
                 onCreateMask={doCreateMask}
                 onSave={doSaveMask}
                 onDragHandleDown={handleEditBoxDragStart}
+                thresholdLocked={pane.contrastMode && pane.contrastThresholdLocked}
               />
               {pane.editMode && pane.maskInfo && (
                 <div className="edit-quick-actions" onWheel={(e) => e.stopPropagation()}>

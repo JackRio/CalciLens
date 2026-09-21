@@ -196,6 +196,26 @@ export interface PaneState {
   scoreComputeMinimized: boolean
   scoreComputeBoxPos: { x: number; y: number } | null
   lesionResults: LesionScoreResult[]
+
+  // Contrast CT: per-scan calcium-detection threshold, derived from a sphere VOI
+  // around a user-placed seed point (ascending aorta near the left ostium) rather
+  // than the fixed 130 HU used for non-contrast. Per-pane, never synced — each pane
+  // can hold a different case. See ContrastSeedBox.tsx.
+  contrastMode: boolean
+  seedPlacementMode: boolean
+  pendingSeed: { plane: Plane; index: number; row: number; col: number } | null
+  contrastThreshold: number | null
+  contrastThresholdLocked: boolean
+  contrastMeta: {
+    meanHu: number
+    stdHu: number
+    voxelCount: number
+    actualVolumeMm3: number
+    targetVolumeMm3: number
+    kMultiplier: number
+    savedAt: string
+    mismatch: boolean
+  } | null
 }
 
 export type EditTool = 'brush' | 'region-grow'
@@ -205,7 +225,12 @@ export interface LesionScoreResult {
   id: number // unique per row, so a re-click of the same lesion can be told apart from a new one to append
   label: number
   voxelCount: number
+  // 'agatston' rows (non-contrast) populate agatstonScore/targetClass/oldScore/
+  // newScore/scoreSource; 'volume' rows (contrast) populate only volumeMm3 — the
+  // manifest-baseline/confirm-total dance doesn't apply to a physical-volume metric.
+  metric: 'agatston' | 'volume'
   agatstonScore: number
+  volumeMm3?: number
   // The score class this lesion's baseline is measured against: the
   // aggregate 'CAC' for coronary labels (1-3, LAD/LCx/RCA), or the lesion's
   // own class for the rest (TAC/AV/MV, labels 4-6).

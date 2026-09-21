@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import os
 from typing import Optional
@@ -30,6 +31,15 @@ from agatston import (
     compute_volume_agatston,
     CORONARY_LABELS,
     DEFAULT_HU_THRESHOLD,
+)
+from contrast_threshold import (
+    compute_sphere_stats,
+    compute_lesion_volume_mm3,
+    compute_volume_total_mm3,
+    save_sidecar,
+    load_sidecar,
+    DEFAULT_TARGET_VOLUME_MM3,
+    DEFAULT_K_MULTIPLIER,
 )
 import folder_scan
 
@@ -327,6 +337,110 @@ def volumes_agatston_total(req: VolumeAgatstonRequest):
         raise HTTPException(status_code=404, detail="volume not loaded")
     total = compute_volume_agatston(mask_vol, ct_vol, tuple(req.labels), req.hu_threshold)
     return {"total_score": total}
+
+
+# ---- Contrast CT: per-lesion/per-volume physical volume (no Agatston weighting) ----
+
+
+class LesionVolumeRequest(BaseModel):
+    mask_id: str
+    ct_id: str
+    plane: str
+    index: int
+    row: float
+    col: float
+    hu_threshold: float
+
+
+@app.post("/api/mask/lesion_volume")
+def mask_lesion_volume(req: LesionVolumeRequest):
+    try:
+        mask_vol = store.get(req.mask_id)
+        ct_vol = store.get(req.ct_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="volume not loaded")
+    result = find_lesion_component(mask_vol, ct_vol, req.plane, req.index, req.row, req.col, req.hu_threshold)
+    if result is None:
+        return {"found": False, "label": None, "voxel_count": 0, "volume_mm3": 0.0}
+    region, label = result
+    volume_mm3 = compute_lesion_volume_mm3(region, ct_vol.spacing_lps)
+    return {
+        "found": True,
+        "label": label,
+        "voxel_count": int(np.count_nonzero(region)),
+        "volume_mm3": volume_mm3,
+    }
+
+
+class VolumeTotalRequest(BaseModel):
+    mask_id: str
+    ct_id: str
+    labels: list[int] = list(CORONARY_LABELS)
+    hu_threshold: float
+
+
+@app.post("/api/volumes/volume_total")
+def volumes_volume_total(req: VolumeTotalRequest):
+    try:
+        mask_vol = store.get(req.mask_id)
+        ct_vol = store.get(req.ct_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="volume not loaded")
+    total_volume_mm3 = compute_volume_total_mm3(mask_vol, ct_vol, tuple(req.labels), req.hu_threshold)
+    return {"total_volume_mm3": total_volume_mm3}
+
+
+# ---- Contrast CT: seed placement + per-scan threshold derivation ----
+
+
+class ContrastThresholdRequest(BaseModel):
+    ct_id: str
+    plane: str
+    index: int
+    row: float
+    col: float
+    target_volume_mm3: float = DEFAULT_TARGET_VOLUME_MM3
+    k_multiplier: float = DEFAULT_K_MULTIPLIER
+    save: bool = True
+    ct_path: Optional[str] = None
+    mask_path: Optional[str] = None
+    patient_id: Optional[str] = None
+
+
+@app.post("/api/contrast/compute_threshold")
+def contrast_compute_threshold(req: ContrastThresholdRequest):
+    try:
+        ct_vol = store.get(req.ct_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="volume not loaded")
+    try:
+        stats = compute_sphere_stats(
+            ct_vol, req.plane, req.index, req.row, req.col, req.target_volume_mm3, req.k_multiplier
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if req.save:
+        if not req.ct_path:
+            raise HTTPException(status_code=400, detail="ct_path is required to save the seed")
+        record = {
+            **stats,
+            "ct_path": req.ct_path,
+            "mask_path": req.mask_path,
+            "patient_id": req.patient_id,
+            "saved_at": datetime.datetime.now().isoformat(),
+        }
+        save_sidecar(req.ct_path, record)
+
+    return stats
+
+
+@app.get("/api/contrast/load_threshold")
+def contrast_load_threshold(ct_path: str):
+    record = load_sidecar(ct_path)
+    if record is None:
+        raise HTTPException(status_code=404, detail="No saved contrast seed for this image")
+    return record
 
 
 class SaveMaskRequest(BaseModel):

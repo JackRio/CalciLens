@@ -290,6 +290,144 @@ export async function computeVolumeAgatston(params: {
   return { totalScore: data.total_score }
 }
 
+export async function computeLesionVolume(params: {
+  maskId: string
+  ctId: string
+  plane: Plane
+  index: number
+  row: number
+  col: number
+  huThreshold: number
+}): Promise<{ found: boolean; label: number | null; voxelCount: number; volumeMm3: number }> {
+  const res = await fetch('/api/mask/lesion_volume', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mask_id: params.maskId,
+      ct_id: params.ctId,
+      plane: params.plane,
+      index: params.index,
+      row: params.row,
+      col: params.col,
+      hu_threshold: params.huThreshold,
+    }),
+  })
+  const data = await handleJson<{ found: boolean; label: number | null; voxel_count: number; volume_mm3: number }>(res)
+  return { found: data.found, label: data.label, voxelCount: data.voxel_count, volumeMm3: data.volume_mm3 }
+}
+
+export async function computeVolumeTotal(params: {
+  maskId: string
+  ctId: string
+  labels?: number[]
+  huThreshold: number
+}): Promise<{ totalVolumeMm3: number }> {
+  const res = await fetch('/api/volumes/volume_total', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mask_id: params.maskId,
+      ct_id: params.ctId,
+      labels: params.labels ?? [1, 2, 3],
+      hu_threshold: params.huThreshold,
+    }),
+  })
+  const data = await handleJson<{ total_volume_mm3: number }>(res)
+  return { totalVolumeMm3: data.total_volume_mm3 }
+}
+
+export interface ContrastThresholdResult {
+  meanHu: number
+  stdHu: number
+  thresholdHu: number
+  voxelCount: number
+  actualVolumeMm3: number
+  targetVolumeMm3: number
+  kMultiplier: number
+  radiusMm: number
+  seedVoxel: [number, number, number]
+  plane: Plane
+  index: number
+  row: number
+  col: number
+  savedAt?: string
+}
+
+function parseContrastThresholdResult(data: {
+  mean_hu: number
+  std_hu: number
+  threshold_hu: number
+  voxel_count: number
+  actual_volume_mm3: number
+  target_volume_mm3: number
+  k_multiplier: number
+  radius_mm: number
+  seed_voxel: [number, number, number]
+  plane: Plane
+  index: number
+  row: number
+  col: number
+  saved_at?: string
+}): ContrastThresholdResult {
+  return {
+    meanHu: data.mean_hu,
+    stdHu: data.std_hu,
+    thresholdHu: data.threshold_hu,
+    voxelCount: data.voxel_count,
+    actualVolumeMm3: data.actual_volume_mm3,
+    targetVolumeMm3: data.target_volume_mm3,
+    kMultiplier: data.k_multiplier,
+    radiusMm: data.radius_mm,
+    seedVoxel: data.seed_voxel,
+    plane: data.plane,
+    index: data.index,
+    row: data.row,
+    col: data.col,
+    savedAt: data.saved_at,
+  }
+}
+
+export async function computeContrastThreshold(params: {
+  ctId: string
+  plane: Plane
+  index: number
+  row: number
+  col: number
+  targetVolumeMm3: number
+  kMultiplier: number
+  save: boolean
+  ctPath?: string
+  maskPath?: string | null
+  patientId?: string | null
+}): Promise<ContrastThresholdResult> {
+  const res = await fetch('/api/contrast/compute_threshold', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ct_id: params.ctId,
+      plane: params.plane,
+      index: params.index,
+      row: params.row,
+      col: params.col,
+      target_volume_mm3: params.targetVolumeMm3,
+      k_multiplier: params.kMultiplier,
+      save: params.save,
+      ct_path: params.ctPath,
+      mask_path: params.maskPath,
+      patient_id: params.patientId,
+    }),
+  })
+  const data = await handleJson<Parameters<typeof parseContrastThresholdResult>[0]>(res)
+  return parseContrastThresholdResult(data)
+}
+
+export async function loadContrastThreshold(ctPath: string): Promise<ContrastThresholdResult | null> {
+  const res = await fetch(`/api/contrast/load_threshold?ct_path=${encodeURIComponent(ctPath)}`)
+  if (res.status === 404) return null
+  const data = await handleJson<Parameters<typeof parseContrastThresholdResult>[0]>(res)
+  return parseContrastThresholdResult(data)
+}
+
 export async function refreshMaskLabels(maskId: string): Promise<{ labels: number[] }> {
   const res = await fetch('/api/mask/refresh_labels', {
     method: 'POST',

@@ -440,6 +440,12 @@
   font-size: 12px;
 }
 
+.pane-toolbar-right button.active {
+  background: #3b5bdb;
+  color: #fff;
+  border-color: #3b5bdb;
+}
+
 .loading-tag {
   display: flex;
   align-items: center;
@@ -943,6 +949,43 @@ button .loading-spinner {
   z-index: 6;
 }
 
+/* The contrast-mode seed marker — a small crosshair (not a filled ring like
+   .jump-marker) since it's a precise placement target the user compares
+   against anatomy, not a "look over here" flash. */
+.seed-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 18px;
+  height: 18px;
+  margin-left: -9px;
+  margin-top: -9px;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.seed-marker::before,
+.seed-marker::after {
+  content: '';
+  position: absolute;
+  background: #ff6b6b;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+
+.seed-marker::before {
+  left: 8px;
+  top: 0;
+  width: 2px;
+  height: 18px;
+}
+
+.seed-marker::after {
+  top: 8px;
+  left: 0;
+  width: 18px;
+  height: 2px;
+}
+
 .edit-header {
   justify-content: space-between;
   gap: 8px;
@@ -1073,6 +1116,15 @@ button .loading-spinner {
   font-size: 10px;
   color: #6c6d7a;
   font-style: italic;
+}
+
+.contrast-seed-box {
+  min-width: 190px;
+}
+
+.contrast-stat-row {
+  font-size: 12px;
+  color: #d7d8de;
 }
 
 .edit-message {

@@ -79,6 +79,13 @@ function makePane(): PaneState {
     scoreComputeMinimized: false,
     scoreComputeBoxPos: null,
     lesionResults: [],
+
+    contrastMode: false,
+    seedPlacementMode: false,
+    pendingSeed: null,
+    contrastThreshold: null,
+    contrastThresholdLocked: false,
+    contrastMeta: null,
   }
 }
 

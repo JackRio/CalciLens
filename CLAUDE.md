@@ -70,6 +70,21 @@ errors that `vite build` alone can surface less clearly.
   other mid-write. Never regress this to a shared/non-unique temp name.
 - **`pathutil.py`** — `clean_path()`, small path normalization helper used everywhere a path comes
   from the frontend or a manifest cell.
+- **`contrast_threshold.py`** (contrast-viewer branch only) — per-scan calcium-detection threshold
+  for contrast CT, in place of the fixed 130 HU used for non-contrast. `compute_sphere_stats()`
+  takes a seed click (converted to a 3D index via `volume_store._seed_index_3d`, reused as-is),
+  samples a physical sphere VOI (default 200 mm³, solved directly as `r=(3V/4π)^(1/3)` — not an
+  iterative grow, since there's no threshold/connectivity gating on this op, unlike
+  `region_grow_mask`), and returns `threshold_hu = mean + k*std` (`k` default 3) over that sphere's
+  voxels **inclusive of boundary voxels** (`<=` not `<`). `save_sidecar`/`load_sidecar` persist/read
+  a `<stem>_contrast_seed.json` file next to the CT (atomic write, same convention as
+  `folder_scan._write_table`) so a later session can reload the seed and recompute+verify instead of
+  re-placing it. `compute_lesion_volume_mm3`/`compute_volume_total_mm3` are the contrast-mode
+  scoring functions — physical mm³, **no Agatston density weighting** — reusing
+  `agatston.find_lesion_component` for lesion isolation (that function is generic; weighting only
+  happens in `agatston.compute_agatston_score`, which contrast mode never calls). Watch the
+  axis-order gotcha: `LoadedVolume.array` is `(z,y,x)` but `spacing_lps` is `(x,y,z)` — they do NOT
+  line up positionally, see the comment at the top of `compute_sphere_stats`.
 
 ## Frontend structure (`client/src/`)
 
@@ -100,6 +115,12 @@ errors that `vite build` alone can surface less clearly.
   **`MaskEditor.tsx`**, **`KeybindSettings.tsx`**, **`InfoPanel.tsx`**, **`LabelColorEditor.tsx`**,
   **`LabelSelect.tsx`**, **`AlphaSpinner.tsx`** — smaller focused pieces, names are self-describing.
 - **`useKeybinds.ts`** — persists `KeybindMap` to `localStorage`.
+- **`useContrastSettings.ts`** (contrast-viewer branch only) — same localStorage-hook pattern as
+  `useKeybinds.ts`, persists the contrast threshold's target VOI volume (mm³) and k-multiplier
+  defaults (used to seed `ContrastSeedBox`'s inputs, still overridable per placement).
+- **`components/ContrastSeedBox.tsx`** (contrast-viewer branch only) — seed placement + computed
+  threshold display, lives in `.viewer-left-controls` alongside the W/L box. See feature inventory
+  below.
 
 ## Conventions / established patterns worth following
 
@@ -175,6 +196,23 @@ errors that `vite build` alone can surface less clearly.
   split view (it's a global App-level listener, not per-pane-scoped).
 - **Mask editing**: brush + region-grow tools, overwrite modes (any/label/threshold), undo via
   `editVersion` counter, save/reset, never synced between split-view panes.
+- **Contrast CT mode** (contrast-viewer branch only, per-pane toggle in the toolbar,
+  `pane.contrastMode`): non-contrast's fixed 130 HU threshold doesn't apply to contrast scans, so
+  this derives one per scan instead. Toggle **"Set AO seed"**, click near the left ostium/center of
+  ascending aorta — this only records a candidate (`pane.pendingSeed`) and shows a crosshair
+  (`.seed-marker`), it does **not** compute anything yet, since the user may need several tries to
+  find the right spot. Click **Finalize Seed** to actually sample the sphere VOI and derive
+  `threshold = mean + k*std` (`server/contrast_threshold.py`); the result is saved to a JSON sidecar
+  next to the CT and mirrored into `pane.thresholdValue`/`editThresholdMin`/
+  `editRegionGrowThreshold` (+ `thresholdEnabled: true`) all at once, then those three fields become
+  **read-only** ("fixed for the session") until **Re-seed** is clicked. Loading a CT while contrast
+  mode is on auto-checks for a saved sidecar and, if found, recomputes fresh from the current volume
+  to both apply and verify it — a mismatch beyond a small tolerance shows a warning banner rather
+  than silently trusting the saved number. Score Compute mode computes a physical **volume (mm³)**
+  instead of an Agatston score for contrast panes (no manifest-baseline/confirm-total step, since
+  there's no `<CLASS>_Agatston`-style baseline for a volume metric — always computed fresh); the
+  Agatston-specific `ScorePanel` (per-class `<CLASS>_Agatston` tiles) is not shown at all in contrast
+  mode.
 
 ## Known caveats
 

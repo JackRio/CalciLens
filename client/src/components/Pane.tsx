@@ -138,6 +138,14 @@ export default function Pane({
     didPaint: false,
     erasing: false,
   })
+  const panDrag = useRef<{
+    active: boolean
+    buttonMask: number
+    startX: number
+    startY: number
+    startPanX: number
+    startPanY: number
+  }>({ active: false, buttonMask: 0, startX: 0, startY: 0, startPanX: 0, startPanY: 0 })
   const lastPaintTs = useRef(0)
   const lastRenderBumpTs = useRef(0)
   const editBoxDrag = useRef<{ active: boolean; offsetX: number; offsetY: number }>({
@@ -854,8 +862,32 @@ export default function Pane({
     )
   }
 
+  // MouseEvent.button (which button started the drag) uses 0=left/1=middle/2=right,
+  // but MouseEvent.buttons (bitmask of currently-held buttons, checked on move to
+  // self-heal a missed mouseup) uses 1=left/4=middle/2=right — these are NOT the
+  // same numbering, so the two buttons that can start a pan need an explicit map.
+  const PAN_BUTTON_MASK: Record<number, number> = { 0: 1, 1: 4 }
+
+  function startPan(e: React.MouseEvent) {
+    e.preventDefault()
+    panDrag.current = {
+      active: true,
+      buttonMask: PAN_BUTTON_MASK[e.button] ?? 1,
+      startX: e.clientX,
+      startY: e.clientY,
+      startPanX: pane.panX,
+      startPanY: pane.panY,
+    }
+  }
+
   function onMouseDown(e: React.MouseEvent) {
     if (isOverUIBox(e.target)) return
+    if (e.button === 1) {
+      // Middle-click drag always pans, regardless of edit/score mode, since
+      // left and right buttons are already spoken for in those modes.
+      startPan(e)
+      return
+    }
     if (e.button === 2) {
       e.preventDefault()
       rightDrag.current = {
@@ -871,6 +903,12 @@ export default function Pane({
     if (e.button === 0 && pane.scoreComputeMode && pane.ctInfo && pane.maskInfo) {
       const coords = getDisplayCoords(e.clientX, e.clientY)
       if (coords) doLesionScore(coords.row, coords.col)
+      return
+    }
+    if (e.button === 0 && !pane.editMode && !pane.scoreComputeMode) {
+      // Plain viewing (not painting/region-growing/lesion-scoring): left-drag
+      // pans too, so panning doesn't require a middle mouse button.
+      startPan(e)
       return
     }
     if (e.button === 0 && pane.editMode && pane.ctInfo && pane.maskInfo) {
@@ -973,6 +1011,13 @@ export default function Pane({
     if (editBoxDrag.current.active && !(e.buttons & 1)) onMouseUp()
     if (scorePanelDrag.current.active && !(e.buttons & 1)) onMouseUp()
     if (scoreComputeBoxDrag.current.active && !(e.buttons & 1)) onMouseUp()
+    if (panDrag.current.active && !(e.buttons & panDrag.current.buttonMask)) onMouseUp()
+
+    if (panDrag.current.active) {
+      const dx = e.clientX - panDrag.current.startX
+      const dy = e.clientY - panDrag.current.startY
+      onChange({ panX: panDrag.current.startPanX + dx, panY: panDrag.current.startPanY + dy })
+    }
 
     if (pane.editMode && pane.editTool === 'brush' && !isOverUIBox(e.target)) {
       const container = viewerAreaRef.current
@@ -1097,6 +1142,7 @@ export default function Pane({
 
   function onMouseUp() {
     rightDrag.current.active = false
+    panDrag.current.active = false
     editBoxDrag.current.active = false
     scorePanelDrag.current.active = false
     scoreComputeBoxDrag.current.active = false
@@ -1120,7 +1166,7 @@ export default function Pane({
   }
 
   function resetView() {
-    onChange({ zoom: 1, windowLevel: DEFAULT_WINDOW_LEVEL, windowWidth: DEFAULT_WINDOW_WIDTH })
+    onChange({ zoom: 1, panX: 0, panY: 0, windowLevel: DEFAULT_WINDOW_LEVEL, windowWidth: DEFAULT_WINDOW_WIDTH })
   }
 
   function stopWheel(e: React.WheelEvent) {
@@ -1269,6 +1315,8 @@ export default function Pane({
           )}
           {pane.ctInfo &&
             (pane.zoom !== 1 ||
+              pane.panX !== 0 ||
+              pane.panY !== 0 ||
               pane.windowLevel !== DEFAULT_WINDOW_LEVEL ||
               pane.windowWidth !== DEFAULT_WINDOW_WIDTH) && (
             <button onClick={resetView} title="Reset zoom and window/level to defaults">
@@ -1290,7 +1338,13 @@ export default function Pane({
         <div
           ref={viewerAreaRef}
           className="viewer-area"
-          style={pane.editMode && pane.editTool === 'brush' ? { cursor: 'none' } : undefined}
+          style={
+            pane.editMode && pane.editTool === 'brush'
+              ? { cursor: 'none' }
+              : !pane.editMode && !pane.scoreComputeMode
+                ? { cursor: 'grab' }
+                : undefined
+          }
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
@@ -1307,7 +1361,7 @@ export default function Pane({
               alt="slice"
               draggable={false}
               className="slice-image"
-              style={{ transform: `scale(${pane.zoom})` }}
+              style={{ transform: `translate(${pane.panX}px, ${pane.panY}px) scale(${pane.zoom})` }}
               onLoad={() => {
                 if (pendingJumpMarkerRef.current) {
                   const { row, col } = pendingJumpMarkerRef.current

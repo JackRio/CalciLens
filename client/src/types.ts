@@ -166,6 +166,8 @@ export interface PaneState {
   thresholdAlpha: number
 
   zoom: number
+  panX: number // screen-px offset applied after scaling (see .slice-image's transform in Pane.tsx)
+  panY: number
 
   error: string | null
   loading: boolean
@@ -244,7 +246,7 @@ export const KEYBIND_LABELS: Record<KeybindActionId, string> = {
   toggleThresh: 'Toggle Threshold overlay',
   prevSlice: 'Previous slice',
   nextSlice: 'Next slice',
-  reloadCurrent: 'Reload CT/mask from disk (both panes in split view)',
+  reloadCurrent: 'Reload CT / Mask',
   toggleReviewMode: 'Toggle Review mode',
   toggleScoreComputeMode: 'Toggle Score Compute mode',
 }

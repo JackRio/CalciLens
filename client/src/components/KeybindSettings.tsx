@@ -12,6 +12,16 @@ const ACTION_ORDER: KeybindActionId[] = [
   'toggleScoreComputeMode',
 ]
 
+// Fixed mouse gestures — not rebindable key actions, so they don't belong in
+// ACTION_ORDER/KEYBIND_LABELS, but they're still worth documenting here since
+// this is the one place users look for "how do I do X".
+const MOUSE_CONTROLS: { label: string; combo: string }[] = [
+  { label: 'Zoom in/out', combo: 'Scroll' },
+  { label: 'Zoom in/out', combo: 'Right-drag up/down' },
+  { label: 'Adjust window level', combo: 'Right-drag left/right' },
+  { label: 'Pan the image', combo: 'Middle-drag (or left-drag outside edit/score mode)' },
+]
+
 export default function KeybindSettings({
   keybinds,
   onChange,
@@ -109,6 +119,16 @@ export default function KeybindSettings({
         ))}
 
         {error && <div className="busy-msg manifest-error">{error}</div>}
+
+        <div className="keybind-hint" style={{ marginTop: 10 }}>
+          Mouse controls (fixed, not remappable):
+        </div>
+        {MOUSE_CONTROLS.map((c) => (
+          <div className="keybind-row" key={c.label + c.combo}>
+            <span className="keybind-row-label">{c.label}</span>
+            <span className="keybind-chip">{c.combo}</span>
+          </div>
+        ))}
 
         <div className="comment-modal-buttons">
           <button onClick={resetDefaults}>Reset to defaults</button>

@@ -55,6 +55,8 @@ function makePane(): PaneState {
     thresholdAlpha: 1.0,
 
     zoom: 1,
+    panX: 0,
+    panY: 0,
 
     error: null,
     loading: false,
@@ -141,7 +143,16 @@ export default function App() {
   function updatePane(id: string, partial: Partial<PaneState>) {
     setPanes((prev) => {
       const next = prev.map((p) => (p.id === id ? { ...p, ...partial } : p))
-      const syncKeys: (keyof PaneState)[] = ['plane', 'index', 'zoom', 'wlMinimized', 'showMask', 'thresholdEnabled']
+      const syncKeys: (keyof PaneState)[] = [
+        'plane',
+        'index',
+        'zoom',
+        'panX',
+        'panY',
+        'wlMinimized',
+        'showMask',
+        'thresholdEnabled',
+      ]
       const shouldSync = linked && next.length > 1 && syncKeys.some((k) => k in partial)
       if (!shouldSync) return next
       return next.map((p) => {
@@ -149,6 +160,8 @@ export default function App() {
         const syncedPartial: Partial<PaneState> = {}
         if ('plane' in partial) syncedPartial.plane = partial.plane
         if ('zoom' in partial) syncedPartial.zoom = partial.zoom
+        if ('panX' in partial) syncedPartial.panX = partial.panX
+        if ('panY' in partial) syncedPartial.panY = partial.panY
         if ('wlMinimized' in partial) syncedPartial.wlMinimized = partial.wlMinimized
         if ('showMask' in partial) syncedPartial.showMask = partial.showMask
         if ('thresholdEnabled' in partial) syncedPartial.thresholdEnabled = partial.thresholdEnabled

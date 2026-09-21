@@ -1,4 +1,5 @@
 import type { EditTool, OverwriteMode, PaneState } from '../types'
+import { DEFAULT_THRESHOLD_HU } from '../types'
 import LabelSelect from './LabelSelect'
 
 export default function MaskEditor({
@@ -52,7 +53,25 @@ export default function MaskEditor({
           onChange(
             e.target.checked
               ? { contrastMode: true, editMode: false, scoreComputeMode: false }
-              : { contrastMode: false, seedPlacementMode: false },
+              : {
+                  // Leaving contrast mode entirely clears the seed/sphere and
+                  // the computed threshold — it shouldn't keep driving the
+                  // render overlay / paint / region-grow HU fields once
+                  // contrast mode is off, and a stale seed marker/sphere
+                  // for a threshold that no longer applies would be
+                  // confusing to still see.
+                  contrastMode: false,
+                  seedPlacementMode: false,
+                  pendingSeed: null,
+                  contrastThreshold: null,
+                  contrastThresholdLocked: false,
+                  contrastMeta: null,
+                  volumeScores: null,
+                  thresholdValue: DEFAULT_THRESHOLD_HU,
+                  thresholdEnabled: false,
+                  editThresholdMin: DEFAULT_THRESHOLD_HU,
+                  editRegionGrowThreshold: DEFAULT_THRESHOLD_HU,
+                },
           )
         }
       />

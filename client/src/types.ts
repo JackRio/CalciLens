@@ -4,7 +4,8 @@ export interface VolumeInfo {
   volume_id: string
   path: string
   size: [number, number, number]
-  spacing: [number, number, number]
+  spacing: [number, number, number] // as-read axis order, for the info panel
+  spacing_lps: [number, number, number] // (sx, sy, sz) in the LPS-reoriented array's axis order — use this for any physical-space math against plane/index/row/col
   origin: [number, number, number]
   direction: number[] // 9 values, row-major
   orientation: string

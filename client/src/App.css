@@ -669,23 +669,22 @@ button .loading-spinner {
 
 .viewer-score-compute-box {
   position: absolute;
-  /* Fixed top-to-bottom band (same trick as .viewer-bottom-right below) so
-     a long, ever-growing lesion table can never grow down into the
-     Mask/Thresh overlay box — a definite-height flex container lets its
-     (default flex-shrink:1) child actually shrink to fit once the child's
-     own overflow is non-visible (see .lesion-score-box), so it scrolls
-     internally past that height instead of pushing into what's below. */
-  top: 56px;
-  bottom: 160px;
+  /* Left-middle by default (Volume Compute in contrast mode, Score Compute
+     otherwise — same box). max-height (not a top+bottom band) caps how far
+     a long, ever-growing lesion table can grow before its own overflow
+     (see .lesion-score-box) takes over and it scrolls internally instead of
+     pushing into the W/L box above or the Mask/Thresh box below. */
+  top: 50%;
   left: 8px;
+  transform: translateY(-50%);
+  max-height: 70vh;
   z-index: 5;
   display: flex;
   flex-direction: column;
-  /* The container itself is stretched to this whole fixed band by the
-     top+bottom trick above, but its visible content (the lesion table) is
-     usually much shorter — without this, the empty space below it silently
-     swallows clicks/drags meant for the CT image underneath (e.g. seed
-     placement in contrast mode). Re-enabled on the actual box below. */
+  /* The container can still be taller than its visible content near the
+     max-height cap — without this, that empty space would silently swallow
+     clicks/drags meant for the CT image underneath (e.g. seed placement in
+     contrast mode). Re-enabled on the actual box below. */
   pointer-events: none;
 }
 

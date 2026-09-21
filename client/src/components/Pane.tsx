@@ -55,8 +55,27 @@ function sphereRadiusMmFromVolume(targetVolumeMm3: number): number {
   return Math.cbrt((3 * targetVolumeMm3) / (4 * Math.PI))
 }
 
+// Physical spacing (mm) of one index-step for the given plane — same axis
+// mapping as the server's plane_length/_seed_index_3d (axial steps through
+// z, sagittal through x, coronal through y). spacingLps is (sx, sy, sz) in
+// the LPS-reoriented array's own axis order (VolumeInfo.spacing_lps), not
+// the as-read "spacing" field, which is not necessarily the same order.
+function planeIndexSpacingMm(spacingLps: [number, number, number], plane: Plane): number {
+  const [sx, sy, sz] = spacingLps
+  if (plane === 'sagittal') return sx
+  if (plane === 'coronal') return sy
+  return sz // axial
+}
+
+// One entry per tile ScorePanel can render: the CAC aggregate (all three
+// coronary labels combined) plus each individual class — including LAD/LCx/
+// RCA, which ScorePanel shows as members under the CAC header tile. Missing
+// any of these from pane.volumeScores is exactly why they'd render blank.
 const VOLUME_SCORE_SPECS: { cls: ScoreClass; labels: number[] }[] = [
   { cls: 'CAC', labels: [...CORONARY_LABELS] },
+  { cls: 'LAD', labels: [1] },
+  { cls: 'LCx', labels: [2] },
+  { cls: 'RCA', labels: [3] },
   { cls: 'TAC', labels: [4] },
   { cls: 'AV', labels: [5] },
   { cls: 'MV', labels: [6] },
@@ -727,11 +746,20 @@ export default function Pane({
   // Positions the (persistent, non-fading) seed marker — same math as
   // showJumpMarker above, but re-run on every relevant change via the effect
   // below rather than a one-shot timeout, since the seed stays put until
-  // re-seeded. Also sizes/positions the sphere-VOI preview circle: its radius
-  // is knowable from the target volume alone (r = (3V/4pi)^(1/3), no per-scan
-  // data needed), so it's shown live as soon as a seed is placed — using the
-  // actual computed contrastMeta.radiusMm once finalized, which is the same
-  // formula and should match almost exactly.
+  // re-seeded. Also sizes/positions the sphere-VOI preview circle: its
+  // radius is knowable from the target volume alone (r = (3V/4pi)^(1/3), no
+  // per-scan data needed), so it's shown live as soon as a seed is placed —
+  // using the actual computed contrastMeta.radiusMm once finalized, which is
+  // the same formula and should match almost exactly.
+  //
+  // The circle is a true spherical cross-section, not just shown on the
+  // seed's own slice: scrolling to a nearby slice (same plane) shows a
+  // smaller circle per the sphere equation r_slice = sqrt(r^2 - d^2), where
+  // d is the physical distance (mm) from that slice to the seed's slice
+  // along the plane's normal axis — shrinking to a point at the sphere's
+  // poles and disappearing entirely once d exceeds r. The crosshair marker
+  // itself still only shows on the exact seed slice (it's a precise
+  // placement target, not "this slice is somewhere in the VOI").
   function updateSeedMarkerPosition() {
     const img = imgRef.current
     const el = seedMarkerRef.current
@@ -739,7 +767,8 @@ export default function Pane({
     const container = viewerAreaRef.current
     if (!img || !el || !container) return
     const seed = pane.pendingSeed
-    if (!seed || seed.plane !== pane.plane || seed.index !== pane.index) {
+    const onSeedPlane = seed && seed.plane === pane.plane
+    if (!onSeedPlane) {
       el.hidden = true
       if (sphereEl) sphereEl.hidden = true
       return
@@ -750,21 +779,32 @@ export default function Pane({
     const scaleY = imgRect.height / (img.naturalHeight || 1)
     const x = imgRect.left - containerRect.left + seed.col * scaleX
     const y = imgRect.top - containerRect.top + seed.row * scaleY
-    el.hidden = false
-    el.style.transform = `translate(${x}px, ${y}px)`
+
+    el.hidden = seed.index !== pane.index
+    if (!el.hidden) {
+      el.style.transform = `translate(${x}px, ${y}px)`
+    }
 
     if (sphereEl && pane.ctInfo) {
       const radiusMm = pane.contrastMeta?.radiusMm ?? sphereRadiusMmFromVolume(contrastSettings.targetVolumeMm3)
-      const finestSpacing = Math.min(...pane.ctInfo.spacing) || 1
-      // Every display pixel represents finestSpacing mm (the render endpoint
-      // rescales each plane to isotropic pixels relative to the volume's
-      // finest spacing axis — see get_plane_display_scale in volume_store.py).
-      const radiusNaturalPx = radiusMm / finestSpacing
-      const diameterScreenPx = 2 * radiusNaturalPx * scaleX
-      sphereEl.hidden = false
-      sphereEl.style.width = `${diameterScreenPx}px`
-      sphereEl.style.height = `${diameterScreenPx}px`
-      sphereEl.style.transform = `translate(${x - diameterScreenPx / 2}px, ${y - diameterScreenPx / 2}px)`
+      const stepMm = planeIndexSpacingMm(pane.ctInfo.spacing_lps, pane.plane)
+      const distMm = Math.abs(pane.index - seed.index) * stepMm
+      if (distMm > radiusMm) {
+        sphereEl.hidden = true
+      } else {
+        const sliceRadiusMm = Math.sqrt(radiusMm * radiusMm - distMm * distMm)
+        const finestSpacing = Math.min(...pane.ctInfo.spacing_lps) || 1
+        // Every display pixel represents finestSpacing mm (the render
+        // endpoint rescales each plane to isotropic pixels relative to the
+        // volume's finest spacing axis — see get_plane_display_scale in
+        // volume_store.py).
+        const radiusNaturalPx = sliceRadiusMm / finestSpacing
+        const diameterScreenPx = 2 * radiusNaturalPx * scaleX
+        sphereEl.hidden = false
+        sphereEl.style.width = `${diameterScreenPx}px`
+        sphereEl.style.height = `${diameterScreenPx}px`
+        sphereEl.style.transform = `translate(${x - diameterScreenPx / 2}px, ${y - diameterScreenPx / 2}px)`
+      }
     }
   }
 
@@ -1913,7 +1953,7 @@ export default function Pane({
               className="viewer-score-compute-box"
               style={
                 pane.scoreComputeBoxPos
-                  ? { left: pane.scoreComputeBoxPos.x, top: pane.scoreComputeBoxPos.y, bottom: 'auto' }
+                  ? { left: pane.scoreComputeBoxPos.x, top: pane.scoreComputeBoxPos.y, transform: 'none' }
                   : undefined
               }
             >

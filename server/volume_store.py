@@ -77,6 +77,13 @@ class LoadedVolume:
             "path": self.path,
             "size": [int(v) for v in self.orig_size],
             "spacing": [round(float(v), 6) for v in self.orig_spacing],
+            # (sx, sy, sz) in the LPS-reoriented array's own axis order — NOT
+            # necessarily the same order as "spacing" (orig_spacing) above,
+            # which keeps the as-read file's own axis order. Anything doing
+            # physical-space math against plane/index/row/col (as sent by the
+            # frontend, e.g. the contrast-mode sphere-VOI preview) needs this
+            # one, not "spacing".
+            "spacing_lps": [round(float(v), 6) for v in self.spacing_lps],
             "origin": [round(float(v), 6) for v in self.orig_origin],
             "direction": [round(float(v), 6) for v in self.orig_direction],
             "orientation": self.orientation_code,

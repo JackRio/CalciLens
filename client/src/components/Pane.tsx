@@ -837,11 +837,14 @@ export default function Pane({
   // Positions the (persistent, non-fading) seed marker — same math as
   // showJumpMarker above, but re-run on every relevant change via the effect
   // below rather than a one-shot timeout, since the seed stays put until
-  // re-seeded. Also sizes/positions the sphere-VOI preview circle: its
-  // radius is knowable from the target volume alone (r = (3V/4pi)^(1/3), no
-  // per-scan data needed), so it's shown live as soon as a seed is placed —
-  // using the actual computed contrastMeta.radiusMm once finalized, which is
-  // the same formula and should match almost exactly.
+  // re-seeded. Also sizes/positions the sphere-VOI preview circle: before
+  // finalizing, its radius is only an ESTIMATE from the target volume alone
+  // (r = (3V/4pi)^(1/3) — no per-scan data needed, so it can be shown live as
+  // soon as a seed is placed); once finalized, contrastMeta.radiusMm is the
+  // server's actual *emergent* radius — the farthest voxel it needed to
+  // reach to hit the target voxel count exactly (see compute_sphere_stats in
+  // contrast_threshold.py) — which is close to but not identical to the
+  // formula estimate, and is what actually determines the sampled voxels.
   //
   // The circle is a true spherical cross-section, shown on WHICHEVER plane
   // and slice is currently being viewed (not just the plane the seed was

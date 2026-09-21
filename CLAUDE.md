@@ -72,14 +72,24 @@ errors that `vite build` alone can surface less clearly.
   from the frontend or a manifest cell.
 - **`contrast_threshold.py`** (contrast-viewer branch only) — per-scan calcium-detection threshold
   for contrast CT, in place of the fixed 130 HU used for non-contrast. `compute_sphere_stats()`
-  takes a seed click (converted to a 3D index via `volume_store._seed_index_3d`, reused as-is),
-  samples a physical sphere VOI (default 200 mm³, solved directly as `r=(3V/4π)^(1/3)` — not an
-  iterative grow, since there's no threshold/connectivity gating on this op, unlike
-  `region_grow_mask`), and returns `threshold_hu = mean + k*std` (`k` default 3) over that sphere's
-  voxels **inclusive of boundary voxels** (`<=` not `<`). `save_sidecar`/`load_sidecar` persist/read
-  a `<stem>_contrast_seed.json` file next to the CT (atomic write, same convention as
-  `folder_scan._write_table`) so a later session can reload the seed and recompute+verify instead of
-  re-placing it. `compute_lesion_volume_mm3`/`compute_volume_total_mm3` are the contrast-mode
+  takes a seed click (converted to a 3D index via `volume_store._seed_index_3d`, reused as-is) and
+  **grows a VOI outward from it by voxel count, not a fixed radius**: it computes
+  `target_voxel_count = round(target_volume_mm3 / voxel_volume)`, ranks every candidate voxel in a
+  generously-sized search box by physical distance from the seed, and takes exactly that many
+  closest ones — so `actual_volume_mm3` always lands within one voxel's volume of the target,
+  regardless of seed position or how coarse/anisotropic the spacing is. (An earlier version picked a
+  single formula-derived radius `r=(3V/4π)^(1/3)` and accepted whatever voxel count that radius
+  happened to enclose — this could miss the target by 10%+ once the sphere was only a few voxels
+  across, since the count is very sensitive to exactly where the grid boundary falls relative to the
+  seed. Don't regress to that.) The *emergent* radius (the farthest included voxel's actual
+  distance) is what's returned as `radius_mm` and used for the sphere-VOI preview circle, not the
+  formula radius. Returns `threshold_hu = mean + k*std` (`k` default 3) over the selected voxels'
+  HU values. `save_sidecar`/`load_sidecar` persist/read a `<stem>_contrast_seed.json` file next to
+  the CT (atomic write, same convention as `folder_scan._write_table`, and — like
+  `volume_store._insert_tag` — must check `os.path.isdir()` before ever touching `os.path.splitext`
+  on the path, since a DICOM series directory's name is a dotted UID that splitext would otherwise
+  misread as a file extension) so a later session can reload the seed and recompute+verify instead
+  of re-placing it. `compute_lesion_volume_mm3`/`compute_volume_total_mm3` are the contrast-mode
   scoring functions — physical mm³, **no Agatston density weighting** — reusing
   `agatston.find_lesion_component` for lesion isolation (that function is generic; weighting only
   happens in `agatston.compute_agatston_score`, which contrast mode never calls). Watch the

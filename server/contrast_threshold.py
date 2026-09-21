@@ -34,9 +34,15 @@ def compute_sphere_stats(
     target_volume_mm3: float = DEFAULT_TARGET_VOLUME_MM3,
     k_multiplier: float = DEFAULT_K_MULTIPLIER,
 ) -> dict:
-    """Sample a physical sphere of `target_volume_mm3` around the seed click and
-    derive threshold = mean + k*std over its voxels (boundary voxels included, i.e.
-    the sphere test is inclusive: distance <= radius, not strictly less than).
+    """Grow a VOI outward from the seed click, voxel by voxel in order of physical
+    distance, until it holds exactly `round(target_volume_mm3 / voxel_volume)`
+    voxels — i.e. actually grows to the target volume, rather than picking a fixed
+    radius from the target volume and accepting whatever voxel count that radius
+    happens to enclose (which can miss the target by 10%+ once the sphere is only a
+    few voxels across, especially with anisotropic/coarse spacing). This keeps
+    actual_volume_mm3 within one voxel's volume of target_volume_mm3 — as tight as
+    it can possibly get on a discrete grid. Threshold = mean + k*std over those
+    voxels' HU values.
 
     ct_vol.array is (z, y, x); ct_vol.spacing_lps is (sx, sy, sz) in mm — note this is
     NOT the same axis order as the array, so per-axis physical distance for array
@@ -48,11 +54,18 @@ def compute_sphere_stats(
         raise ValueError("Seed point is outside the volume")
 
     sx, sy, sz = ct_vol.spacing_lps
-    r_mm = (3.0 * target_volume_mm3 / (4.0 * np.pi)) ** (1.0 / 3.0)
+    voxel_volume = sx * sy * sz
+    target_voxel_count = max(1, round(target_volume_mm3 / voxel_volume)) if voxel_volume else 1
 
-    rz = max(1, int(np.ceil(r_mm / sz))) if sz else 0
-    ry = max(1, int(np.ceil(r_mm / sy))) if sy else 0
-    rx = max(1, int(np.ceil(r_mm / sx))) if sx else 0
+    # Search box: the formula radius (from the target volume) scaled up with a
+    # generous margin, so the box reliably contains at least target_voxel_count
+    # candidates even at an unlucky grid alignment — the actual boundary is
+    # decided below by voxel count, not this radius.
+    r_mm = (3.0 * target_volume_mm3 / (4.0 * np.pi)) ** (1.0 / 3.0)
+    margin = 1.5
+    rz = max(1, int(np.ceil(r_mm * margin / sz))) if sz else 0
+    ry = max(1, int(np.ceil(r_mm * margin / sy))) if sy else 0
+    rx = max(1, int(np.ceil(r_mm * margin / sx))) if sx else 0
 
     z_lo, z_hi = max(0, z0 - rz), min(nz, z0 + rz + 1)
     y_lo, y_hi = max(0, y0 - ry), min(ny, y0 + ry + 1)
@@ -60,28 +73,40 @@ def compute_sphere_stats(
 
     zz, yy, xx = np.ogrid[z_lo:z_hi, y_lo:y_hi, x_lo:x_hi]
     dist2 = ((zz - z0) * sz) ** 2 + ((yy - y0) * sy) ** 2 + ((xx - x0) * sx) ** 2
-    sphere_mask = dist2 <= (r_mm**2)  # inclusive — boundary voxels count
-
     sub = ct_vol.array[z_lo:z_hi, y_lo:y_hi, x_lo:x_hi]
-    voxels = sub[sphere_mask].astype(np.float64)
-    if voxels.size == 0:
+
+    flat_dist2 = np.broadcast_to(dist2, sub.shape).ravel()
+    flat_vals = sub.ravel()
+    if flat_dist2.size == 0:
         raise ValueError("Sphere VOI contains no voxels — seed too close to the volume edge")
 
+    # Stable sort so voxels at an identical distance (common — the grid has a lot
+    # of ties) keep a deterministic, reproducible order instead of an arbitrary
+    # one that could vary between runs.
+    order = np.argsort(flat_dist2, kind="stable")
+    voxel_count = min(target_voxel_count, flat_dist2.size)
+    chosen = order[:voxel_count]
+
+    voxels = flat_vals[chosen].astype(np.float64)
     mean_hu = float(voxels.mean())
     std_hu = float(voxels.std())
     threshold_hu = mean_hu + float(k_multiplier) * std_hu
-    voxel_count = int(sphere_mask.sum())
-    actual_volume_mm3 = voxel_count * sx * sy * sz
+    actual_volume_mm3 = voxel_count * voxel_volume
+    # The emergent radius — the farthest-included voxel's actual distance, not
+    # the formula radius — so the sphere-VOI preview circle reflects what was
+    # really sampled (which may differ from the formula radius once voxel
+    # discretization is accounted for).
+    actual_radius_mm = float(np.sqrt(flat_dist2[chosen[-1]])) if voxel_count > 0 else 0.0
 
     return {
         "mean_hu": mean_hu,
         "std_hu": std_hu,
         "threshold_hu": threshold_hu,
-        "voxel_count": voxel_count,
+        "voxel_count": int(voxel_count),
         "actual_volume_mm3": actual_volume_mm3,
         "target_volume_mm3": float(target_volume_mm3),
         "k_multiplier": float(k_multiplier),
-        "radius_mm": r_mm,
+        "radius_mm": actual_radius_mm,
         "seed_voxel": [int(z0), int(y0), int(x0)],
         "plane": plane,
         "index": int(index),

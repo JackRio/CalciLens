@@ -434,7 +434,15 @@ def _insert_tag(path: str, tag: str, default_dir: str = "", default_stem: str = 
     else:
         dirn = default_dir
         base = default_stem
-    if base.lower().endswith(".nii.gz"):
+    if path and os.path.isdir(path):
+        # A DICOM series directory has no file extension of its own — dots in
+        # its name (e.g. a series UID like "1.2.840.113654...") are NOT an
+        # extension, so this must be checked before the splitext-based
+        # branches below, or splitext wrongly treats the tail after the last
+        # dot as the extension (SimpleITK then can't find a writer for it —
+        # "Unable to determine ImageIO writer").
+        stem, ext = base, ".nii.gz"
+    elif base.lower().endswith(".nii.gz"):
         stem, ext = base[:-7], ".nii.gz"
     else:
         stem, ext = os.path.splitext(base)

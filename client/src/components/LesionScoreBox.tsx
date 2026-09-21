@@ -23,16 +23,16 @@ export default function LesionScoreBox({
   onDragHandleDown,
   flashRowId,
   onRowClick,
-  onComputeAllVolumes,
-  computingAllVolumes,
+  onComputeAll,
+  computingAll,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
   onDragHandleDown: (e: React.MouseEvent) => void
   flashRowId: number | null
   onRowClick: (result: LesionScoreResult) => void
-  onComputeAllVolumes: () => void
-  computingAllVolumes: boolean
+  onComputeAll: () => void
+  computingAll: boolean
 }) {
   if (!pane.ctInfo || !pane.maskInfo) return null
 
@@ -69,16 +69,18 @@ export default function LesionScoreBox({
           {isVolumeMetric ? 'Volume Compute' : 'Score Compute'}
         </label>
         <div className="edit-header-buttons">
-          {isVolumeMetric && (
-            <button
-              className="wl-minimize-btn"
-              onClick={onComputeAllVolumes}
-              disabled={!pane.maskInfo || pane.contrastThreshold === null || computingAllVolumes}
-              title="Recompute total volume for every class (CAC/TAC/AV/MV) across the whole scan"
-            >
-              {computingAllVolumes ? '…' : '▶'}
-            </button>
-          )}
+          <button
+            className="wl-minimize-btn"
+            onClick={onComputeAll}
+            disabled={!pane.maskInfo || (isVolumeMetric && pane.contrastThreshold === null) || computingAll}
+            title={
+              isVolumeMetric
+                ? 'Recompute total volume for every class (CAC/LAD/LCx/RCA/TAC/AV/MV) across the whole scan'
+                : 'Recompute total Agatston score for every class (CAC/LAD/LCx/RCA/TAC/AV/MV) across the whole scan'
+            }
+          >
+            {computingAll ? '…' : '▶'}
+          </button>
           {dragHandle}
           {minimizeBtn}
         </div>

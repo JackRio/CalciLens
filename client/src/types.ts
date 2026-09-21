@@ -36,6 +36,22 @@ export function colorForScoreClass(cls: ScoreClass, maskColors: LabelColor[]): s
   return maskColors[idx]?.color || '#6c6d7a'
 }
 
+// Best-effort guess at which threshold basis a mask *loaded from disk* was
+// annotated under, since nothing is actually persisted in the mask file
+// itself — masks saved by this app get "Contrast" baked into their filename
+// (see server/volume_store.py's save_mask tag selection) specifically so
+// this heuristic can recognize them again later. Ambiguous filenames (e.g.
+// a mask from outside this app, or an older save from before this existed)
+// come back null rather than a guess, since acting on a wrong guess (silently
+// unloading someone's real annotations) is worse than not knowing.
+export function inferMaskAnnotationType(maskPath: string): 'contrast' | 'non-contrast' | null {
+  if (!maskPath) return null
+  const base = maskPath.toLowerCase()
+  if (base.includes('contrast')) return 'contrast'
+  if (base.includes('manualannotation') || base.includes('manualedit')) return 'non-contrast'
+  return null
+}
+
 export const CALCIFICATIONS_PRESET: LabelColor[] = [
   { label: 1, color: '#FF0000', name: 'Calcification 1' },
   { label: 2, color: '#00FF00', name: 'Calcification 2' },
@@ -223,6 +239,19 @@ export interface PaneState {
   // "Volume Compute" box's play button — parallel to ManifestRow.scores but
   // freshly computed (mm3, no Agatston weighting), not read from the manifest.
   volumeScores: Partial<Record<ScoreClass, number>> | null
+  // Non-contrast counterpart: freshly-recomputed Agatston totals via the
+  // "Score Compute" box's play button. Takes precedence over the
+  // manifest-backed ManifestRow.scores once populated, for this pane/session
+  // only — doesn't write back to the manifest.
+  agatstonScores: Partial<Record<ScoreClass, number>> | null
+
+  // Which threshold basis the currently-loaded/created mask's labels were
+  // painted against — contrast annotations use a per-scan computed
+  // threshold and are not meaningful under the fixed 130 HU non-contrast
+  // threshold (or vice versa). null means unknown (e.g. a mask loaded from
+  // disk whose filename doesn't indicate either way) — see Pane.tsx's
+  // Contrast CT toggle, which auto-unloads the mask on a confirmed mismatch.
+  maskAnnotationType: 'contrast' | 'non-contrast' | null
 }
 
 export type EditTool = 'brush' | 'region-grow'

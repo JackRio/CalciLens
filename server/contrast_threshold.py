@@ -117,7 +117,12 @@ def compute_volume_total_mm3(mask_vol: LoadedVolume, ct_vol: LoadedVolume, label
 def _sidecar_path(ct_path: str) -> str:
     dirn = os.path.dirname(ct_path)
     base = os.path.basename(ct_path)
-    if base.lower().endswith(".nii.gz"):
+    if ct_path and os.path.isdir(ct_path):
+        # A DICOM series directory's name is a dotted UID (e.g.
+        # "1.2.840.113654...") — not a file extension, so it must not be run
+        # through splitext (same gotcha as volume_store._insert_tag).
+        stem = base
+    elif base.lower().endswith(".nii.gz"):
         stem = base[:-7]
     else:
         stem = os.path.splitext(base)[0]

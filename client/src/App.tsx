@@ -11,6 +11,7 @@ import {
   DEFAULT_THRESHOLD_HU,
   DEFAULT_WINDOW_LEVEL,
   DEFAULT_WINDOW_WIDTH,
+  inferMaskAnnotationType,
   comboMatches,
 } from './types'
 import { loadVolume, saveManifestComment, saveManifestReason } from './api'
@@ -87,6 +88,8 @@ function makePane(): PaneState {
     contrastThresholdLocked: false,
     contrastMeta: null,
     volumeScores: null,
+    agatstonScores: null,
+    maskAnnotationType: null,
   }
 }
 
@@ -192,6 +195,16 @@ export default function App() {
       error: null,
       loading: true,
       loadingMessage: 'Loading CT scan...',
+      // Anything computed against the *previous* case's mask (or the mask
+      // itself, cleared further below once we know whether this row has
+      // one) belongs to that case, not this one — leaving it in place made
+      // stale lesion results / recomputed totals look like they applied to
+      // whatever case was just navigated to.
+      maskAnnotationType: null,
+      editMode: false,
+      lesionResults: [],
+      volumeScores: null,
+      agatstonScores: null,
     })
     if (!row.image_exists) {
       // Clear whatever scan was showing before rather than leaving it up
@@ -232,7 +245,12 @@ export default function App() {
         updatePane(paneId, { loadingMessage: 'Loading mask...' })
         try {
           const maskInfo = await loadVolume(row.mask_path, true)
-          updatePane(paneId, { maskPath: row.mask_path, maskInfo, showMask: true })
+          updatePane(paneId, {
+            maskPath: row.mask_path,
+            maskInfo,
+            maskAnnotationType: inferMaskAnnotationType(row.mask_path),
+            showMask: true,
+          })
         } catch (e) {
           updatePane(paneId, { manifestError: e instanceof Error ? e.message : String(e) })
         }

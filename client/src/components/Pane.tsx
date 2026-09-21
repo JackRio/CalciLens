@@ -8,6 +8,7 @@ import {
   STATUS_OPTIONS,
   CORONARY_LABELS,
   SCORE_CLASS_BY_LABEL,
+  inferMaskAnnotationType,
   comboMatches,
 } from '../types'
 import {
@@ -65,6 +66,63 @@ function planeIndexSpacingMm(spacingLps: [number, number, number], plane: Plane)
   if (plane === 'sagittal') return sx
   if (plane === 'coronal') return sy
   return sz // axial
+}
+
+// Mirrors the server's _seed_index_3d exactly (volume_store.py): converts a
+// display-space click (as sent by getDisplayCoords — post display-rescale
+// pixel space) on one specific plane into the full 3D (z, y, x) array index.
+// Needed client-side so the sphere-VOI preview can be projected onto
+// whichever plane is *currently* being viewed, not just the plane the seed
+// happened to be placed on.
+function seedDisplayToVoxel(
+  planeLengths: Record<Plane, number>,
+  spacingLps: [number, number, number],
+  seed: { plane: Plane; index: number; row: number; col: number },
+): [number, number, number] {
+  const [sx, sy, sz] = spacingLps
+  const target = Math.min(sx, sy, sz) || 1
+  const nz = planeLengths.axial
+  const [scaleH, scaleW] =
+    seed.plane === 'axial' ? [sy / target, sx / target] : seed.plane === 'sagittal' ? [sz / target, sy / target] : [sz / target, sx / target]
+  let viewRow = seed.row / scaleH
+  let viewCol = seed.col / scaleW
+  if (seed.plane !== 'axial') viewRow = nz - 1 - viewRow // sagittal/coronal display is flipud'd
+  viewRow = Math.round(viewRow)
+  viewCol = Math.round(viewCol)
+  const index = Math.max(0, Math.min(seed.index, planeLengths[seed.plane] - 1))
+  if (seed.plane === 'axial') return [index, viewRow, viewCol]
+  if (seed.plane === 'sagittal') return [viewRow, viewCol, index]
+  return [viewRow, index, viewCol] // coronal
+}
+
+// Inverse of the above for a fixed 3D voxel: its display-space (row, col) on
+// a *given* plane, independent of which slice index that plane is currently
+// showing (in-plane position doesn't depend on the out-of-plane index).
+function projectVoxelToPlaneDisplay(
+  planeLengths: Record<Plane, number>,
+  spacingLps: [number, number, number],
+  voxel: [number, number, number],
+  plane: Plane,
+): { row: number; col: number } {
+  const [sx, sy, sz] = spacingLps
+  const [z0, y0, x0] = voxel
+  const target = Math.min(sx, sy, sz) || 1
+  const nz = planeLengths.axial
+  if (plane === 'axial') return { row: (y0 * sy) / target, col: (x0 * sx) / target }
+  const adjustedRow = nz - 1 - z0
+  if (plane === 'sagittal') return { row: (adjustedRow * sz) / target, col: (y0 * sy) / target }
+  return { row: (adjustedRow * sz) / target, col: (x0 * sx) / target } // coronal
+}
+
+// The seed voxel's own index along a *given* plane's out-of-plane axis (same
+// mapping as _seed_index_3d: axial's index is z, sagittal's is x, coronal's
+// is y) — used to compute the physical distance from an arbitrary currently-
+// viewed slice to the seed, regardless of which plane the seed was placed on.
+function seedIndexAlongPlane(voxel: [number, number, number], plane: Plane): number {
+  const [z0, y0, x0] = voxel
+  if (plane === 'axial') return z0
+  if (plane === 'sagittal') return x0
+  return y0 // coronal
 }
 
 // One entry per tile ScorePanel can render: the CAC aggregate (all three
@@ -347,6 +405,18 @@ export default function Pane({
         loading: false,
         loadingMessage: null,
         index: Math.floor(info.plane_lengths[pane.plane] / 2),
+        // A mask (and anything computed against it) belongs to whatever CT
+        // it was created/loaded for — carrying it over to a different scan
+        // left stale, unsaved annotations silently attached to the wrong
+        // volume. Batch/manifest navigation (App.tsx's loadRowIntoPane)
+        // already does this; the single-scan "Load CT" button needs it too.
+        maskPath: '',
+        maskInfo: null,
+        maskAnnotationType: null,
+        editMode: false,
+        lesionResults: [],
+        volumeScores: null,
+        agatstonScores: null,
       })
     } catch (e) {
       onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
@@ -357,7 +427,14 @@ export default function Pane({
     onChange({ loading: true, loadingMessage: 'Loading mask...', error: null })
     try {
       const info = await loadVolume(path, true)
-      onChange({ maskPath: path, maskInfo: info, loading: false, loadingMessage: null, showMask: true })
+      onChange({
+        maskPath: path,
+        maskInfo: info,
+        maskAnnotationType: inferMaskAnnotationType(path),
+        loading: false,
+        loadingMessage: null,
+        showMask: true,
+      })
     } catch (e) {
       onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
     }
@@ -430,7 +507,17 @@ export default function Pane({
     onChange({ loading: true, loadingMessage: 'Creating new mask...', error: null })
     try {
       const info = await createBlankMask(pane.ctInfo.volume_id)
-      onChange({ maskPath: '', maskInfo: info, loading: false, loadingMessage: null, showMask: true, editMode: true })
+      onChange({
+        maskPath: '',
+        maskInfo: info,
+        // Unambiguous: a brand-new mask's annotation type is exactly
+        // whatever mode is active right now, no filename guessing needed.
+        maskAnnotationType: pane.contrastMode ? 'contrast' : 'non-contrast',
+        loading: false,
+        loadingMessage: null,
+        showMask: true,
+        editMode: true,
+      })
     } catch (e) {
       onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
     }
@@ -440,7 +527,11 @@ export default function Pane({
     if (!pane.maskInfo) return
     onChange({ editBusy: true, editMessage: null })
     try {
-      const res = await saveMask(pane.maskInfo.volume_id)
+      // Bake the annotation type into the saved filename (see
+      // volume_store.save_mask's default tags) so re-loading it later can
+      // recognize it via inferMaskAnnotationType instead of guessing.
+      const tag = pane.contrastMode ? (pane.maskInfo.is_new_mask ? 'ContrastAnnotations' : 'ContrastEdits') : undefined
+      const res = await saveMask(pane.maskInfo.volume_id, tag)
       let message = `Saved to ${res.path}`
       setMaskBaseline({ volumeId: pane.maskInfo.volume_id, version: pane.editVersion })
       setLastSavedAt(new Date())
@@ -752,14 +843,19 @@ export default function Pane({
   // using the actual computed contrastMeta.radiusMm once finalized, which is
   // the same formula and should match almost exactly.
   //
-  // The circle is a true spherical cross-section, not just shown on the
-  // seed's own slice: scrolling to a nearby slice (same plane) shows a
-  // smaller circle per the sphere equation r_slice = sqrt(r^2 - d^2), where
-  // d is the physical distance (mm) from that slice to the seed's slice
-  // along the plane's normal axis — shrinking to a point at the sphere's
-  // poles and disappearing entirely once d exceeds r. The crosshair marker
-  // itself still only shows on the exact seed slice (it's a precise
-  // placement target, not "this slice is somewhere in the VOI").
+  // The circle is a true spherical cross-section, shown on WHICHEVER plane
+  // and slice is currently being viewed (not just the plane the seed was
+  // originally placed on) — the seed's display click is first converted to
+  // its full 3D voxel index (seedDisplayToVoxel, mirroring the server's
+  // _seed_index_3d), then re-projected onto the current plane
+  // (projectVoxelToPlaneDisplay) to get where the circle's center belongs on
+  // screen right now. Its radius shrinks per the sphere equation
+  // r_slice = sqrt(r^2 - d^2), where d is the physical distance (mm) from
+  // the current slice to the seed's own slice along the current plane's
+  // normal axis (seedIndexAlongPlane) — shrinking to a point at the sphere's
+  // poles and disappearing once d exceeds r. The crosshair marker itself
+  // still only shows on the exact plane+slice the seed was placed on (it's a
+  // precise placement target, not "this slice is somewhere in the VOI").
   function updateSeedMarkerPosition() {
     const img = imgRef.current
     const el = seedMarkerRef.current
@@ -767,8 +863,7 @@ export default function Pane({
     const container = viewerAreaRef.current
     if (!img || !el || !container) return
     const seed = pane.pendingSeed
-    const onSeedPlane = seed && seed.plane === pane.plane
-    if (!onSeedPlane) {
+    if (!seed || !pane.ctInfo) {
       el.hidden = true
       if (sphereEl) sphereEl.hidden = true
       return
@@ -777,18 +872,19 @@ export default function Pane({
     const containerRect = container.getBoundingClientRect()
     const scaleX = imgRect.width / (img.naturalWidth || 1)
     const scaleY = imgRect.height / (img.naturalHeight || 1)
-    const x = imgRect.left - containerRect.left + seed.col * scaleX
-    const y = imgRect.top - containerRect.top + seed.row * scaleY
 
-    el.hidden = seed.index !== pane.index
+    el.hidden = !(seed.plane === pane.plane && seed.index === pane.index)
     if (!el.hidden) {
-      el.style.transform = `translate(${x}px, ${y}px)`
+      const mx = imgRect.left - containerRect.left + seed.col * scaleX
+      const my = imgRect.top - containerRect.top + seed.row * scaleY
+      el.style.transform = `translate(${mx}px, ${my}px)`
     }
 
-    if (sphereEl && pane.ctInfo) {
+    if (sphereEl) {
+      const voxel = seedDisplayToVoxel(pane.ctInfo.plane_lengths, pane.ctInfo.spacing_lps, seed)
       const radiusMm = pane.contrastMeta?.radiusMm ?? sphereRadiusMmFromVolume(contrastSettings.targetVolumeMm3)
       const stepMm = planeIndexSpacingMm(pane.ctInfo.spacing_lps, pane.plane)
-      const distMm = Math.abs(pane.index - seed.index) * stepMm
+      const distMm = Math.abs(pane.index - seedIndexAlongPlane(voxel, pane.plane)) * stepMm
       if (distMm > radiusMm) {
         sphereEl.hidden = true
       } else {
@@ -800,10 +896,13 @@ export default function Pane({
         // volume_store.py).
         const radiusNaturalPx = sliceRadiusMm / finestSpacing
         const diameterScreenPx = 2 * radiusNaturalPx * scaleX
+        const proj = projectVoxelToPlaneDisplay(pane.ctInfo.plane_lengths, pane.ctInfo.spacing_lps, voxel, pane.plane)
+        const cx = imgRect.left - containerRect.left + proj.col * scaleX
+        const cy = imgRect.top - containerRect.top + proj.row * scaleY
         sphereEl.hidden = false
         sphereEl.style.width = `${diameterScreenPx}px`
         sphereEl.style.height = `${diameterScreenPx}px`
-        sphereEl.style.transform = `translate(${x - diameterScreenPx / 2}px, ${y - diameterScreenPx / 2}px)`
+        sphereEl.style.transform = `translate(${cx - diameterScreenPx / 2}px, ${cy - diameterScreenPx / 2}px)`
       }
     }
   }
@@ -1006,6 +1105,41 @@ export default function Pane({
     } finally {
       setComputingVolumeScores(false)
     }
+  }
+
+  // Non-contrast counterpart: recomputes Agatston totals for every class at
+  // once (same class/label groupings as the volume version above), rather
+  // than the existing one-class-at-a-time confirmComputeScore flow — and
+  // shows them in the Score panel even without a manifest `<CLASS>_Agatston`
+  // baseline to compare against.
+  async function computeAllAgatstonScores() {
+    if (!pane.ctInfo || !pane.maskInfo) return
+    setComputingVolumeScores(true)
+    try {
+      const results = await Promise.all(
+        VOLUME_SCORE_SPECS.map((s) =>
+          computeVolumeAgatston({
+            maskId: pane.maskInfo!.volume_id,
+            ctId: pane.ctInfo!.volume_id,
+            labels: s.labels,
+          }),
+        ),
+      )
+      const agatstonScores: Partial<Record<ScoreClass, number>> = {}
+      VOLUME_SCORE_SPECS.forEach((s, i) => {
+        agatstonScores[s.cls] = results[i].totalScore
+      })
+      onChange({ agatstonScores, scorePanelOpen: true })
+    } catch (e) {
+      onChange({ error: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setComputingVolumeScores(false)
+    }
+  }
+
+  function computeAllScores() {
+    if (pane.contrastMode) computeAllVolumeScores()
+    else computeAllAgatstonScores()
   }
 
   async function confirmComputeScore() {
@@ -1834,22 +1968,24 @@ export default function Pane({
               )}
             </div>
           )}
-          {pane.ctInfo && !pane.contrastMode && pane.scoreClasses.length > 0 && currentRow && (
-            <ScorePanel
-              ref={scorePanelRef}
-              style={
-                pane.scorePanelPos
-                  ? { left: pane.scorePanelPos.x, top: pane.scorePanelPos.y, bottom: 'auto', transform: 'none' }
-                  : undefined
-              }
-              scoreClasses={pane.scoreClasses}
-              scores={currentRow.scores}
-              maskColors={pane.maskColors}
-              open={pane.scorePanelOpen}
-              onToggleOpen={() => onChange({ scorePanelOpen: !pane.scorePanelOpen })}
-              onDragHandleDown={handleScorePanelDragStart}
-            />
-          )}
+          {pane.ctInfo &&
+            !pane.contrastMode &&
+            (pane.agatstonScores || (pane.scoreClasses.length > 0 && currentRow)) && (
+              <ScorePanel
+                ref={scorePanelRef}
+                style={
+                  pane.scorePanelPos
+                    ? { left: pane.scorePanelPos.x, top: pane.scorePanelPos.y, bottom: 'auto', transform: 'none' }
+                    : undefined
+                }
+                scoreClasses={pane.agatstonScores ? (Object.keys(pane.agatstonScores) as ScoreClass[]) : pane.scoreClasses}
+                scores={pane.agatstonScores ?? currentRow!.scores}
+                maskColors={pane.maskColors}
+                open={pane.scorePanelOpen}
+                onToggleOpen={() => onChange({ scorePanelOpen: !pane.scorePanelOpen })}
+                onDragHandleDown={handleScorePanelDragStart}
+              />
+            )}
           {pane.ctInfo && pane.contrastMode && pane.volumeScores && (
             <ScorePanel
               ref={scorePanelRef}
@@ -1963,8 +2099,8 @@ export default function Pane({
                 onDragHandleDown={handleScoreComputeBoxDragStart}
                 flashRowId={flashRowId}
                 onRowClick={jumpToLesion}
-                onComputeAllVolumes={computeAllVolumeScores}
-                computingAllVolumes={computingVolumeScores}
+                onComputeAll={computeAllScores}
+                computingAll={computingVolumeScores}
               />
             </div>
           )}

@@ -24,6 +24,17 @@ export interface LabelColor {
   name?: string
 }
 
+// CAC is the aggregate of LAD/LCx/RCA (not one of the 6 segmentation
+// labels), so it gets a fixed neutral color instead of a slot in the
+// palette; the other 6 classes map onto the 6 label colors positionally.
+export const CAC_COLOR = '#FFFFFF'
+
+export function colorForScoreClass(cls: ScoreClass, maskColors: LabelColor[]): string {
+  if (cls === 'CAC') return CAC_COLOR
+  const idx = SCORE_CLASS_BY_LABEL.indexOf(cls)
+  return maskColors[idx]?.color || '#6c6d7a'
+}
+
 export const CALCIFICATIONS_PRESET: LabelColor[] = [
   { label: 1, color: '#FF0000', name: 'Calcification 1' },
   { label: 2, color: '#00FF00', name: 'Calcification 2' },
@@ -58,6 +69,8 @@ export interface ManifestConfig {
   imageColumn: string
   maskColumn: string
   patientIdColumn: string // required; used as the case-picker index/label and for split-view sync
+  reasonColumn: string // column holding Reason tags — may be a pre-existing column (e.g. "kernel_type")
+  includeDefaultReasonTags: boolean // merge the app's built-in tag set into the Reason picker's options
 }
 
 export const DEFAULT_MANIFEST_CONFIG: ManifestConfig = {
@@ -65,6 +78,8 @@ export const DEFAULT_MANIFEST_CONFIG: ManifestConfig = {
   imageColumn: 'image_path',
   maskColumn: 'mask_path',
   patientIdColumn: 'PatientId',
+  reasonColumn: 'Reason',
+  includeDefaultReasonTags: true,
 }
 
 export const STATUS_OPTIONS = ['Not Started', 'Annotated', 'InProgress', 'Review'] as const
@@ -86,6 +101,13 @@ export const DEFAULT_REASON_TAGS = [
 // optional/informational, shown if present and skipped if not.
 export const SCORE_CLASSES = ['CAC', 'LAD', 'LCx', 'RCA', 'TAC', 'AV', 'MV'] as const
 export type ScoreClass = (typeof SCORE_CLASSES)[number]
+
+// Positional mapping of segmentation label (1-6) to its clinical class name —
+// label 1 = SCORE_CLASS_BY_LABEL[0] = 'LAD', label 2 = 'LCx', etc. CAC is the
+// aggregate of LAD/LCx/RCA and isn't a segmentation label itself, so it has
+// no slot here. Shared by ScorePanel and LesionScorePanel.
+export const SCORE_CLASS_BY_LABEL: ScoreClass[] = ['LAD', 'LCx', 'RCA', 'TAC', 'AV', 'MV']
+export const CORONARY_LABELS = [1, 2, 3]
 
 export interface ManifestRow {
   index: number
@@ -162,10 +184,39 @@ export interface PaneState {
   editMessage: string | null
   editMinimized: boolean
   editBoxPos: { x: number; y: number } | null // null = default bottom-right anchor
+
+  // Per-lesion Agatston scoring — session-only, per-pane, never synced or
+  // persisted, like mask editing above. One combined box (checkbox to
+  // enable click-to-score, plus a running, append-only table of every
+  // lesion scored so far this session) rather than a separate toggle and
+  // results panel.
+  scoreComputeMode: boolean
+  scoreComputeMinimized: boolean
+  scoreComputeBoxPos: { x: number; y: number } | null
+  lesionResults: LesionScoreResult[]
 }
 
 export type EditTool = 'brush' | 'region-grow'
 export type OverwriteMode = 'any' | 'label' | 'threshold'
+
+export interface LesionScoreResult {
+  id: number // unique per row, so a re-click of the same lesion can be told apart from a new one to append
+  label: number
+  voxelCount: number
+  agatstonScore: number
+  // The score class this lesion's baseline is measured against: the
+  // aggregate 'CAC' for coronary labels (1-3, LAD/LCx/RCA), or the lesion's
+  // own class for the rest (TAC/AV/MV, labels 4-6).
+  targetClass: ScoreClass
+  oldScore: number | null // baseline total for targetClass before subtracting this lesion
+  newScore: number | null // oldScore - agatstonScore
+  scoreSource: 'manifest' | 'computed' | 'unavailable'
+  // Where this lesion was clicked, so a row click can jump back to it.
+  plane: Plane
+  index: number
+  row: number
+  col: number
+}
 
 // ---- Keyboard shortcuts ----
 
@@ -176,6 +227,7 @@ export type KeybindActionId =
   | 'nextSlice'
   | 'reloadCurrent'
   | 'toggleReviewMode'
+  | 'toggleScoreComputeMode'
 
 export interface KeyCombo {
   key: string // e.g. "r", "ArrowLeft" — letters stored lowercase
@@ -194,6 +246,7 @@ export const KEYBIND_LABELS: Record<KeybindActionId, string> = {
   nextSlice: 'Next slice',
   reloadCurrent: 'Reload CT/mask from disk (both panes in split view)',
   toggleReviewMode: 'Toggle Review mode',
+  toggleScoreComputeMode: 'Toggle Score Compute mode',
 }
 
 export const DEFAULT_KEYBINDS: KeybindMap = {
@@ -203,6 +256,7 @@ export const DEFAULT_KEYBINDS: KeybindMap = {
   nextSlice: [{ key: 'ArrowRight' }, { key: 'd' }],
   reloadCurrent: [{ key: 'r', ctrl: true, shift: true }],
   toggleReviewMode: [{ key: 'v', ctrl: true, shift: true }],
+  toggleScoreComputeMode: [{ key: 's', ctrl: true, shift: true }],
 }
 
 export function comboLabel(combo: KeyCombo): string {

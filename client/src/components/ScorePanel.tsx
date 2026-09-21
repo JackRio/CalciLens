@@ -1,17 +1,6 @@
 import { forwardRef } from 'react'
 import type { LabelColor, ManifestRow, ScoreClass } from '../types'
-
-// CAC is the aggregate of LAD/LCx/RCA (not one of the 6 segmentation
-// labels), so it gets a fixed neutral color instead of a slot in the
-// palette; the other 6 classes map onto the 6 label colors in this order.
-const COLOR_ORDER: ScoreClass[] = ['LAD', 'LCx', 'RCA', 'TAC', 'AV', 'MV']
-const CAC_COLOR = '#FFFFFF'
-
-function colorForClass(cls: ScoreClass, maskColors: LabelColor[]): string {
-  if (cls === 'CAC') return CAC_COLOR
-  const idx = COLOR_ORDER.indexOf(cls)
-  return maskColors[idx]?.color || '#6c6d7a'
-}
+import { colorForScoreClass } from '../types'
 
 function formatScore(val: number | null | undefined): string {
   return val === null || val === undefined
@@ -81,7 +70,7 @@ const ScorePanel = forwardRef<
                   <ScoreTile
                     cls={g.headerClass}
                     value={row.scores[g.headerClass]}
-                    color={colorForClass(g.headerClass, maskColors)}
+                    color={colorForScoreClass(g.headerClass, maskColors)}
                   />
                 ) : g.headerLabel ? (
                   <div className="score-group-label">{g.headerLabel}</div>
@@ -89,7 +78,7 @@ const ScorePanel = forwardRef<
               </div>
               <div className="score-group-members">
                 {g.members.map((cls) => (
-                  <ScoreTile key={cls} cls={cls} value={row.scores[cls]} color={colorForClass(cls, maskColors)} />
+                  <ScoreTile key={cls} cls={cls} value={row.scores[cls]} color={colorForScoreClass(cls, maskColors)} />
                 ))}
               </div>
             </div>

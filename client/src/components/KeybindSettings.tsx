@@ -9,6 +9,7 @@ const ACTION_ORDER: KeybindActionId[] = [
   'nextSlice',
   'reloadCurrent',
   'toggleReviewMode',
+  'toggleScoreComputeMode',
 ]
 
 export default function KeybindSettings({

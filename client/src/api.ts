@@ -95,6 +95,8 @@ export async function getManifestPairs(params: {
   imageColumn: string
   maskColumn: string
   patientIdColumn?: string
+  reasonColumn: string
+  includeDefaultReasonTags: boolean
 }): Promise<ManifestPairsResult> {
   const res = await fetch('/api/manifest_pairs', {
     method: 'POST',
@@ -105,6 +107,8 @@ export async function getManifestPairs(params: {
       mask_column: params.maskColumn,
       id_column: params.patientIdColumn || null,
       patient_id_column: params.patientIdColumn || null,
+      reason_column: params.reasonColumn,
+      include_default_reason_tags: params.includeDefaultReasonTags,
     }),
   })
   const data = await handleJson<{ rows: ManifestPairsResult['rows']; reason_options: string[]; score_classes: ManifestPairsResult['scoreClasses'] }>(
@@ -131,11 +135,16 @@ export async function saveManifestStatus(manifestPath: string, rowIndex: number,
   await handleJson(res)
 }
 
-export async function saveManifestReason(manifestPath: string, rowIndex: number, reasons: string[]): Promise<void> {
+export async function saveManifestReason(
+  manifestPath: string,
+  rowIndex: number,
+  reasons: string[],
+  reasonColumn: string,
+): Promise<void> {
   const res = await fetch('/api/manifest/reason', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ manifest_path: manifestPath, row_index: rowIndex, reasons }),
+    body: JSON.stringify({ manifest_path: manifestPath, row_index: rowIndex, reasons, reason_column: reasonColumn }),
   })
   await handleJson(res)
 }
@@ -221,6 +230,64 @@ export async function regionGrowMask(params: {
     }),
   })
   return handleJson(res)
+}
+
+export async function computeLesionScore(params: {
+  maskId: string
+  ctId: string
+  plane: Plane
+  index: number
+  row: number
+  col: number
+  huThreshold?: number
+}): Promise<{ found: boolean; label: number | null; voxelCount: number; agatstonScore: number; isCoronary: boolean }> {
+  const res = await fetch('/api/mask/lesion_score', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mask_id: params.maskId,
+      ct_id: params.ctId,
+      plane: params.plane,
+      index: params.index,
+      row: params.row,
+      col: params.col,
+      hu_threshold: params.huThreshold ?? 130,
+    }),
+  })
+  const data = await handleJson<{
+    found: boolean
+    label: number | null
+    voxel_count: number
+    agatston_score: number
+    is_coronary: boolean
+  }>(res)
+  return {
+    found: data.found,
+    label: data.label,
+    voxelCount: data.voxel_count,
+    agatstonScore: data.agatston_score,
+    isCoronary: data.is_coronary,
+  }
+}
+
+export async function computeVolumeAgatston(params: {
+  maskId: string
+  ctId: string
+  labels?: number[]
+  huThreshold?: number
+}): Promise<{ totalScore: number }> {
+  const res = await fetch('/api/volumes/agatston_total', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mask_id: params.maskId,
+      ct_id: params.ctId,
+      labels: params.labels ?? [1, 2, 3],
+      hu_threshold: params.huThreshold ?? 130,
+    }),
+  })
+  const data = await handleJson<{ total_score: number }>(res)
+  return { totalScore: data.total_score }
 }
 
 export async function refreshMaskLabels(maskId: string): Promise<{ labels: number[] }> {

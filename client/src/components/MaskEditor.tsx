@@ -80,7 +80,9 @@ export default function MaskEditor({
           <input
             type="checkbox"
             checked={pane.editMode}
-            onChange={(e) => onChange({ editMode: e.target.checked })}
+            onChange={(e) =>
+              onChange(e.target.checked ? { editMode: true, scoreComputeMode: false } : { editMode: false })
+            }
           />
           {title}
         </label>

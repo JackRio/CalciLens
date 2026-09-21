@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AnnotationStatus, KeybindMap, PaneState, Plane } from '../types'
-import { WINDOW_PRESETS, DEFAULT_WINDOW_LEVEL, DEFAULT_WINDOW_WIDTH, STATUS_OPTIONS, comboMatches } from '../types'
+import type { AnnotationStatus, KeybindMap, LesionScoreResult, PaneState, Plane, ScoreClass } from '../types'
+import {
+  WINDOW_PRESETS,
+  DEFAULT_WINDOW_LEVEL,
+  DEFAULT_WINDOW_WIDTH,
+  STATUS_OPTIONS,
+  CORONARY_LABELS,
+  SCORE_CLASS_BY_LABEL,
+  comboMatches,
+} from '../types'
 import {
   loadVolume,
   probeVoxel,
@@ -8,6 +16,8 @@ import {
   createBlankMask,
   paintMask,
   regionGrowMask,
+  computeLesionScore,
+  computeVolumeAgatston,
   refreshMaskLabels,
   saveMask,
   saveManifestComment,
@@ -15,6 +25,7 @@ import {
   saveManifestReason,
   saveManifestMaskPath,
 } from '../api'
+import { getCachedCac, setCachedCac } from '../lesionCache'
 import InfoPanel from './InfoPanel'
 import LabelColorEditor from './LabelColorEditor'
 import CaseLoader from './CaseLoader'
@@ -22,6 +33,7 @@ import AlphaSpinner from './AlphaSpinner'
 import MaskEditor from './MaskEditor'
 import ReasonPicker from './ReasonPicker'
 import ScorePanel from './ScorePanel'
+import LesionScoreBox from './LesionScoreBox'
 
 const PLANES: Plane[] = ['axial', 'sagittal', 'coronal']
 
@@ -81,6 +93,23 @@ export default function Pane({
   const [counterError, setCounterError] = useState<string | null>(null)
   const [statusSaving, setStatusSaving] = useState(false)
   const [statusError, setStatusError] = useState<string | null>(null)
+  const [lesionNotFound, setLesionNotFound] = useState(false)
+  const [scoreConfirmPending, setScoreConfirmPending] = useState<{
+    label: number
+    voxelCount: number
+    agatstonScore: number
+    targetClass: ScoreClass
+    plane: Plane
+    index: number
+    row: number
+    col: number
+  } | null>(null)
+  const [computingScore, setComputingScore] = useState(false)
+  const [flashRowId, setFlashRowId] = useState<number | null>(null)
+  const lesionIdCounter = useRef(0)
+  const flashTimeoutRef = useRef<number | null>(null)
+  const jumpMarkerTimeoutRef = useRef<number | null>(null)
+  const pendingJumpMarkerRef = useRef<{ row: number; col: number } | null>(null)
   // Brush-cursor tracking deliberately bypasses React state: it's a
   // high-frequency, purely-visual value with no data anyone else reads, so
   // we write straight to the DOM node (via ref) in a requestAnimationFrame
@@ -94,6 +123,7 @@ export default function Pane({
   const bottomLeftRef = useRef<HTMLDivElement>(null)
   const editBoxRef = useRef<HTMLDivElement>(null)
   const scorePanelRef = useRef<HTMLDivElement>(null)
+  const jumpMarkerRef = useRef<HTMLDivElement>(null)
   const lastProbeTs = useRef(0)
   const rightDrag = useRef<{
     active: boolean
@@ -116,6 +146,12 @@ export default function Pane({
     offsetY: 0,
   })
   const scorePanelDrag = useRef<{ active: boolean; offsetX: number; offsetY: number }>({
+    active: false,
+    offsetX: 0,
+    offsetY: 0,
+  })
+  const scoreComputeBoxRef = useRef<HTMLDivElement>(null)
+  const scoreComputeBoxDrag = useRef<{ active: boolean; offsetX: number; offsetY: number }>({
     active: false,
     offsetX: 0,
     offsetY: 0,
@@ -385,7 +421,7 @@ export default function Pane({
       manifestRows: pane.manifestRows.map((r) => (r.index === currentRow.index ? { ...r, reason: next } : r)),
     })
     try {
-      await saveManifestReason(pane.manifestConfig.manifestPath, currentRow.index, next)
+      await saveManifestReason(pane.manifestConfig.manifestPath, currentRow.index, next, pane.manifestConfig.reasonColumn)
     } catch (e) {
       onChange({ manifestError: e instanceof Error ? e.message : String(e) })
     }
@@ -483,6 +519,186 @@ export default function Pane({
     } catch (e) {
       onChange({ editMessage: e instanceof Error ? e.message : String(e) })
     }
+  }
+
+  // Coronary labels (1-3, LAD/LCx/RCA) are scored against the aggregate CAC
+  // total; every other label (4-6, TAC/AV/MV) is scored against its own
+  // class's total instead — each maps onto exactly one score class.
+  function targetClassForLabel(label: number): ScoreClass {
+    return CORONARY_LABELS.includes(label) ? 'CAC' : SCORE_CLASS_BY_LABEL[label - 1]
+  }
+
+  function flashRow(id: number) {
+    if (flashTimeoutRef.current !== null) window.clearTimeout(flashTimeoutRef.current)
+    setFlashRowId(id)
+    flashTimeoutRef.current = window.setTimeout(() => setFlashRowId(null), 1700)
+  }
+
+  function showJumpMarker(row: number, col: number) {
+    const img = imgRef.current
+    const el = jumpMarkerRef.current
+    const container = viewerAreaRef.current
+    if (!img || !el || !container) return
+    const imgRect = img.getBoundingClientRect()
+    const containerRect = container.getBoundingClientRect()
+    const scaleX = imgRect.width / (img.naturalWidth || 1)
+    const scaleY = imgRect.height / (img.naturalHeight || 1)
+    const x = imgRect.left - containerRect.left + col * scaleX
+    const y = imgRect.top - containerRect.top + row * scaleY
+    el.hidden = false
+    el.style.transform = `translate(${x}px, ${y}px)`
+    if (jumpMarkerTimeoutRef.current !== null) window.clearTimeout(jumpMarkerTimeoutRef.current)
+    jumpMarkerTimeoutRef.current = window.setTimeout(() => {
+      el.hidden = true
+    }, 1600)
+  }
+
+  function jumpToLesion(entry: LesionScoreResult) {
+    const samePlaneAndIndex = pane.plane === entry.plane && pane.index === entry.index
+    if (samePlaneAndIndex) {
+      showJumpMarker(entry.row, entry.col)
+    } else {
+      pendingJumpMarkerRef.current = { row: entry.row, col: entry.col }
+      onChange({ plane: entry.plane, index: entry.index })
+    }
+  }
+
+  function applyScoreResult(
+    label: number,
+    voxelCount: number,
+    agatstonScore: number,
+    targetClass: ScoreClass,
+    oldScore: number | null,
+    scoreSource: 'manifest' | 'computed' | 'unavailable',
+    plane: Plane,
+    index: number,
+    row: number,
+    col: number,
+  ) {
+    lesionIdCounter.current += 1
+    const entry: LesionScoreResult = {
+      id: lesionIdCounter.current,
+      label,
+      voxelCount,
+      agatstonScore,
+      targetClass,
+      oldScore,
+      newScore: oldScore !== null ? oldScore - agatstonScore : null,
+      scoreSource,
+      plane,
+      index,
+      row,
+      col,
+    }
+    onChange({ lesionResults: [...pane.lesionResults, entry] })
+  }
+
+  function finishLesionScore(
+    label: number,
+    voxelCount: number,
+    agatstonScore: number,
+    plane: Plane,
+    index: number,
+    row: number,
+    col: number,
+  ) {
+    const targetClass = targetClassForLabel(label)
+    const volumeId = pane.maskInfo!.volume_id
+    const cacheKey = `${volumeId}:${targetClass}`
+    const cached = getCachedCac(cacheKey)
+    if (cached) {
+      applyScoreResult(label, voxelCount, agatstonScore, targetClass, cached.total, cached.source, plane, index, row, col)
+      return
+    }
+    const manifestVal = currentRow?.scores?.[targetClass]
+    if (manifestVal !== null && manifestVal !== undefined) {
+      setCachedCac(cacheKey, manifestVal, 'manifest')
+      applyScoreResult(label, voxelCount, agatstonScore, targetClass, manifestVal, 'manifest', plane, index, row, col)
+      return
+    }
+    setScoreConfirmPending({ label, voxelCount, agatstonScore, targetClass, plane, index, row, col })
+  }
+
+  async function doLesionScore(row: number, col: number) {
+    if (!pane.ctInfo || !pane.maskInfo) return
+    onChange({ loading: true, loadingMessage: 'Computing lesion score...' })
+    try {
+      const res = await computeLesionScore({
+        maskId: pane.maskInfo.volume_id,
+        ctId: pane.ctInfo.volume_id,
+        plane: pane.plane,
+        index: pane.index,
+        row,
+        col,
+      })
+      onChange({ loading: false, loadingMessage: null })
+      if (!res.found || res.label === null) {
+        setLesionNotFound(true)
+        return
+      }
+      // Same 3D lesion already scored this session (identical label + voxel
+      // count + score) — flash the existing row instead of appending a
+      // duplicate one.
+      const existing = pane.lesionResults.find(
+        (r) => r.label === res.label && r.voxelCount === res.voxelCount && r.agatstonScore === res.agatstonScore,
+      )
+      if (existing) {
+        flashRow(existing.id)
+        return
+      }
+      finishLesionScore(res.label, res.voxelCount, res.agatstonScore, pane.plane, pane.index, row, col)
+    } catch (e) {
+      onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  async function confirmComputeScore() {
+    if (!scoreConfirmPending || !pane.ctInfo || !pane.maskInfo) return
+    setComputingScore(true)
+    try {
+      const labels = scoreConfirmPending.targetClass === 'CAC' ? CORONARY_LABELS : [scoreConfirmPending.label]
+      const res = await computeVolumeAgatston({
+        maskId: pane.maskInfo.volume_id,
+        ctId: pane.ctInfo.volume_id,
+        labels,
+      })
+      const cacheKey = `${pane.maskInfo.volume_id}:${scoreConfirmPending.targetClass}`
+      setCachedCac(cacheKey, res.totalScore, 'computed')
+      applyScoreResult(
+        scoreConfirmPending.label,
+        scoreConfirmPending.voxelCount,
+        scoreConfirmPending.agatstonScore,
+        scoreConfirmPending.targetClass,
+        res.totalScore,
+        'computed',
+        scoreConfirmPending.plane,
+        scoreConfirmPending.index,
+        scoreConfirmPending.row,
+        scoreConfirmPending.col,
+      )
+    } catch (e) {
+      onChange({ error: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setComputingScore(false)
+      setScoreConfirmPending(null)
+    }
+  }
+
+  function declineComputeScore() {
+    if (!scoreConfirmPending) return
+    applyScoreResult(
+      scoreConfirmPending.label,
+      scoreConfirmPending.voxelCount,
+      scoreConfirmPending.agatstonScore,
+      scoreConfirmPending.targetClass,
+      null,
+      'unavailable',
+      scoreConfirmPending.plane,
+      scoreConfirmPending.index,
+      scoreConfirmPending.row,
+      scoreConfirmPending.col,
+    )
+    setScoreConfirmPending(null)
   }
 
   function setPlane(plane: Plane) {
@@ -604,6 +820,12 @@ export default function Pane({
         onToggleReviewMode()
         return
       }
+      if (keybinds.toggleScoreComputeMode.some((c) => comboMatches(e, c))) {
+        e.preventDefault()
+        const next = !pane.scoreComputeMode
+        onChange(next ? { scoreComputeMode: true, editMode: false } : { scoreComputeMode: false })
+        return
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
@@ -615,6 +837,7 @@ export default function Pane({
     pane.showMask,
     pane.thresholdEnabled,
     pane.manifestRows.length,
+    pane.scoreComputeMode,
     onChange,
     onToggleReviewMode,
   ])
@@ -626,7 +849,8 @@ export default function Pane({
       (wlBoxRef.current && wlBoxRef.current.contains(node)) ||
         (editBoxRef.current && editBoxRef.current.contains(node)) ||
         (bottomLeftRef.current && bottomLeftRef.current.contains(node)) ||
-        (scorePanelRef.current && scorePanelRef.current.contains(node)),
+        (scorePanelRef.current && scorePanelRef.current.contains(node)) ||
+        (scoreComputeBoxRef.current && scoreComputeBoxRef.current.contains(node)),
     )
   }
 
@@ -642,6 +866,11 @@ export default function Pane({
         startLevel: pane.windowLevel,
         axis: null,
       }
+      return
+    }
+    if (e.button === 0 && pane.scoreComputeMode && pane.ctInfo && pane.maskInfo) {
+      const coords = getDisplayCoords(e.clientX, e.clientY)
+      if (coords) doLesionScore(coords.row, coords.col)
       return
     }
     if (e.button === 0 && pane.editMode && pane.ctInfo && pane.maskInfo) {
@@ -678,6 +907,19 @@ export default function Pane({
     if (!box) return
     const boxRect = box.getBoundingClientRect()
     scorePanelDrag.current = {
+      active: true,
+      offsetX: e.clientX - boxRect.left,
+      offsetY: e.clientY - boxRect.top,
+    }
+  }
+
+  function handleScoreComputeBoxDragStart(e: React.MouseEvent) {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const box = scoreComputeBoxRef.current
+    if (!box) return
+    const boxRect = box.getBoundingClientRect()
+    scoreComputeBoxDrag.current = {
       active: true,
       offsetX: e.clientX - boxRect.left,
       offsetY: e.clientY - boxRect.top,
@@ -730,6 +972,7 @@ export default function Pane({
     if (rightDrag.current.active && !(e.buttons & 2)) onMouseUp()
     if (editBoxDrag.current.active && !(e.buttons & 1)) onMouseUp()
     if (scorePanelDrag.current.active && !(e.buttons & 1)) onMouseUp()
+    if (scoreComputeBoxDrag.current.active && !(e.buttons & 1)) onMouseUp()
 
     if (pane.editMode && pane.editTool === 'brush' && !isOverUIBox(e.target)) {
       const container = viewerAreaRef.current
@@ -771,6 +1014,20 @@ export default function Pane({
       if (!blocked) {
         onChange({ editBoxPos: { x, y } })
       }
+      return
+    }
+
+    if (scoreComputeBoxDrag.current.active) {
+      const container = viewerAreaRef.current
+      const box = scoreComputeBoxRef.current
+      if (!container || !box) return
+      const containerRect = container.getBoundingClientRect()
+      const boxRect = box.getBoundingClientRect()
+      let x = e.clientX - containerRect.left - scoreComputeBoxDrag.current.offsetX
+      let y = e.clientY - containerRect.top - scoreComputeBoxDrag.current.offsetY
+      x = Math.max(0, Math.min(containerRect.width - boxRect.width, x))
+      y = Math.max(0, Math.min(containerRect.height - boxRect.height, y))
+      onChange({ scoreComputeBoxPos: { x, y } })
       return
     }
 
@@ -842,6 +1099,7 @@ export default function Pane({
     rightDrag.current.active = false
     editBoxDrag.current.active = false
     scorePanelDrag.current.active = false
+    scoreComputeBoxDrag.current.active = false
     if (paintDrag.current.active) {
       paintDrag.current.active = false
       if (paintDrag.current.didPaint && pane.maskInfo) {
@@ -964,25 +1222,27 @@ export default function Pane({
             >
               {currentRow?.comment ? 'Read' : 'Comment'}
             </button>
-            <div className="reason-picker-anchor">
-              <button
-                className={currentRow?.reason.length ? 'has-comment' : ''}
-                onClick={toggleReasonPicker}
-                disabled={!currentRow}
-                title="Tag a reason for this case"
-              >
-                Reason{currentRow?.reason.length ? ` (${currentRow.reason.length})` : ''}
-              </button>
-              {reasonPickerOpen && currentRow && (
-                <ReasonPicker
-                  options={reasonOptionsSnapshot}
-                  selected={currentRow.reason}
-                  onToggle={handleToggleReason}
-                  onAddTag={handleAddReasonTag}
-                  onClose={() => setReasonPickerOpen(false)}
-                />
-              )}
-            </div>
+            {(pane.manifestConfig.reasonColumn || pane.manifestConfig.includeDefaultReasonTags) && (
+              <div className="reason-picker-anchor">
+                <button
+                  className={currentRow?.reason.length ? 'has-comment' : ''}
+                  onClick={toggleReasonPicker}
+                  disabled={!currentRow}
+                  title="Tag a reason for this case"
+                >
+                  Reason{currentRow?.reason.length ? ` (${currentRow.reason.length})` : ''}
+                </button>
+                {reasonPickerOpen && currentRow && (
+                  <ReasonPicker
+                    options={reasonOptionsSnapshot}
+                    selected={currentRow.reason}
+                    onToggle={handleToggleReason}
+                    onAddTag={handleAddReasonTag}
+                    onClose={() => setReasonPickerOpen(false)}
+                  />
+                )}
+              </div>
+            )}
             {onCopyToOtherPane && (
               <button
                 onClick={handleCopyToOtherPane}
@@ -1048,6 +1308,13 @@ export default function Pane({
               draggable={false}
               className="slice-image"
               style={{ transform: `scale(${pane.zoom})` }}
+              onLoad={() => {
+                if (pendingJumpMarkerRef.current) {
+                  const { row, col } = pendingJumpMarkerRef.current
+                  pendingJumpMarkerRef.current = null
+                  showJumpMarker(row, col)
+                }
+              }}
             />
           ) : pane.loading ? (
             <div className="viewer-placeholder viewer-loading">
@@ -1061,6 +1328,10 @@ export default function Pane({
               moment a mouse move needs it — positioned and shown/hidden via
               direct DOM writes in scheduleCursorApply, not React state. */}
           <div ref={cursorDivRef} className="brush-cursor" hidden />
+          {/* Same deal as brush-cursor: shown briefly via direct DOM writes
+              (showJumpMarker) when a Score-Compute-box row is clicked, to
+              point at the lesion's location without a React re-render. */}
+          <div ref={jumpMarkerRef} className="jump-marker" hidden />
           {pane.ctInfo && (
             <div className="viewer-left-controls">
               <div className="wl-box" ref={wlBoxRef} onWheel={stopWheel}>
@@ -1133,7 +1404,7 @@ export default function Pane({
               ref={scorePanelRef}
               style={
                 pane.scorePanelPos
-                  ? { left: pane.scorePanelPos.x, top: pane.scorePanelPos.y, transform: 'none' }
+                  ? { left: pane.scorePanelPos.x, top: pane.scorePanelPos.y, bottom: 'auto', transform: 'none' }
                   : undefined
               }
               scoreClasses={pane.scoreClasses}
@@ -1217,6 +1488,25 @@ export default function Pane({
                   </button>
                 </div>
               )}
+            </div>
+          )}
+          {pane.ctInfo && pane.maskInfo && (
+            <div
+              ref={scoreComputeBoxRef}
+              className="viewer-score-compute-box"
+              style={
+                pane.scoreComputeBoxPos
+                  ? { left: pane.scoreComputeBoxPos.x, top: pane.scoreComputeBoxPos.y, bottom: 'auto' }
+                  : undefined
+              }
+            >
+              <LesionScoreBox
+                pane={pane}
+                onChange={onChange}
+                onDragHandleDown={handleScoreComputeBoxDragStart}
+                flashRowId={flashRowId}
+                onRowClick={jumpToLesion}
+              />
             </div>
           )}
         </div>
@@ -1358,6 +1648,40 @@ export default function Pane({
             <div className="comment-modal-buttons">
               <button className="add-label-btn" onClick={() => setCounterError(null)}>
                 OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {lesionNotFound && (
+        <div className="comment-modal-backdrop" onClick={() => setLesionNotFound(false)}>
+          <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="comment-modal-title">No lesion here</div>
+            <div className="busy-msg">This location is not part of a segmented lesion.</div>
+            <div className="comment-modal-buttons">
+              <button className="add-label-btn" onClick={() => setLesionNotFound(false)}>
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {scoreConfirmPending && (
+        <div className="comment-modal-backdrop" onClick={declineComputeScore}>
+          <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="comment-modal-title">{scoreConfirmPending.targetClass} score not found</div>
+            <div className="busy-msg">
+              This case has no {scoreConfirmPending.targetClass} score in the manifest. Compute it now from the mask?
+              This may take a moment.
+            </div>
+            <div className="comment-modal-buttons">
+              <button onClick={declineComputeScore} disabled={computingScore}>
+                No
+              </button>
+              <button className="add-label-btn" onClick={confirmComputeScore} disabled={computingScore}>
+                {computingScore ? 'Computing...' : 'Yes, compute'}
               </button>
             </div>
           </div>

@@ -72,6 +72,11 @@ function makePane(): PaneState {
     editMessage: null,
     editMinimized: false,
     editBoxPos: null,
+
+    scoreComputeMode: false,
+    scoreComputeMinimized: false,
+    scoreComputeBoxPos: null,
+    lesionResults: [],
   }
 }
 
@@ -352,7 +357,7 @@ export default function App() {
       // the other's change (or worse: racing on the same temp file during
       // the write itself).
       await saveManifestComment(other.manifestConfig.manifestPath, otherRow.index, sourceRow.comment)
-      await saveManifestReason(other.manifestConfig.manifestPath, otherRow.index, sourceRow.reason)
+      await saveManifestReason(other.manifestConfig.manifestPath, otherRow.index, sourceRow.reason, other.manifestConfig.reasonColumn)
       updatePane(other.id, {
         manifestRows: other.manifestRows.map((r) =>
           r.index === otherRow.index ? { ...r, comment: sourceRow.comment, reason: sourceRow.reason } : r,

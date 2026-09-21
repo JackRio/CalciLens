@@ -72,19 +72,25 @@ export default function CaseLoader({
       // wrong — so the dropdown *looks* correct but submits the stale value.
       // Reconcile every configured column name against what's actually in
       // the file (case-insensitively) so what's shown is what gets sent.
-      const resolve = (current: string, keywords: string[]) => {
+      // Mask/Patient ID are optional: when nothing matches, resolve to ''
+      // (the explicit "-- none --" option) rather than leaving a stale
+      // value that isn't in `cols` — that stale value is what previously
+      // made the dropdown silently display the first real column instead.
+      const resolve = (current: string, keywords: string[], optional: boolean) => {
         if (cols.includes(current)) return current
         const ci = cols.find((c) => c.toLowerCase() === current.toLowerCase())
         if (ci) return ci
         const byKeyword = cols.find((c) => keywords.some((k) => c.toLowerCase().includes(k)))
-        return byKeyword || current
+        if (byKeyword) return byKeyword
+        return optional ? '' : current
       }
       onChange({
         manifestConfig: {
           ...baseConfig,
-          imageColumn: resolve(baseConfig.imageColumn, ['image', 'ct_path', 'img']),
-          maskColumn: resolve(baseConfig.maskColumn, ['mask', 'seg']),
-          patientIdColumn: resolve(baseConfig.patientIdColumn, ['patient']),
+          imageColumn: resolve(baseConfig.imageColumn, ['image', 'ct_path', 'img'], false),
+          maskColumn: resolve(baseConfig.maskColumn, ['mask', 'seg'], true),
+          patientIdColumn: resolve(baseConfig.patientIdColumn, ['patient'], true),
+          reasonColumn: resolve(baseConfig.reasonColumn, ['reason'], true),
         },
       })
     } catch {
@@ -139,6 +145,8 @@ export default function CaseLoader({
         imageColumn: cfg.imageColumn,
         maskColumn: cfg.maskColumn,
         patientIdColumn: cfg.patientIdColumn,
+        reasonColumn: cfg.reasonColumn,
+        includeDefaultReasonTags: cfg.includeDefaultReasonTags,
       })
       onChange({ manifestRows: rows, reasonOptions, scoreClasses })
       if (rows.length === 0) {
@@ -224,7 +232,7 @@ export default function CaseLoader({
               <button
                 className="add-label-btn"
                 onClick={handleLoadManifest}
-                disabled={!cfg.manifestPath || !cfg.patientIdColumn}
+                disabled={!cfg.manifestPath}
               >
                 Load manifest
               </button>
@@ -254,6 +262,7 @@ export default function CaseLoader({
               Mask path column
               {availableColumns.length > 0 ? (
                 <select value={cfg.maskColumn} onChange={(e) => updateConfig({ maskColumn: e.target.value })}>
+                  <option value="">-- none --</option>
                   {availableColumns.map((c) => (
                     <option key={c} value={c}>
                       {c}
@@ -275,6 +284,7 @@ export default function CaseLoader({
                   value={cfg.patientIdColumn}
                   onChange={(e) => updateConfig({ patientIdColumn: e.target.value })}
                 >
+                  <option value="">-- none --</option>
                   {availableColumns.map((c) => (
                     <option key={c} value={c}>
                       {c}
@@ -287,6 +297,39 @@ export default function CaseLoader({
                   placeholder="e.g. PatientId"
                   value={cfg.patientIdColumn}
                   onChange={(e) => updateConfig({ patientIdColumn: e.target.value })}
+                />
+              )}
+            </label>
+            <label>
+              <span className="reason-column-label">
+                Reason column
+                <label
+                  className="reason-defaults-toggle"
+                  title="Merge the app's built-in tag set (Mislabel, Artefacts, etc.) into the Reason picker's options, alongside whatever tags are already used in this column"
+                >
+                  <input
+                    type="checkbox"
+                    checked={cfg.includeDefaultReasonTags}
+                    onChange={(e) => updateConfig({ includeDefaultReasonTags: e.target.checked })}
+                  />
+                  Include defaults
+                </label>
+              </span>
+              {availableColumns.length > 0 ? (
+                <select value={cfg.reasonColumn} onChange={(e) => updateConfig({ reasonColumn: e.target.value })}>
+                  <option value="">-- none --</option>
+                  {availableColumns.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  placeholder="e.g. Reason"
+                  value={cfg.reasonColumn}
+                  onChange={(e) => updateConfig({ reasonColumn: e.target.value })}
                 />
               )}
             </label>

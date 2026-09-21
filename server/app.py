@@ -4,6 +4,7 @@ import json
 import os
 from typing import Optional
 
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -22,6 +23,13 @@ from volume_store import (
     DEFAULT_THRESHOLD_COLOR,
     DEFAULT_THRESHOLD_HU,
     PLANES,
+)
+from agatston import (
+    find_lesion_component,
+    compute_agatston_score,
+    compute_volume_agatston,
+    CORONARY_LABELS,
+    DEFAULT_HU_THRESHOLD,
 )
 import folder_scan
 
@@ -267,6 +275,60 @@ def mask_region_grow(req: RegionGrowRequest):
     return {"changed": changed, "labels": mask_vol.labels}
 
 
+# ---- Per-lesion Agatston scoring ----
+
+
+class LesionScoreRequest(BaseModel):
+    mask_id: str
+    ct_id: str
+    plane: str
+    index: int
+    row: float
+    col: float
+    hu_threshold: float = DEFAULT_HU_THRESHOLD
+
+
+@app.post("/api/mask/lesion_score")
+def mask_lesion_score(req: LesionScoreRequest):
+    try:
+        mask_vol = store.get(req.mask_id)
+        ct_vol = store.get(req.ct_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="volume not loaded")
+    result = find_lesion_component(
+        mask_vol, ct_vol, req.plane, req.index, req.row, req.col, req.hu_threshold
+    )
+    if result is None:
+        return {"found": False, "label": None, "voxel_count": 0, "agatston_score": 0.0, "is_coronary": False}
+    region, label = result
+    score = compute_agatston_score(region, ct_vol.array, ct_vol.spacing_lps)
+    return {
+        "found": True,
+        "label": label,
+        "voxel_count": int(np.count_nonzero(region)),
+        "agatston_score": score,
+        "is_coronary": label in CORONARY_LABELS,
+    }
+
+
+class VolumeAgatstonRequest(BaseModel):
+    mask_id: str
+    ct_id: str
+    labels: list[int] = list(CORONARY_LABELS)
+    hu_threshold: float = DEFAULT_HU_THRESHOLD
+
+
+@app.post("/api/volumes/agatston_total")
+def volumes_agatston_total(req: VolumeAgatstonRequest):
+    try:
+        mask_vol = store.get(req.mask_id)
+        ct_vol = store.get(req.ct_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="volume not loaded")
+    total = compute_volume_agatston(mask_vol, ct_vol, tuple(req.labels), req.hu_threshold)
+    return {"total_score": total}
+
+
 class SaveMaskRequest(BaseModel):
     mask_id: str
     tag: Optional[str] = None
@@ -305,9 +367,11 @@ def manifest_columns(req: ManifestColumnsRequest):
 class ManifestPairsRequest(BaseModel):
     manifest_path: str
     image_column: str = folder_scan.DEFAULT_IMAGE_COLUMN
-    mask_column: str = folder_scan.DEFAULT_MASK_COLUMN
+    mask_column: Optional[str] = folder_scan.DEFAULT_MASK_COLUMN
     id_column: Optional[str] = None
     patient_id_column: Optional[str] = None
+    reason_column: Optional[str] = folder_scan.DEFAULT_REASON_COLUMN
+    include_default_reason_tags: bool = True
 
 
 @app.post("/api/manifest_pairs")
@@ -319,6 +383,8 @@ def manifest_pairs(req: ManifestPairsRequest):
             mask_column=req.mask_column,
             id_column=req.id_column,
             patient_id_column=req.patient_id_column,
+            reason_column=req.reason_column,
+            include_default_reason_tags=req.include_default_reason_tags,
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")
@@ -369,12 +435,13 @@ class ManifestReasonRequest(BaseModel):
     manifest_path: str
     row_index: int
     reasons: list[str]
+    reason_column: str = folder_scan.DEFAULT_REASON_COLUMN
 
 
 @app.post("/api/manifest/reason")
 def manifest_reason(req: ManifestReasonRequest):
     try:
-        folder_scan.save_reason(req.manifest_path, req.row_index, req.reasons)
+        folder_scan.save_reason(req.manifest_path, req.row_index, req.reasons, req.reason_column)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")
     except Exception as e:

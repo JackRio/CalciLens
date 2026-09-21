@@ -104,6 +104,7 @@
 }
 
 .pane-toolbar {
+  position: relative;
   display: flex;
   align-items: center;
   /* Not space-between: with the loading tag conditionally appearing inside
@@ -112,7 +113,10 @@
      Next/Comment/Reason/etc buttons) sideways. Left-anchor the button
      groups with a fixed gap instead, and let margin-left:auto on
      .pane-toolbar-right push it to the right edge independently — so it
-     can grow/shrink without moving anything else. */
+     can grow/shrink without moving anything else. .case-nav-tabs itself is
+     taken out of flow (position:absolute, centered on .pane-toolbar) so its
+     position is pinned to the toolbar's own center and immune to either
+     side growing/shrinking, rather than an accident of matching widths. */
   gap: 10px;
   padding: 6px 10px;
   background: #1a1b21;
@@ -140,6 +144,17 @@
 }
 
 .case-nav-tabs {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  /* transform creates its own stacking context, which otherwise traps
+     .reason-picker's z-index (20) inside it — the whole box then only
+     competes as a plain z-index:auto layer against .viewer-area's overlays
+     (score panel, jump marker, label-select menu, etc. up to z-index 10),
+     which live outside any transformed ancestor and always paint on top of
+     it regardless of the reason picker's own z-index. Giving this box an
+     explicit z-index above those overlays fixes that. */
+  z-index: 25;
   display: flex;
   gap: 4px;
 }
@@ -646,6 +661,22 @@ button .loading-spinner {
   font-family: ui-monospace, Consolas, monospace;
 }
 
+.viewer-score-compute-box {
+  position: absolute;
+  /* Fixed top-to-bottom band (same trick as .viewer-bottom-right below) so
+     a long, ever-growing lesion table can never grow down into the
+     Mask/Thresh overlay box — a definite-height flex container lets its
+     (default flex-shrink:1) child actually shrink to fit once the child's
+     own overflow is non-visible (see .lesion-score-box), so it scrolls
+     internally past that height instead of pushing into what's below. */
+  top: 56px;
+  bottom: 160px;
+  left: 8px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+}
+
 .viewer-bottom-right {
   position: absolute;
   /* top is fixed (not just a max-height off the bottom) so a tall edit box
@@ -847,6 +878,69 @@ button .loading-spinner {
 
 .edit-box {
   width: 210px;
+}
+
+.edit-box.lesion-score-box {
+  width: 340px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.lesion-score-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+  font-size: 14px;
+}
+
+.lesion-score-table th {
+  text-align: left;
+  color: #9c9dab;
+  font-weight: 600;
+  padding: 3px 5px;
+  border-bottom: 1px solid #3c3e4d;
+}
+
+.lesion-score-table td {
+  padding: 4px 5px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.lesion-row {
+  cursor: pointer;
+}
+
+.lesion-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+@keyframes lesion-row-flash {
+  0%,
+  100% {
+    background: transparent;
+  }
+  50% {
+    background: rgba(255, 216, 115, 0.35);
+  }
+}
+
+.lesion-row-flash {
+  animation: lesion-row-flash 0.4s ease-in-out 4;
+}
+
+.jump-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 22px;
+  height: 22px;
+  margin-left: -11px;
+  margin-top: -11px;
+  border-radius: 50%;
+  border: 2px solid #ffd873;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  z-index: 6;
 }
 
 .edit-header {
@@ -1212,6 +1306,30 @@ button .loading-spinner {
 .manifest-columns-row label {
   flex: 1;
   min-width: 0;
+}
+
+.reason-column-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.reason-defaults-toggle {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: normal;
+  color: #9c9dab;
+  white-space: nowrap;
+}
+
+.reason-defaults-toggle input {
+  margin: 0;
+  width: 11px;
+  height: 11px;
 }
 
 .advanced-panel details {

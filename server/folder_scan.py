@@ -22,7 +22,7 @@ STATUS_COLUMN = "Status"
 STATUS_OPTIONS = ["Not Started", "Annotated", "InProgress", "Review"]
 DEFAULT_STATUS = STATUS_OPTIONS[0]
 
-REASON_COLUMN = "Reason"
+DEFAULT_REASON_COLUMN = "Reason"
 REASON_DELIMITER = "; "
 DEFAULT_REASON_TAGS = [
     "Mislabel",
@@ -50,7 +50,7 @@ def _read_table(manifest_path: str) -> pd.DataFrame:
     return pd.read_csv(manifest_path)
 
 
-def _write_table(manifest_path: str, df: pd.DataFrame) -> None:
+def _write_table(manifest_path: str, df: pd.DataFrame, reason_column: str = DEFAULT_REASON_COLUMN) -> None:
     """Writes to a temp file in the same directory and atomically replaces
     manifest_path only once that's fully written — so a process kill,
     crash, or restart at any point during the write leaves the real file
@@ -83,7 +83,7 @@ def _write_table(manifest_path: str, df: pd.DataFrame) -> None:
                         df,
                         {
                             STATUS_COLUMN: STATUS_OPTIONS,
-                            REASON_COLUMN: _collect_reason_tags(df),
+                            reason_column: _collect_reason_tags(df, reason_column),
                         },
                     )
                 except Exception:
@@ -137,14 +137,18 @@ def _split_reasons(value: str) -> list:
     return [t.strip() for t in value.split(REASON_DELIMITER.strip()) if t.strip()]
 
 
-def _collect_reason_tags(df: pd.DataFrame) -> list:
+def _collect_reason_tags(
+    df: pd.DataFrame, reason_column: Optional[str] = DEFAULT_REASON_COLUMN, include_defaults: bool = True
+) -> list:
     """Every reason tag currently in use anywhere in the sheet, plus the
-    built-in defaults — defaults first, then any additional tags actually
-    found (e.g. ones added as a one-off in a previous session), in the
-    order first encountered."""
-    tags = list(DEFAULT_REASON_TAGS)
-    if REASON_COLUMN in df.columns:
-        for value in df[REASON_COLUMN]:
+    built-in defaults (unless the caller opts out, e.g. because the reason
+    column has been pointed at a sheet whose existing values have nothing to
+    do with the built-in tag set) — defaults first, then any additional tags
+    actually found (e.g. ones added as a one-off in a previous session), in
+    the order first encountered."""
+    tags = list(DEFAULT_REASON_TAGS) if include_defaults else []
+    if reason_column in df.columns:
+        for value in df[reason_column]:
             for tag in _split_reasons(_cell_text(value)):
                 if tag not in tags:
                     tags.append(tag)
@@ -173,12 +177,18 @@ def list_manifest_columns(manifest_path: str) -> list:
     return [str(c) for c in df.columns]
 
 
-def _ensure_tracking_columns(manifest_path: str, df: pd.DataFrame) -> pd.DataFrame:
-    """Make sure Status and Comment exist and every Status cell holds a
-    valid value, writing the manifest immediately if anything was missing —
-    so both columns (Status pre-filled "Not Started", Comment blank) are
-    visible in the file itself as soon as it's loaded, not only after the
-    first edit made through the app."""
+def _ensure_tracking_columns(
+    manifest_path: str, df: pd.DataFrame, reason_column: Optional[str] = DEFAULT_REASON_COLUMN
+) -> pd.DataFrame:
+    """Make sure Status, Comment and the reason column exist and every Status
+    cell holds a valid value, writing the manifest immediately if anything
+    was missing — so all three (Status pre-filled "Not Started", Comment and
+    reason blank) are visible in the file itself as soon as it's loaded, not
+    only after the first edit made through the app. `reason_column` may be a
+    pre-existing column the user chose (e.g. "kernel_type") rather than the
+    app's own default name — it's only auto-created here if it doesn't
+    already exist. A falsy `reason_column` means the user explicitly picked
+    "-- none --": no reason column is tracked or created at all."""
     changed = False
 
     if STATUS_COLUMN not in df.columns:
@@ -195,12 +205,12 @@ def _ensure_tracking_columns(manifest_path: str, df: pd.DataFrame) -> pd.DataFra
         df[COMMENT_COLUMN] = ""
         changed = True
 
-    if REASON_COLUMN not in df.columns:
-        df[REASON_COLUMN] = ""
+    if reason_column and reason_column not in df.columns:
+        df[reason_column] = ""
         changed = True
 
     if changed:
-        _write_table(manifest_path, df)
+        _write_table(manifest_path, df, reason_column=reason_column)
     return df
 
 
@@ -220,9 +230,11 @@ def _score_value(value) -> Optional[float]:
 def list_manifest_pairs(
     manifest_path: str,
     image_column: str = DEFAULT_IMAGE_COLUMN,
-    mask_column: str = DEFAULT_MASK_COLUMN,
+    mask_column: Optional[str] = DEFAULT_MASK_COLUMN,
     id_column: Optional[str] = None,
     patient_id_column: Optional[str] = None,
+    reason_column: Optional[str] = DEFAULT_REASON_COLUMN,
+    include_default_reason_tags: bool = True,
 ) -> dict:
     manifest_path = clean_path(manifest_path)
     if not os.path.isfile(manifest_path):
@@ -232,15 +244,14 @@ def list_manifest_pairs(
 
     if image_column not in df.columns:
         raise ValueError(f"Column '{image_column}' not found. Available columns: {list(df.columns)}")
-    if mask_column not in df.columns:
-        raise ValueError(f"Column '{mask_column}' not found. Available columns: {list(df.columns)}")
+    has_mask_column = bool(mask_column) and mask_column in df.columns
     if id_column and id_column not in df.columns:
         raise ValueError(f"Column '{id_column}' not found. Available columns: {list(df.columns)}")
     if patient_id_column and patient_id_column not in df.columns:
         raise ValueError(f"Column '{patient_id_column}' not found. Available columns: {list(df.columns)}")
 
-    df = _ensure_tracking_columns(manifest_path, df)
-    reason_options = _collect_reason_tags(df)
+    df = _ensure_tracking_columns(manifest_path, df, reason_column)
+    reason_options = _collect_reason_tags(df, reason_column, include_default_reason_tags)
     score_classes = _score_columns_present(df)
 
     rows = []
@@ -248,7 +259,7 @@ def list_manifest_pairs(
         image_path = _cell_str(row[image_column])
         if not image_path:
             continue
-        mask_path = _cell_str(row[mask_column])
+        mask_path = _cell_str(row[mask_column]) if has_mask_column else ""
 
         if id_column:
             label = _cell_str(row[id_column]) or f"row {i}"
@@ -260,7 +271,7 @@ def list_manifest_pairs(
         status = _cell_text(row[STATUS_COLUMN]) if STATUS_COLUMN in df.columns else ""
         if status not in STATUS_OPTIONS:
             status = DEFAULT_STATUS
-        reason = _split_reasons(_cell_text(row[REASON_COLUMN])) if REASON_COLUMN in df.columns else []
+        reason = _split_reasons(_cell_text(row[reason_column])) if reason_column in df.columns else []
         scores = {c: _score_value(row[f"{c}{SCORE_COLUMN_SUFFIX}"]) for c in score_classes}
 
         rows.append(
@@ -270,8 +281,8 @@ def list_manifest_pairs(
                 "patient_id": patient_id,
                 "image_path": image_path,
                 "mask_path": mask_path,
-                "image_exists": os.path.isfile(image_path),
-                "mask_exists": bool(mask_path) and os.path.isfile(mask_path),
+                "image_exists": os.path.exists(image_path),
+                "mask_exists": bool(mask_path) and os.path.exists(mask_path),
                 "comment": comment,
                 "status": status,
                 "reason": reason,
@@ -281,12 +292,16 @@ def list_manifest_pairs(
     return {"rows": rows, "reason_options": reason_options, "score_classes": score_classes}
 
 
-def _save_cell(manifest_path: str, row_index: int, column: str, value: str) -> None:
+def _save_cell(
+    manifest_path: str, row_index: int, column: str, value: str, reason_column: str = DEFAULT_REASON_COLUMN
+) -> None:
     """Write a single cell back into the manifest file itself, creating the
     column if it doesn't already exist. row_index is the raw pandas row
     index returned as `index` in list_manifest_pairs (the row's position in
     this same file), so this must be reading the identical file the rows
-    were listed from."""
+    were listed from. `reason_column` is only used to re-attach the Excel
+    in-cell dropdown to the right column on save; pass it whenever the
+    caller knows the manifest's configured reason column."""
     manifest_path = clean_path(manifest_path)
     if not os.path.isfile(manifest_path):
         raise FileNotFoundError(manifest_path)
@@ -300,7 +315,7 @@ def _save_cell(manifest_path: str, row_index: int, column: str, value: str) -> N
 
     df[column] = df[column].astype(object)
     df.loc[row_index, column] = value
-    _write_table(manifest_path, df)
+    _write_table(manifest_path, df, reason_column=reason_column)
 
 
 def save_comment(manifest_path: str, row_index: int, comment: str) -> None:
@@ -313,9 +328,13 @@ def save_status(manifest_path: str, row_index: int, status: str) -> None:
     _save_cell(manifest_path, row_index, STATUS_COLUMN, status)
 
 
-def save_reason(manifest_path: str, row_index: int, reasons: list) -> None:
+def save_reason(
+    manifest_path: str, row_index: int, reasons: list, reason_column: Optional[str] = DEFAULT_REASON_COLUMN
+) -> None:
+    if not reason_column:
+        raise ValueError("No reason column configured for this manifest")
     cleaned = [t.strip() for t in reasons if t and t.strip()]
-    _save_cell(manifest_path, row_index, REASON_COLUMN, REASON_DELIMITER.join(cleaned))
+    _save_cell(manifest_path, row_index, reason_column, REASON_DELIMITER.join(cleaned), reason_column=reason_column)
 
 
 def save_mask_path(manifest_path: str, row_index: int, mask_column: str, mask_path: str) -> None:

@@ -50,15 +50,24 @@ errors that `vite build` alone can surface less clearly.
   brush dab). `store.load(path, is_mask, force)` — `force=True` bypasses the cache and re-reads
   from disk (used by the reload shortcut and Reset).
 - **`folder_scan.py`** — the manifest (CSV/XLSX) system. `list_manifest_pairs()` reads the sheet,
-  auto-creates `Status`/`Comment`/`Reason` tracking columns if missing, returns rows + reason
-  options + which `*_Agatston` score columns are present. `save_comment`/`save_status`/
-  `save_reason`/`save_mask_path` each do a full read-modify-write of the sheet via `_save_cell`.
-  **`_write_table` is atomic**: writes to a per-call-unique temp file (`.tmp_<pid>_<threadid>_
-  <random>_<basename>`) in the same directory, then `os.replace()`s it into place — this
-  uniqueness matters because FastAPI runs sync `def` endpoints in a threadpool, so two saves
-  landing close together (e.g. the Copy-to-other-pane button) really do write concurrently; a
-  shared temp filename previously let them corrupt each other mid-write. Never regress this to a
-  shared/non-unique temp name.
+  auto-creates `Status`/`Comment`/the configured reason column if missing, returns rows + reason
+  options + which `*_Agatston` score columns are present. Only `image_column` is required — `mask_
+  column`, `patient_id_column`, and `reason_column` are all independently optional (falsy/"-- none
+  --" means "don't track this"), so a CT-only manifest with no mask/PatientID/Reason column still
+  loads. `reason_column` may point at any pre-existing column (e.g. a lab's `kernel_type` column
+  repurposed as Reason tags) instead of the app's own default `"Reason"` name; `include_default_
+  reason_tags` controls whether the built-in tag set (Mislabel, Artefacts, etc.) is merged into
+  the picker's options alongside whatever's already in that column — off by default use case is a
+  reason column whose existing values have nothing to do with those built-in tags. `image_exists`/
+  `mask_exists` use `os.path.exists` (not `isfile`) since both columns may point at a DICOM series
+  directory, not just a NIFTI/MHA file (see `volume_store.py`'s `_is_dicom_dir`, which treats any
+  directory as one). `save_comment`/`save_status`/`save_reason`/`save_mask_path` each do a full
+  read-modify-write of the sheet via `_save_cell`. **`_write_table` is atomic**: writes to a
+  per-call-unique temp file (`.tmp_<pid>_<threadid>_<random>_<basename>`) in the same directory,
+  then `os.replace()`s it into place — this uniqueness matters because FastAPI runs sync `def`
+  endpoints in a threadpool, so two saves landing close together (e.g. the Copy-to-other-pane
+  button) really do write concurrently; a shared temp filename previously let them corrupt each
+  other mid-write. Never regress this to a shared/non-unique temp name.
 - **`pathutil.py`** — `clean_path()`, small path normalization helper used everywhere a path comes
   from the frontend or a manifest cell.
 
@@ -127,12 +136,23 @@ errors that `vite build` alone can surface less clearly.
 
 ## Feature inventory (so a fresh session doesn't need to rediscover these)
 
-- **Manifest-driven batch loading** with configurable image/mask/PatientID column names, Prev/Next
-  case navigation, and an editable case-counter box (type a number, Enter, jumps straight there;
-  invalid input shows an error popup) — all in `Pane.tsx`'s toolbar + `App.tsx`'s `goToPosition`.
+- **Manifest-driven batch loading** with configurable image/mask/PatientID/Reason column names, only
+  `image_path` required — mask/PatientID/Reason columns each have a "-- none --" option in
+  `CaseLoader.tsx`'s column pickers and are skipped entirely if absent (no mask column ⇒ CT-only
+  batch loads fine; no PatientID ⇒ label falls back to the image filename). Prev/Next case
+  navigation and an editable case-counter box (type a number, Enter, jumps straight there; invalid
+  input shows an error popup) — all in `Pane.tsx`'s toolbar + `App.tsx`'s `goToPosition`. Both
+  `image_path` and `mask_path` accept a DICOM series directory as well as a NIFTI/MHA file.
 - **Status** (dropdown: Not Started/Annotated/InProgress/Review) and **Reason** (multi-select tag
   picker, session-addable custom tags, Excel in-cell dropdown on save) columns, auto-created on
-  manifest load if missing.
+  manifest load if missing. The Reason column name is itself configurable (`reasonColumn` in
+  `ManifestConfig`) — it can point at a pre-existing column that already means something else in the
+  lab's sheet (e.g. `kernel_type`) instead of the app's own default `"Reason"` name, and an
+  **"Include defaults"** checkbox next to the "Reason column" label (`CaseLoader.tsx`) controls
+  whether the built-in tag set (Mislabel, Artefacts, etc.) gets merged into that column's options —
+  turn it off when the column's existing values have nothing to do with those defaults. If Reason
+  is set to "-- none --" *and* "Include defaults" is off, the Reason button itself is hidden from
+  the pane toolbar (`Pane.tsx`) rather than shown disabled/empty.
 - **Reason tag picker sorts by usage frequency**, snapshotted when opened (not live-recomputed
   while open, to avoid reordering under the user's cursor mid-click) — see `computeReason
   OptionsByFrequency`/`reasonOptionsSnapshot` in `Pane.tsx`.
@@ -164,3 +184,10 @@ errors that `vite build` alone can surface less clearly.
 - `/api/render` recomposites the full PNG server-side on every request; it's fast (~15ms) against
   the small synthetic test volume, but scales with slice pixel count — full-resolution real
   clinical volumes will be slower, especially with several mask labels active.
+- `.case-nav-tabs` (the centered Prev/Next/Comment/Reason button row) uses `transform:
+  translateX(-50%)` to center itself, which creates its own CSS stacking context — any popup nested
+  inside it (e.g. the Reason picker) needs `.case-nav-tabs` itself to carry a `z-index` at least as
+  high as the viewer's own overlays (score panel, jump marker, label-select menu, up to z-index 10),
+  otherwise the whole transformed box paints underneath them regardless of the popup's own z-index.
+  Currently `z-index: 25` on `.case-nav-tabs` in `App.css`; bump it further rather than the popup's
+  own z-index if a new viewer overlay ever needs a higher one.

@@ -1317,7 +1317,11 @@ button .loading-spinner {
 }
 
 .reason-defaults-toggle {
+  /* .settings-section label (below) sets flex-direction:column with higher
+     specificity (class + tag) than this single-class rule, which would
+     otherwise stack the checkbox above its text — override back to row. */
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 3px;
   font-size: 10px;

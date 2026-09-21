@@ -213,9 +213,15 @@ export interface PaneState {
     actualVolumeMm3: number
     targetVolumeMm3: number
     kMultiplier: number
+    radiusMm: number
     savedAt: string
     mismatch: boolean
   } | null
+
+  // Contrast CT, computed-total volume score per class (CAC/TAC/AV/MV) via the
+  // "Volume Compute" box's play button — parallel to ManifestRow.scores but
+  // freshly computed (mm3, no Agatston weighting), not read from the manifest.
+  volumeScores: Partial<Record<ScoreClass, number>> | null
 }
 
 export type EditTool = 'brush' | 'region-grow'

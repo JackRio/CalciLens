@@ -86,6 +86,7 @@ function makePane(): PaneState {
     contrastThreshold: null,
     contrastThresholdLocked: false,
     contrastMeta: null,
+    volumeScores: null,
   }
 }
 

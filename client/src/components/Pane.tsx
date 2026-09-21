@@ -4,6 +4,7 @@ import {
   WINDOW_PRESETS,
   DEFAULT_WINDOW_LEVEL,
   DEFAULT_WINDOW_WIDTH,
+  DEFAULT_THRESHOLD_HU,
   STATUS_OPTIONS,
   CORONARY_LABELS,
   SCORE_CLASS_BY_LABEL,
@@ -19,6 +20,7 @@ import {
   computeLesionScore,
   computeVolumeAgatston,
   computeLesionVolume,
+  computeVolumeTotal,
   computeContrastThreshold,
   loadContrastThreshold,
   refreshMaskLabels,
@@ -46,6 +48,19 @@ const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'S
 function formatShortDate(d: Date): string {
   return `${d.getDate()} ${SHORT_MONTHS[d.getMonth()]} ${String(d.getFullYear()).slice(-2)}`
 }
+
+// Solves V = (4/3)*pi*r^3 for r — the sphere-VOI preview radius is knowable
+// purely from the target volume, no per-scan CT data needed.
+function sphereRadiusMmFromVolume(targetVolumeMm3: number): number {
+  return Math.cbrt((3 * targetVolumeMm3) / (4 * Math.PI))
+}
+
+const VOLUME_SCORE_SPECS: { cls: ScoreClass; labels: number[] }[] = [
+  { cls: 'CAC', labels: [...CORONARY_LABELS] },
+  { cls: 'TAC', labels: [4] },
+  { cls: 'AV', labels: [5] },
+  { cls: 'MV', labels: [6] },
+]
 
 export default function Pane({
   pane,
@@ -115,6 +130,7 @@ export default function Pane({
   const [contrastSaving, setContrastSaving] = useState(false)
   const [contrastError, setContrastError] = useState<string | null>(null)
   const [contrastBoxMinimized, setContrastBoxMinimized] = useState(false)
+  const [computingVolumeScores, setComputingVolumeScores] = useState(false)
   const lesionIdCounter = useRef(0)
   const flashTimeoutRef = useRef<number | null>(null)
   const jumpMarkerTimeoutRef = useRef<number | null>(null)
@@ -129,11 +145,13 @@ export default function Pane({
   const imgRef = useRef<HTMLImageElement>(null)
   const viewerAreaRef = useRef<HTMLDivElement>(null)
   const wlBoxRef = useRef<HTMLDivElement>(null)
+  const contrastBoxRef = useRef<HTMLDivElement>(null)
   const bottomLeftRef = useRef<HTMLDivElement>(null)
   const editBoxRef = useRef<HTMLDivElement>(null)
   const scorePanelRef = useRef<HTMLDivElement>(null)
   const jumpMarkerRef = useRef<HTMLDivElement>(null)
   const seedMarkerRef = useRef<HTMLDivElement>(null)
+  const seedSphereRef = useRef<HTMLDivElement>(null)
   const lastProbeTs = useRef(0)
   const rightDrag = useRef<{
     active: boolean
@@ -241,11 +259,19 @@ export default function Pane({
       const saved = await loadContrastThreshold(ctPath).catch(() => null)
       if (cancelled) return
       if (!saved) {
+        // No seed saved for this scan yet — don't carry over whatever
+        // threshold the previously-viewed case left behind, reset to the
+        // same 130 HU default a fresh non-contrast pane starts with.
         onChange({
           contrastThreshold: null,
           contrastThresholdLocked: false,
           contrastMeta: null,
           pendingSeed: null,
+          thresholdValue: DEFAULT_THRESHOLD_HU,
+          thresholdEnabled: false,
+          editThresholdMin: DEFAULT_THRESHOLD_HU,
+          editRegionGrowThreshold: DEFAULT_THRESHOLD_HU,
+          volumeScores: null,
         })
         return
       }
@@ -277,6 +303,7 @@ export default function Pane({
             actualVolumeMm3: recomputed.actualVolumeMm3,
             targetVolumeMm3: recomputed.targetVolumeMm3,
             kMultiplier: recomputed.kMultiplier,
+            radiusMm: recomputed.radiusMm,
             savedAt: saved.savedAt || '',
             mismatch,
           },
@@ -355,6 +382,7 @@ export default function Pane({
           actualVolumeMm3: result.actualVolumeMm3,
           targetVolumeMm3: result.targetVolumeMm3,
           kMultiplier: result.kMultiplier,
+          radiusMm: result.radiusMm,
           savedAt: result.savedAt || new Date().toISOString(),
           mismatch: false,
         },
@@ -699,15 +727,21 @@ export default function Pane({
   // Positions the (persistent, non-fading) seed marker — same math as
   // showJumpMarker above, but re-run on every relevant change via the effect
   // below rather than a one-shot timeout, since the seed stays put until
-  // re-seeded.
+  // re-seeded. Also sizes/positions the sphere-VOI preview circle: its radius
+  // is knowable from the target volume alone (r = (3V/4pi)^(1/3), no per-scan
+  // data needed), so it's shown live as soon as a seed is placed — using the
+  // actual computed contrastMeta.radiusMm once finalized, which is the same
+  // formula and should match almost exactly.
   function updateSeedMarkerPosition() {
     const img = imgRef.current
     const el = seedMarkerRef.current
+    const sphereEl = seedSphereRef.current
     const container = viewerAreaRef.current
     if (!img || !el || !container) return
     const seed = pane.pendingSeed
     if (!seed || seed.plane !== pane.plane || seed.index !== pane.index) {
       el.hidden = true
+      if (sphereEl) sphereEl.hidden = true
       return
     }
     const imgRect = img.getBoundingClientRect()
@@ -718,12 +752,35 @@ export default function Pane({
     const y = imgRect.top - containerRect.top + seed.row * scaleY
     el.hidden = false
     el.style.transform = `translate(${x}px, ${y}px)`
+
+    if (sphereEl && pane.ctInfo) {
+      const radiusMm = pane.contrastMeta?.radiusMm ?? sphereRadiusMmFromVolume(contrastSettings.targetVolumeMm3)
+      const finestSpacing = Math.min(...pane.ctInfo.spacing) || 1
+      // Every display pixel represents finestSpacing mm (the render endpoint
+      // rescales each plane to isotropic pixels relative to the volume's
+      // finest spacing axis — see get_plane_display_scale in volume_store.py).
+      const radiusNaturalPx = radiusMm / finestSpacing
+      const diameterScreenPx = 2 * radiusNaturalPx * scaleX
+      sphereEl.hidden = false
+      sphereEl.style.width = `${diameterScreenPx}px`
+      sphereEl.style.height = `${diameterScreenPx}px`
+      sphereEl.style.transform = `translate(${x - diameterScreenPx / 2}px, ${y - diameterScreenPx / 2}px)`
+    }
   }
 
   useEffect(() => {
     updateSeedMarkerPosition()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.pendingSeed, pane.plane, pane.index, pane.zoom, pane.panX, pane.panY])
+  }, [
+    pane.pendingSeed,
+    pane.plane,
+    pane.index,
+    pane.zoom,
+    pane.panX,
+    pane.panY,
+    pane.contrastMeta,
+    contrastSettings.targetVolumeMm3,
+  ])
 
   function jumpToLesion(entry: LesionScoreResult) {
     const samePlaneAndIndex = pane.plane === entry.plane && pane.index === entry.index
@@ -875,6 +932,39 @@ export default function Pane({
       onChange({ lesionResults: [...pane.lesionResults, entry] })
     } catch (e) {
       onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  // The Volume Compute box's "play" button: recomputes the total physical
+  // volume (mm3) for every score class across the whole mask at once (CAC =
+  // coronary labels 1-3 aggregated, TAC/AV/MV = labels 4/5/6 individually),
+  // then opens the Score panel to show them — the volume-metric counterpart
+  // of confirmComputeScore's per-class Agatston total, but for all classes in
+  // one go rather than one at a time, since there's no manifest baseline to
+  // reconcile against here.
+  async function computeAllVolumeScores() {
+    if (!pane.ctInfo || !pane.maskInfo || pane.contrastThreshold === null) return
+    setComputingVolumeScores(true)
+    try {
+      const results = await Promise.all(
+        VOLUME_SCORE_SPECS.map((s) =>
+          computeVolumeTotal({
+            maskId: pane.maskInfo!.volume_id,
+            ctId: pane.ctInfo!.volume_id,
+            labels: s.labels,
+            huThreshold: pane.contrastThreshold!,
+          }),
+        ),
+      )
+      const volumeScores: Partial<Record<ScoreClass, number>> = {}
+      VOLUME_SCORE_SPECS.forEach((s, i) => {
+        volumeScores[s.cls] = results[i].totalVolumeMm3
+      })
+      onChange({ volumeScores, scorePanelOpen: true })
+    } catch (e) {
+      onChange({ error: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setComputingVolumeScores(false)
     }
   }
 
@@ -1073,6 +1163,7 @@ export default function Pane({
     if (!node) return false
     return Boolean(
       (wlBoxRef.current && wlBoxRef.current.contains(node)) ||
+        (contrastBoxRef.current && contrastBoxRef.current.contains(node)) ||
         (editBoxRef.current && editBoxRef.current.contains(node)) ||
         (bottomLeftRef.current && bottomLeftRef.current.contains(node)) ||
         (scorePanelRef.current && scorePanelRef.current.contains(node)) ||
@@ -1552,21 +1643,6 @@ export default function Pane({
               Reset view
             </button>
           )}
-          {pane.ctInfo && (
-            <button
-              className={pane.contrastMode ? 'active' : ''}
-              onClick={() =>
-                onChange(
-                  pane.contrastMode
-                    ? { contrastMode: false, seedPlacementMode: false }
-                    : { contrastMode: true, editMode: false, scoreComputeMode: false },
-                )
-              }
-              title="Contrast CT: derive a per-scan calcium threshold from a seed point instead of the fixed 130 HU"
-            >
-              Contrast
-            </button>
-          )}
           <button onClick={() => setSettingsOpen((v) => !v)}>{settingsOpen ? 'Hide settings' : 'Settings'}</button>
           {closable && (
             <button onClick={onClose} title="Close pane">
@@ -1585,9 +1661,11 @@ export default function Pane({
           style={
             pane.editMode && pane.editTool === 'brush'
               ? { cursor: 'none' }
-              : !pane.editMode && !pane.scoreComputeMode
-                ? { cursor: 'grab' }
-                : undefined
+              : pane.seedPlacementMode
+                ? { cursor: 'crosshair' }
+                : !pane.editMode && !pane.scoreComputeMode
+                  ? { cursor: 'grab' }
+                  : undefined
           }
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
@@ -1631,6 +1709,7 @@ export default function Pane({
               (showJumpMarker) when a Score-Compute-box row is clicked, to
               point at the lesion's location without a React re-render. */}
           <div ref={jumpMarkerRef} className="jump-marker" hidden />
+          <div ref={seedSphereRef} className="seed-sphere-circle" hidden />
           <div ref={seedMarkerRef} className="seed-marker" hidden />
           {pane.ctInfo && (
             <div className="viewer-left-controls">
@@ -1679,18 +1758,20 @@ export default function Pane({
                 )}
               </div>
               {pane.contrastMode && (
-                <ContrastSeedBox
-                  pane={pane}
-                  contrastSettings={contrastSettings}
-                  onContrastSettingsChange={setContrastSettings}
-                  minimized={contrastBoxMinimized}
-                  onToggleMinimized={() => setContrastBoxMinimized((v) => !v)}
-                  saving={contrastSaving}
-                  error={contrastError}
-                  onFinalize={finalizeSeed}
-                  onReSeed={reSeed}
-                  onToggleSeedPlacement={toggleSeedPlacement}
-                />
+                <div ref={contrastBoxRef}>
+                  <ContrastSeedBox
+                    pane={pane}
+                    contrastSettings={contrastSettings}
+                    onContrastSettingsChange={setContrastSettings}
+                    minimized={contrastBoxMinimized}
+                    onToggleMinimized={() => setContrastBoxMinimized((v) => !v)}
+                    saving={contrastSaving}
+                    error={contrastError}
+                    onFinalize={finalizeSeed}
+                    onReSeed={reSeed}
+                    onToggleSeedPlacement={toggleSeedPlacement}
+                  />
+                </div>
               )}
             </div>
           )}
@@ -1722,7 +1803,23 @@ export default function Pane({
                   : undefined
               }
               scoreClasses={pane.scoreClasses}
-              row={currentRow}
+              scores={currentRow.scores}
+              maskColors={pane.maskColors}
+              open={pane.scorePanelOpen}
+              onToggleOpen={() => onChange({ scorePanelOpen: !pane.scorePanelOpen })}
+              onDragHandleDown={handleScorePanelDragStart}
+            />
+          )}
+          {pane.ctInfo && pane.contrastMode && pane.volumeScores && (
+            <ScorePanel
+              ref={scorePanelRef}
+              style={
+                pane.scorePanelPos
+                  ? { left: pane.scorePanelPos.x, top: pane.scorePanelPos.y, bottom: 'auto', transform: 'none' }
+                  : undefined
+              }
+              scoreClasses={Object.keys(pane.volumeScores) as ScoreClass[]}
+              scores={pane.volumeScores}
               maskColors={pane.maskColors}
               open={pane.scorePanelOpen}
               onToggleOpen={() => onChange({ scorePanelOpen: !pane.scorePanelOpen })}
@@ -1826,6 +1923,8 @@ export default function Pane({
                 onDragHandleDown={handleScoreComputeBoxDragStart}
                 flashRowId={flashRowId}
                 onRowClick={jumpToLesion}
+                onComputeAllVolumes={computeAllVolumeScores}
+                computingAllVolumes={computingVolumeScores}
               />
             </div>
           )}

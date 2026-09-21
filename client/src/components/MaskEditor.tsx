@@ -40,9 +40,30 @@ export default function MaskEditor({
     </button>
   )
 
+  const contrastToggle = (
+    <label
+      className="edit-header-label contrast-toggle-row"
+      title="Contrast CT: derive a per-scan calcium threshold from a seed point instead of the fixed 130 HU"
+    >
+      <input
+        type="checkbox"
+        checked={pane.contrastMode}
+        onChange={(e) =>
+          onChange(
+            e.target.checked
+              ? { contrastMode: true, editMode: false, scoreComputeMode: false }
+              : { contrastMode: false, seedPlacementMode: false },
+          )
+        }
+      />
+      Contrast CT
+    </label>
+  )
+
   if (!pane.maskInfo) {
     return (
       <div className="overlay-box edit-box" onWheel={(e) => e.stopPropagation()}>
+        {contrastToggle}
         <div className="overlay-toggle edit-header">
           <span>{title}</span>
           <div className="edit-header-buttons">
@@ -77,6 +98,7 @@ export default function MaskEditor({
 
   return (
     <div className="overlay-box edit-box" onWheel={(e) => e.stopPropagation()}>
+      {contrastToggle}
       <div className="overlay-toggle edit-header">
         <label className="edit-header-label">
           <input

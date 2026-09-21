@@ -681,6 +681,16 @@ button .loading-spinner {
   z-index: 5;
   display: flex;
   flex-direction: column;
+  /* The container itself is stretched to this whole fixed band by the
+     top+bottom trick above, but its visible content (the lesion table) is
+     usually much shorter — without this, the empty space below it silently
+     swallows clicks/drags meant for the CT image underneath (e.g. seed
+     placement in contrast mode). Re-enabled on the actual box below. */
+  pointer-events: none;
+}
+
+.viewer-score-compute-box > * {
+  pointer-events: auto;
 }
 
 .viewer-bottom-right {
@@ -696,6 +706,14 @@ button .loading-spinner {
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
+  /* Same empty-space-swallows-clicks issue as .viewer-score-compute-box
+     above — this container is stretched to the full band regardless of its
+     (usually much shorter) visible content. */
+  pointer-events: none;
+}
+
+.viewer-bottom-right > * {
+  pointer-events: auto;
 }
 
 .viewer-bottom-right .edit-box {
@@ -986,6 +1004,20 @@ button .loading-spinner {
   height: 2px;
 }
 
+/* The sphere-VOI preview — sized/positioned in JS (its diameter depends on
+   the target volume setting, not a fixed value), so width/height/transform
+   are set imperatively; this just supplies the visual. */
+.seed-sphere-circle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: 50%;
+  border: 1.5px dashed #ff6b6b;
+  background: rgba(255, 107, 107, 0.12);
+  pointer-events: none;
+  z-index: 5;
+}
+
 .edit-header {
   justify-content: space-between;
   gap: 8px;
@@ -1010,6 +1042,14 @@ button .loading-spinner {
   display: flex;
   align-items: center;
   gap: 5px;
+}
+
+.contrast-toggle-row {
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px dashed #3c3e4d;
+  font-size: 12px;
+  color: #9c9dab;
 }
 
 .edit-field {

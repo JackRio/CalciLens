@@ -196,23 +196,33 @@ errors that `vite build` alone can surface less clearly.
   split view (it's a global App-level listener, not per-pane-scoped).
 - **Mask editing**: brush + region-grow tools, overwrite modes (any/label/threshold), undo via
   `editVersion` counter, save/reset, never synced between split-view panes.
-- **Contrast CT mode** (contrast-viewer branch only, per-pane toggle in the toolbar,
-  `pane.contrastMode`): non-contrast's fixed 130 HU threshold doesn't apply to contrast scans, so
-  this derives one per scan instead. Toggle **"Set AO seed"**, click near the left ostium/center of
-  ascending aorta — this only records a candidate (`pane.pendingSeed`) and shows a crosshair
-  (`.seed-marker`), it does **not** compute anything yet, since the user may need several tries to
-  find the right spot. Click **Finalize Seed** to actually sample the sphere VOI and derive
+- **Contrast CT mode** (contrast-viewer branch only, per-pane toggle **inside the Annotation
+  floating window** — `MaskEditor.tsx`'s `contrastToggle`, not the pane toolbar — `pane.contrastMode`):
+  non-contrast's fixed 130 HU threshold doesn't apply to contrast scans, so this derives one per scan
+  instead. Toggle **"Set AO seed"**, click near the left ostium/center of ascending aorta (cursor
+  becomes a crosshair while this mode is active) — this only records a candidate (`pane.pendingSeed`)
+  and shows a crosshair marker (`.seed-marker`) plus a **live sphere-VOI preview circle**
+  (`.seed-sphere-circle`, radius computed client-side straight from the target-volume setting via
+  `sphereRadiusMmFromVolume` — no backend round-trip needed for the preview) so you can see the
+  coverage before committing; it does **not** compute anything yet, since the user may need several
+  tries to find the right spot. Click **Finalize Seed** to actually sample the sphere VOI and derive
   `threshold = mean + k*std` (`server/contrast_threshold.py`); the result is saved to a JSON sidecar
   next to the CT and mirrored into `pane.thresholdValue`/`editThresholdMin`/
   `editRegionGrowThreshold` (+ `thresholdEnabled: true`) all at once, then those three fields become
   **read-only** ("fixed for the session") until **Re-seed** is clicked. Loading a CT while contrast
   mode is on auto-checks for a saved sidecar and, if found, recomputes fresh from the current volume
-  to both apply and verify it — a mismatch beyond a small tolerance shows a warning banner rather
-  than silently trusting the saved number. Score Compute mode computes a physical **volume (mm³)**
-  instead of an Agatston score for contrast panes (no manifest-baseline/confirm-total step, since
-  there's no `<CLASS>_Agatston`-style baseline for a volume metric — always computed fresh); the
-  Agatston-specific `ScorePanel` (per-class `<CLASS>_Agatston` tiles) is not shown at all in contrast
-  mode.
+  to both apply and verify it (a mismatch beyond a small tolerance shows a warning banner rather than
+  silently trusting the saved number); if no sidecar exists for the new scan, the threshold fields
+  reset to the plain 130 HU default rather than carrying over whatever the previous case left locked.
+  Score Compute mode computes a physical **volume (mm³)** instead of an Agatston score for contrast
+  panes (no manifest-baseline/confirm-total step per lesion click, since there's no
+  `<CLASS>_Agatston`-style baseline for a volume metric — always computed fresh); its box also gets a
+  **▶ play button** (`computeAllVolumeScores` in `Pane.tsx`) that recomputes the total volume for
+  every class (CAC/TAC/AV/MV) across the whole scan at once and opens the Score panel to show them.
+  `ScorePanel.tsx` itself was generalized to take a plain `scores` map instead of a `ManifestRow`, so
+  the same component renders both the manifest-backed Agatston tiles (non-contrast) and the
+  freshly-computed volume tiles (contrast, from `pane.volumeScores`) — don't reintroduce a
+  `ManifestRow`-typed prop there.
 
 ## Known caveats
 
@@ -229,3 +239,13 @@ errors that `vite build` alone can surface less clearly.
   otherwise the whole transformed box paints underneath them regardless of the popup's own z-index.
   Currently `z-index: 25` on `.case-nav-tabs` in `App.css`; bump it further rather than the popup's
   own z-index if a new viewer overlay ever needs a higher one.
+- **Floating viewer boxes that pin both `top` and `bottom` (`.viewer-bottom-right`,
+  `.viewer-score-compute-box`) silently swallow clicks in their empty space.** Setting both `top` and
+  `bottom` (with no explicit `height`) makes the container stretch to fill that whole band regardless
+  of how short its actual visible content is — and since it's a real DOM element, pointer events
+  still hit-test against that full empty area, not just the visible box. This silently ate clicks
+  meant for the CT image underneath (e.g. contrast-mode seed placement) whenever they landed in the
+  box's "empty" zone below its content. Both containers now have `pointer-events: none` with
+  `pointer-events: auto` restored on their direct children (`.viewer-bottom-right > *`,
+  `.viewer-score-compute-box > *`) — any *new* fixed-band floating container needs the same treatment,
+  or it'll reintroduce dead click zones over the image.

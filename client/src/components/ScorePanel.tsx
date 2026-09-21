@@ -1,5 +1,5 @@
 import { forwardRef } from 'react'
-import type { LabelColor, ManifestRow, ScoreClass } from '../types'
+import type { LabelColor, ScoreClass } from '../types'
 import { colorForScoreClass } from '../types'
 
 function formatScore(val: number | null | undefined): string {
@@ -33,14 +33,14 @@ const ScorePanel = forwardRef<
   HTMLDivElement,
   {
     scoreClasses: ScoreClass[]
-    row: ManifestRow
+    scores: Partial<Record<ScoreClass, number | null>>
     maskColors: LabelColor[]
     open: boolean
     onToggleOpen: () => void
     onDragHandleDown: (e: React.MouseEvent) => void
     style?: React.CSSProperties
   }
->(function ScorePanel({ scoreClasses, row, maskColors, open, onToggleOpen, onDragHandleDown, style }, ref) {
+>(function ScorePanel({ scoreClasses, scores, maskColors, open, onToggleOpen, onDragHandleDown, style }, ref) {
   const present = new Set(scoreClasses)
   const groups = GROUPS.map((g) => ({ ...g, members: g.members.filter((m) => present.has(m)) })).filter(
     (g) => g.members.length > 0 || (g.headerClass && present.has(g.headerClass)),
@@ -69,7 +69,7 @@ const ScorePanel = forwardRef<
                 {g.headerClass && present.has(g.headerClass) ? (
                   <ScoreTile
                     cls={g.headerClass}
-                    value={row.scores[g.headerClass]}
+                    value={scores[g.headerClass]}
                     color={colorForScoreClass(g.headerClass, maskColors)}
                   />
                 ) : g.headerLabel ? (
@@ -78,7 +78,7 @@ const ScorePanel = forwardRef<
               </div>
               <div className="score-group-members">
                 {g.members.map((cls) => (
-                  <ScoreTile key={cls} cls={cls} value={row.scores[cls]} color={colorForScoreClass(cls, maskColors)} />
+                  <ScoreTile key={cls} cls={cls} value={scores[cls]} color={colorForScoreClass(cls, maskColors)} />
                 ))}
               </div>
             </div>

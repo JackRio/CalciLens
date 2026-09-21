@@ -16,10 +16,10 @@ const ACTION_ORDER: KeybindActionId[] = [
 // ACTION_ORDER/KEYBIND_LABELS, but they're still worth documenting here since
 // this is the one place users look for "how do I do X".
 const MOUSE_CONTROLS: { label: string; combo: string }[] = [
-  { label: 'Zoom in/out', combo: 'Scroll' },
-  { label: 'Zoom in/out', combo: 'Right-drag up/down' },
-  { label: 'Adjust window level', combo: 'Right-drag left/right' },
-  { label: 'Pan the image', combo: 'Middle-drag (or left-drag outside edit/score mode)' },
+  { label: 'Scroll slices', combo: 'Scroll' },
+  { label: 'Zoom in/out', combo: 'Right-click + drag up/down' },
+  { label: 'Adjust window level', combo: 'Right-click + drag left/right' },
+  { label: 'Pan the image', combo: 'Hold scroll + drag (or left-click + drag outside Annotation Mode)' },
 ]
 
 export default function KeybindSettings({

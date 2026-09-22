@@ -9,6 +9,7 @@ export default function MaskEditor({
   onSave,
   onDragHandleDown,
   thresholdLocked,
+  seedRadiusMm,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -16,6 +17,7 @@ export default function MaskEditor({
   onSave: () => void
   onDragHandleDown: (e: React.MouseEvent) => void
   thresholdLocked?: boolean
+  seedRadiusMm: number
 }) {
   if (!pane.ctInfo) return null
 
@@ -168,7 +170,16 @@ export default function MaskEditor({
 
           <label className="edit-field">
             Tool
-            <select value={pane.editTool} onChange={(e) => onChange({ editTool: e.target.value as EditTool })}>
+            <select
+              value={pane.editTool}
+              onChange={(e) => {
+                const tool = e.target.value as EditTool
+                // Switching to Brush defaults its overwrite mode to HU
+                // threshold (RG's own threshold field is unaffected when
+                // switching back, since RG doesn't use editOverwriteMode).
+                onChange(tool === 'brush' ? { editTool: tool, editOverwriteMode: 'threshold' } : { editTool: tool })
+              }}
+            >
               <option value="brush">Brush</option>
               <option value="region-grow">RG</option>
             </select>
@@ -237,6 +248,12 @@ export default function MaskEditor({
             {pane.editTool === 'brush'
               ? 'Left-drag on image to paint'
               : 'Left-click to 3D-grow (26-connectivity, whole volume)'}
+            {pane.editTool === 'region-grow' && (
+              <>
+                <br />
+                {`Hold Shift + click to seed from a circle for tiny/isolated voxels (Shift+scroll to resize, ${seedRadiusMm.toFixed(1)} mm).`}
+              </>
+            )}
           </div>
 
           <button className="add-label-btn" onClick={onSave} disabled={pane.editBusy}>

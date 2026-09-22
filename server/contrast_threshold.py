@@ -10,6 +10,7 @@ re-placing the seed.
 """
 from __future__ import annotations
 
+import glob
 import json
 import os
 import threading
@@ -19,7 +20,7 @@ from typing import Optional
 import numpy as np
 
 from volume_store import LoadedVolume, _seed_index_3d
-from pathutil import clean_path
+from pathutil import clean_path, dated_annotation_dir
 
 DEFAULT_TARGET_VOLUME_MM3 = 200.0
 DEFAULT_K_MULTIPLIER = 3.0
@@ -139,28 +140,39 @@ def compute_volume_total_mm3(mask_vol: LoadedVolume, ct_vol: LoadedVolume, label
     return float(np.count_nonzero(labeled)) * voxel_volume
 
 
-def _sidecar_path(ct_path: str) -> str:
+def _sidecar_filename(ct_path: str, series_uid: Optional[str] = None) -> tuple[str, str]:
+    """Return (default_dir, filename) — default_dir is next to the CT file,
+    used as-is when no save directory is configured, and as the fallback
+    lookup location even when one is."""
     dirn = os.path.dirname(ct_path)
     base = os.path.basename(ct_path)
     if ct_path and os.path.isdir(ct_path):
         # A DICOM series directory's name is a dotted UID (e.g.
         # "1.2.840.113654...") — not a file extension, so it must not be run
         # through splitext (same gotcha as volume_store._insert_tag).
-        stem = base
+        # Prefer the real SeriesInstanceUID over the folder's basename when
+        # known — a folder can hold multiple series, and the basename alone
+        # can't disambiguate their sidecars (same overwrite risk as
+        # volume_store._insert_tag).
+        stem = series_uid or base
     elif base.lower().endswith(".nii.gz"):
         stem = base[:-7]
     else:
         stem = os.path.splitext(base)[0]
-    return os.path.join(dirn, f"{stem}_contrast_seed.json")
+    return dirn, f"{stem}_contrast_seed.json"
 
 
-def save_sidecar(ct_path: str, record: dict) -> str:
-    """Write the seed/threshold record next to the CT file, atomically (temp file
-    + os.replace, matching folder_scan._write_table's convention)."""
+def save_sidecar(ct_path: str, record: dict, base_dir: Optional[str] = None, series_uid: Optional[str] = None) -> str:
+    """Write the seed/threshold record next to the CT file (or, if `base_dir`
+    is set, into `<base_dir>/Manual_Annotations_<date>/` instead), atomically
+    (temp file + os.replace, matching folder_scan._write_table's
+    convention)."""
     ct_path = clean_path(ct_path)
-    path = _sidecar_path(ct_path)
-    dirn = os.path.dirname(path) or "."
-    tmp_path = os.path.join(dirn, f".tmp_{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}_{os.path.basename(path)}")
+    dirn, filename = _sidecar_filename(ct_path, series_uid)
+    if base_dir:
+        dirn = dated_annotation_dir(base_dir)
+    path = os.path.join(dirn, filename)
+    tmp_path = os.path.join(dirn, f".tmp_{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}_{filename}")
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(record, f, indent=2)
@@ -174,9 +186,25 @@ def save_sidecar(ct_path: str, record: dict) -> str:
     return path
 
 
-def load_sidecar(ct_path: str) -> Optional[dict]:
+def load_sidecar(ct_path: str, base_dir: Optional[str] = None, series_uid: Optional[str] = None) -> Optional[dict]:
     ct_path = clean_path(ct_path)
-    path = _sidecar_path(ct_path)
+    dirn, filename = _sidecar_filename(ct_path, series_uid)
+    if base_dir:
+        # Saves are dated per-day, so a sidecar saved on an earlier day lives
+        # in a different Manual_Annotations_<date> folder than today's —
+        # search all of them under base_dir (most recently modified first)
+        # rather than assuming it's in today's.
+        matches = sorted(
+            glob.glob(os.path.join(base_dir, "Manual_Annotations_*", filename)),
+            key=os.path.getmtime,
+            reverse=True,
+        )
+        if matches:
+            with open(matches[0], "r", encoding="utf-8") as f:
+                return json.load(f)
+    # Fall back to next to the image — covers both "no save directory
+    # configured" and "one is configured now, but this sidecar predates it".
+    path = os.path.join(dirn, filename)
     if not os.path.isfile(path):
         return None
     with open(path, "r", encoding="utf-8") as f:

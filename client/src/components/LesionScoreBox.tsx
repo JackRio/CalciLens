@@ -25,6 +25,7 @@ export default function LesionScoreBox({
   onRowClick,
   onComputeAll,
   computingAll,
+  seedRadiusMm,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -33,6 +34,7 @@ export default function LesionScoreBox({
   onRowClick: (result: LesionScoreResult) => void
   onComputeAll: () => void
   computingAll: boolean
+  seedRadiusMm: number
 }) {
   if (!pane.ctInfo || !pane.maskInfo) return null
 
@@ -62,9 +64,15 @@ export default function LesionScoreBox({
           <input
             type="checkbox"
             checked={pane.scoreComputeMode}
-            onChange={(e) =>
+            onChange={(e) => {
               onChange(e.target.checked ? { scoreComputeMode: true, editMode: false } : { scoreComputeMode: false })
-            }
+              // Return focus to the document immediately rather than leaving
+              // it on this checkbox — otherwise the user clicking this, then
+              // moving to the image to Shift-click/scroll for the
+              // circle-seed feature, does so with a lingering focus ring on
+              // an unrelated control.
+              e.target.blur()
+            }}
           />
           {isVolumeMetric ? 'Volume Compute' : 'Score Compute'}
         </label>
@@ -92,6 +100,8 @@ export default function LesionScoreBox({
               {isVolumeMetric
                 ? 'Click a mask voxel to isolate its 3D lesion and compute its physical volume.'
                 : 'Click a mask voxel to isolate its 3D lesion and compute its Agatston score.'}
+              <br />
+              {`Hold Shift + click to seed from a circle for tiny lesions (Shift+scroll to resize, ${seedRadiusMm.toFixed(1)} mm).`}
             </div>
           )}
           {pane.lesionResults.length > 0 && (

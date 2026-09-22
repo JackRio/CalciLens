@@ -106,8 +106,10 @@ backend on port 8000. `window.electronAPI` is unavailable here, so the
   slice — could be added if useful.
 - No 3-pane simultaneous MPR (axial+sagittal+coronal at once) — each pane
   shows one plane at a time, switchable via tabs, matching what was asked for.
-- No packaged installer (.exe) yet — `npm run app` runs from source using the
-  local `.venv` and `node_modules`. A real installer would need to bundle the
-  Python venv (including SimpleITK's compiled binaries) into the app package,
-  which needs care — see the `electron-builder` config in `package.json` as a
-  starting point if that's wanted later.
+- A packaged installer (`npm run dist`, via `electron-builder`) is available and
+  bundles the Python venv into the app package — see `package.json`'s `build`
+  config. It's unsigned, so Windows SmartScreen will flag it on first run; if a
+  recipient's org blocks the SmartScreen override entirely, running from source
+  (this section) is the fallback — just don't copy the `.venv` folder itself
+  across machines, it's tied to the Python interpreter it was created with, so
+  run `pip install -r server/requirements.txt` fresh in a new venv instead.

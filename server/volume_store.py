@@ -22,7 +22,7 @@ import numpy as np
 import SimpleITK as sitk
 from PIL import Image
 
-from pathutil import clean_path
+from pathutil import clean_path, dated_annotation_dir
 
 PLANES = ("axial", "sagittal", "coronal")
 
@@ -31,8 +31,62 @@ def _is_dicom_dir(path: str) -> bool:
     return os.path.isdir(path)
 
 
-def _hash_id(path: str) -> str:
-    return hashlib.sha1(os.path.normcase(os.path.abspath(path)).encode("utf-8")).hexdigest()[:16]
+def _find_dicom_series(root: str) -> tuple[str, str, list]:
+    """Return (series_dir, series_uid, file_names) for the first directory
+    (root itself, or any subdirectory, walked top-down and alphabetically)
+    that contains a readable GDCM series. Previously only `root` itself was
+    checked, so a DICOM series nested in a subfolder (rather than sitting
+    directly in the chosen folder) silently failed to load. Raises
+    ValueError if no series is found anywhere under root.
+
+    Only the FIRST series id in a directory is used here even when a folder
+    holds several — this is the auto-pick fallback for callers that don't
+    care which series (mask loading, or any load with no explicit
+    series_uid). See _find_all_dicom_series for enumerating every series."""
+    for dirpath, dirnames, _ in os.walk(root):
+        dirnames.sort()
+        series_ids = sitk.ImageSeriesReader.GetGDCMSeriesIDs(dirpath)
+        if series_ids:
+            return dirpath, series_ids[0], sitk.ImageSeriesReader.GetGDCMSeriesFileNames(dirpath, series_ids[0])
+    raise ValueError(f"No DICOM series found under directory: {root}")
+
+
+def _find_all_dicom_series(root: str) -> list:
+    """Return every (dirpath, series_uid) pair found anywhere under root —
+    unlike _find_dicom_series, this does not stop at the first directory
+    that has a series, and it does not stop at the first series id within a
+    directory either, so a folder holding multiple series (the common case
+    this exists for) yields all of them. Stable order: sorted by directory,
+    then series_uid."""
+    pairs = []
+    for dirpath, dirnames, _ in os.walk(root):
+        dirnames.sort()
+        series_ids = sitk.ImageSeriesReader.GetGDCMSeriesIDs(dirpath)
+        for series_id in series_ids:
+            pairs.append((dirpath, series_id))
+    pairs.sort()
+    return pairs
+
+
+def _series_description(dirpath: str, series_id: str, file_names) -> str:
+    """Best-effort SeriesDescription (DICOM tag 0008,103e) for one series, to
+    show as a hover hint in the series picker. Never raises — an empty
+    string means "no description available", not an error."""
+    if not file_names:
+        return ""
+    try:
+        reader = sitk.ImageFileReader()
+        reader.SetFileName(file_names[0])
+        reader.LoadPrivateTagsOn()
+        reader.ReadImageInformation()
+        return reader.GetMetaData("0008|103e").strip()
+    except Exception:
+        return ""
+
+
+def _hash_id(path: str, series_uid: Optional[str] = None) -> str:
+    key = os.path.normcase(os.path.abspath(path)) + "|" + (series_uid or "")
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass
@@ -55,6 +109,9 @@ class LoadedVolume:
     reoriented_direction: tuple = None  # needed to write the array back out correctly after editing
     is_new_mask: bool = False  # True for a blank mask created in-app (never loaded from a file)
     source_ct_path: Optional[str] = None  # the CT path a new mask was created against, for save-path naming
+    dicom_series_uid: Optional[str] = None  # SeriesInstanceUID, when path is a DICOM directory —
+    # used instead of the folder's basename for save-path naming (see _insert_tag), since a
+    # folder can hold multiple series and the basename alone can't disambiguate them.
 
     def size_lps(self):
         nz, ny, nx = self.array.shape
@@ -99,6 +156,7 @@ class LoadedVolume:
             },
             "labels": self.labels,
             "is_new_mask": self.is_new_mask,
+            "dicom_series_uid": self.dicom_series_uid,
         }
 
 
@@ -110,12 +168,26 @@ class VolumeStore:
         self._cache: "OrderedDict[str, LoadedVolume]" = OrderedDict()
         self._lock = threading.Lock()
 
-    def load(self, path: str, is_mask: bool = False, force: bool = False) -> LoadedVolume:
+    def load(
+        self,
+        path: str,
+        is_mask: bool = False,
+        force: bool = False,
+        series_uid: Optional[str] = None,
+    ) -> LoadedVolume:
         """force=True bypasses the cache hit and re-reads from disk even if
         already loaded, discarding any in-memory edits — used by "Reset" to
-        revert a mask back to what's actually saved on disk."""
+        revert a mask back to what's actually saved on disk.
+
+        series_uid selects one specific series out of a DICOM directory that
+        may hold several — the frontend passes it whenever it already knows
+        which series it wants (from /api/volumes/list_dicom_series), so this
+        loads that exact series instead of auto-picking the first one found.
+        Two different series at the same directory path must not collide on
+        the same cache entry, so series_uid is folded into the hash key.
+        """
         path = os.path.abspath(clean_path(path))
-        vol_id = _hash_id(path) + ("_mask" if is_mask else "")
+        vol_id = _hash_id(path, series_uid) + ("_mask" if is_mask else "")
         if not force:
             with self._lock:
                 existing = self._cache.get(vol_id)
@@ -127,12 +199,13 @@ class VolumeStore:
             raise FileNotFoundError(path)
 
         is_dicom_dir = _is_dicom_dir(path)
+        resolved_series_uid = series_uid
         if is_dicom_dir:
             reader = sitk.ImageSeriesReader()
-            series_ids = sitk.ImageSeriesReader.GetGDCMSeriesIDs(path)
-            if not series_ids:
-                raise ValueError(f"No DICOM series found in directory: {path}")
-            file_names = sitk.ImageSeriesReader.GetGDCMSeriesFileNames(path, series_ids[0])
+            if series_uid:
+                file_names = sitk.ImageSeriesReader.GetGDCMSeriesFileNames(path, series_uid)
+            else:
+                _, resolved_series_uid, file_names = _find_dicom_series(path)
             reader.SetFileNames(file_names)
             image = reader.Execute()
         else:
@@ -178,6 +251,7 @@ class VolumeStore:
             labels=labels,
             reoriented_origin=reoriented.GetOrigin(),
             reoriented_direction=reoriented.GetDirection(),
+            dicom_series_uid=resolved_series_uid if is_dicom_dir else None,
         )
 
         self._register(vol)
@@ -226,6 +300,7 @@ class VolumeStore:
             reoriented_direction=ct_vol.reoriented_direction,
             is_new_mask=True,
             source_ct_path=ct_vol.path,
+            dicom_series_uid=ct_vol.dicom_series_uid,
         )
         self._register(vol)
         return vol
@@ -366,6 +441,55 @@ def paint_mask(
 
 
 MAX_REGION_GROW_VOXELS = 5_000_000
+MAX_SEARCH_RADIUS_MM = 20.0  # server-side clamp regardless of what the client sends
+
+
+def _nearest_qualifying_voxel(condition: np.ndarray, z: int, y: int, x: int, radius=(1, 1, 1)):
+    """If (z,y,x) already satisfies `condition`, return it as-is. Otherwise
+    search the box of half-widths radius=(rz,ry,rx) around it (clipped to
+    array bounds) and return the closest voxel (by Euclidean distance) that
+    satisfies `condition`, or None if none do.
+
+    Both region-grow and lesion scoring previously required the *exact*
+    clicked voxel to already qualify before running ndimage.label — fine for
+    a lesion spanning many voxels, but a 1-2 voxel lesion has zero margin for
+    the sub-pixel rounding in _seed_index_3d, so an off-by-one click missed
+    it entirely. The default radius=(1,1,1) is an always-on, small tolerance
+    for that; a caller-supplied larger radius (see _voxel_radius_from_mm)
+    backs the user-driven Shift+click circle-seed feature.
+    """
+    if condition[z, y, x]:
+        return z, y, x
+    nz, ny, nx = condition.shape
+    rz, ry, rx = radius
+    best, best_d2 = None, None
+    for dz in range(-rz, rz + 1):
+        for dy in range(-ry, ry + 1):
+            for dx in range(-rx, rx + 1):
+                if dz == dy == dx == 0:
+                    continue
+                zz, yy, xx = z + dz, y + dy, x + dx
+                if 0 <= zz < nz and 0 <= yy < ny and 0 <= xx < nx and condition[zz, yy, xx]:
+                    d2 = dz * dz + dy * dy + dx * dx
+                    if best_d2 is None or d2 < best_d2:
+                        best, best_d2 = (zz, yy, xx), d2
+    return best
+
+
+def _voxel_radius_from_mm(spacing_lps, radius_mm: Optional[float]) -> tuple:
+    """Convert a physical mm search radius to a per-axis voxel radius
+    (rz, ry, rx) matching the array's own axis order. spacing_lps is
+    (sx, sy, sz); with no radius given, fall back to the always-on 1-voxel
+    tolerance."""
+    if not radius_mm:
+        return (1, 1, 1)
+    radius_mm = min(radius_mm, MAX_SEARCH_RADIUS_MM)
+    sx, sy, sz = spacing_lps
+    return (
+        max(1, round(radius_mm / sz)),
+        max(1, round(radius_mm / sy)),
+        max(1, round(radius_mm / sx)),
+    )
 
 
 def _seed_index_3d(ct_vol: LoadedVolume, plane: str, index: int, row: float, col: float):
@@ -394,11 +518,18 @@ def region_grow_mask(
     col: float,
     threshold_min: float,
     new_label: int,
+    search_radius_mm: Optional[float] = None,
 ) -> int:
     """True 3D flood-fill over the whole volume starting at the clicked
     voxel, with 26-connectivity (every face/edge/corner neighbor — maximum
     possible connectivity for a voxel grid), over all connected voxels with
-    CT value >= threshold_min. Returns the number of voxels changed."""
+    CT value >= threshold_min. Returns the number of voxels changed.
+
+    search_radius_mm widens the seed lookup beyond the exact clicked voxel
+    (see _nearest_qualifying_voxel) — None uses the always-on 1-voxel
+    tolerance; a larger value backs the Shift+click circle-seed feature for
+    tiny/isolated qualifying voxels the exact click missed.
+    """
     from scipy import ndimage
 
     nz, ny, nx = ct_vol.array.shape
@@ -407,8 +538,10 @@ def region_grow_mask(
         return 0
 
     above = ct_vol.array >= threshold_min
-    if not above[z, y, x]:
+    seed = _nearest_qualifying_voxel(above, z, y, x, _voxel_radius_from_mm(ct_vol.spacing_lps, search_radius_mm))
+    if seed is None:
         return 0
+    z, y, x = seed
 
     structure = np.ones((3, 3, 3), dtype=bool)  # 26-connectivity ("max connectivity")
     labeled, _ = ndimage.label(above, structure=structure)
@@ -427,7 +560,14 @@ def region_grow_mask(
     return changed
 
 
-def _insert_tag(path: str, tag: str, default_dir: str = "", default_stem: str = "") -> str:
+def _insert_tag(
+    path: str,
+    tag: str,
+    default_dir: str = "",
+    default_stem: str = "",
+    base_dir: Optional[str] = None,
+    series_uid: Optional[str] = None,
+) -> str:
     if path:
         dirn = os.path.dirname(path)
         base = os.path.basename(path)
@@ -441,29 +581,39 @@ def _insert_tag(path: str, tag: str, default_dir: str = "", default_stem: str = 
         # branches below, or splitext wrongly treats the tail after the last
         # dot as the extension (SimpleITK then can't find a writer for it —
         # "Unable to determine ImageIO writer").
-        stem, ext = base, ".nii.gz"
+        # Prefer the actual SeriesInstanceUID over the folder's basename: a
+        # folder can hold multiple series, and two series saved under the
+        # same folder-basename-derived filename would silently overwrite
+        # each other. Fall back to the basename only when the series UID
+        # wasn't tracked (e.g. a caller that never loaded through the normal
+        # DICOM-dir path).
+        stem, ext = (series_uid or base), ".nii.gz"
     elif base.lower().endswith(".nii.gz"):
         stem, ext = base[:-7], ".nii.gz"
     else:
         stem, ext = os.path.splitext(base)
         ext = ext or ".nii.gz"
+    if base_dir:
+        dirn = dated_annotation_dir(base_dir)
     return os.path.join(dirn, f"{stem}_{tag}{ext}")
 
 
-def save_mask(mask_vol: LoadedVolume, tag: Optional[str] = None) -> str:
+def save_mask(mask_vol: LoadedVolume, tag: Optional[str] = None, base_dir: Optional[str] = None) -> str:
     """Write the current in-memory mask array to disk, preserving the
     geometry it currently occupies (LPS-reoriented space). If the mask was
     loaded from a file, it's saved alongside it with the tag appended; if it
     was created fresh in-app (no source file), it's saved alongside the CT
-    image instead.
+    image instead. If `base_dir` is set (the user configured an annotation
+    save directory in Settings), the save is redirected into
+    `<base_dir>/Manual_Annotations_<date>/` instead of next to the image.
     """
     if mask_vol.is_new_mask:
         tag = tag or "ManualAnnotations"
         ct_path = mask_vol.source_ct_path or ""
-        out_path = _insert_tag(ct_path, tag)
+        out_path = _insert_tag(ct_path, tag, base_dir=base_dir, series_uid=mask_vol.dicom_series_uid)
     else:
         tag = tag or "ManualEdits"
-        out_path = _insert_tag(mask_vol.path, tag)
+        out_path = _insert_tag(mask_vol.path, tag, base_dir=base_dir, series_uid=mask_vol.dicom_series_uid)
 
     img = sitk.GetImageFromArray(mask_vol.array)
     img.SetSpacing(mask_vol.spacing_lps)

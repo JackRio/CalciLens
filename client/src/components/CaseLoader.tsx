@@ -13,11 +13,15 @@ export default function CaseLoader({
   onChange,
   onLoadCt,
   onLoadMask,
+  annotationSaveDir,
+  onAnnotationSaveDirChange,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
   onLoadCt: (path: string) => Promise<void>
   onLoadMask: (path: string) => Promise<void>
+  annotationSaveDir: string
+  onAnnotationSaveDirChange: (next: string) => void
 }) {
   const electronAvailable = isElectron()
 
@@ -40,11 +44,6 @@ export default function CaseLoader({
 
   async function handleBrowseMaskFile() {
     const picked = await pickPath({ properties: ['openFile'], filters: IMAGE_FILE_FILTERS })
-    if (picked) onChange({ maskPath: picked })
-  }
-
-  async function handleBrowseMaskFolder() {
-    const picked = await pickPath({ properties: ['openDirectory'] })
     if (picked) onChange({ maskPath: picked })
   }
 
@@ -114,6 +113,7 @@ export default function CaseLoader({
         ctInfo: null,
         maskPath: '',
         maskInfo: null,
+        maskWarning: null,
         manifestError: `Image not found: ${row.image_path}`,
       })
       return
@@ -122,10 +122,10 @@ export default function CaseLoader({
       if (row.mask_exists) {
         await onLoadMask(row.mask_path)
       } else {
-        onChange({ maskPath: '', maskInfo: null, manifestError: `Mask not found: ${row.mask_path}` })
+        onChange({ maskPath: '', maskInfo: null, maskWarning: null, manifestError: `Mask not found: ${row.mask_path}` })
       }
     } else {
-      onChange({ maskPath: '', maskInfo: null })
+      onChange({ maskPath: '', maskInfo: null, maskWarning: null })
     }
   }
 
@@ -166,6 +166,22 @@ export default function CaseLoader({
     if (row) selectRow(row)
   }
 
+  // Loading a single scan/mask should leave the manifest behind entirely (no
+  // stale "N / M" counter from whatever manifest happened to be loaded
+  // before) — but this can't live inside onLoadCt/onLoadMask themselves,
+  // since manifest row navigation (selectRow above, and App.tsx's
+  // loadRowIntoPane) also calls those and must NOT clear the manifest it's
+  // actively iterating.
+  async function handleLoadCtSingle() {
+    onChange({ manifestRows: [], activeRowIndex: null, reasonOptions: [], scoreClasses: [], manifestError: null })
+    await onLoadCt(pane.ctPath)
+  }
+
+  async function handleLoadMaskSingle() {
+    onChange({ manifestRows: [], activeRowIndex: null, reasonOptions: [], scoreClasses: [], manifestError: null })
+    await onLoadMask(pane.maskPath)
+  }
+
   return (
     <div className="settings-section case-loader">
       <div className="settings-title">Load a single scan</div>
@@ -184,7 +200,7 @@ export default function CaseLoader({
               Browse DICOM dir...
             </button>
           )}
-          <button onClick={() => onLoadCt(pane.ctPath)}>Load CT</button>
+          <button onClick={handleLoadCtSingle}>Load CT</button>
         </div>
       </label>
       <label>
@@ -197,12 +213,30 @@ export default function CaseLoader({
             onChange={(e) => onChange({ maskPath: e.target.value })}
           />
           {electronAvailable && <button onClick={handleBrowseMaskFile}>Browse file...</button>}
+          <button onClick={handleLoadMaskSingle}>Load mask</button>
+        </div>
+      </label>
+      <label>
+        Save folder
+        <div className="inline-row">
+          <input
+            type="text"
+            placeholder="(default) save next to the image"
+            value={annotationSaveDir}
+            onChange={(e) => onAnnotationSaveDirChange(e.target.value)}
+            title="Annotations (and, in contrast mode, seed sidecars) save into <this>/Manual_Annotations_<date>/ instead of next to the image"
+          />
           {electronAvailable && (
-            <button onClick={handleBrowseMaskFolder} title="Pick a folder of DICOM slices">
-              Browse DICOM dir...
+            <button
+              onClick={async () => {
+                const picked = await pickPath({ properties: ['openDirectory'] })
+                if (picked) onAnnotationSaveDirChange(picked)
+              }}
+            >
+              Browse folder...
             </button>
           )}
-          <button onClick={() => onLoadMask(pane.maskPath)}>Load mask</button>
+          {annotationSaveDir && <button onClick={() => onAnnotationSaveDirChange('')}>Clear</button>}
         </div>
       </label>
 
@@ -334,6 +368,12 @@ export default function CaseLoader({
               )}
             </label>
           </div>
+
+          {cfg.imageColumn && cfg.maskColumn && cfg.imageColumn === cfg.maskColumn && (
+            <div className="busy-msg manifest-error">
+              Image and Mask are set to the same column — every row will load its CT scan as its own mask.
+            </div>
+          )}
 
           <button
             className="advanced-toggle"

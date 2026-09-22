@@ -15,7 +15,7 @@ from typing import Optional
 import numpy as np
 from scipy import ndimage
 
-from volume_store import LoadedVolume, _seed_index_3d
+from volume_store import LoadedVolume, _seed_index_3d, _nearest_qualifying_voxel, _voxel_radius_from_mm
 
 CORONARY_LABELS = (1, 2, 3)  # LAD, LCx, RCA
 DEFAULT_HU_THRESHOLD = 130.0
@@ -44,20 +44,28 @@ def find_lesion_component(
     row: float,
     col: float,
     hu_threshold: float = DEFAULT_HU_THRESHOLD,
+    search_radius_mm: Optional[float] = None,
 ) -> Optional[tuple[np.ndarray, int]]:
     """Isolate the 3D lesion (same label as the clicked voxel, HU >=
     hu_threshold, 26-connected) containing the seed. Returns (region, label)
-    or None if the seed is background or below threshold."""
+    or None if no qualifying voxel is found at or near the seed.
+
+    search_radius_mm widens the seed lookup beyond the exact clicked voxel
+    (see volume_store._nearest_qualifying_voxel) — None uses the always-on
+    1-voxel tolerance (absorbs a sub-pixel click-rounding miss on a tiny
+    lesion); a larger value backs the Shift+click circle-seed feature.
+    """
     nz, ny, nx = ct_vol.array.shape
     z, y, x = _seed_index_3d(ct_vol, plane, index, row, col)
     if not (0 <= z < nz and 0 <= y < ny and 0 <= x < nx):
         return None
 
+    qualifies = (mask_vol.array != 0) & (ct_vol.array >= hu_threshold)
+    seed = _nearest_qualifying_voxel(qualifies, z, y, x, _voxel_radius_from_mm(ct_vol.spacing_lps, search_radius_mm))
+    if seed is None:
+        return None
+    z, y, x = seed
     label = int(mask_vol.array[z, y, x])
-    if label == 0:
-        return None
-    if ct_vol.array[z, y, x] < hu_threshold:
-        return None
 
     candidate = (mask_vol.array == label) & (ct_vol.array >= hu_threshold)
     labeled, _ = ndimage.label(candidate, structure=_CONNECTIVITY_26)

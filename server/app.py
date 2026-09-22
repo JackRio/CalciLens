@@ -6,12 +6,14 @@ import os
 from typing import Optional
 
 import numpy as np
+import SimpleITK as sitk
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from pathutil import clean_path
 from volume_store import (
     store,
     render_composited_png,
@@ -20,6 +22,8 @@ from volume_store import (
     region_grow_mask,
     recompute_labels,
     save_mask,
+    _find_all_dicom_series,
+    _series_description,
     DEFAULT_LABEL_COLORS,
     DEFAULT_THRESHOLD_COLOR,
     DEFAULT_THRESHOLD_HU,
@@ -73,17 +77,45 @@ class LoadRequest(BaseModel):
     path: str
     is_mask: bool = False
     force: bool = False
+    series_uid: Optional[str] = None
 
 
 @app.post("/api/volumes/load")
 def load_volume(req: LoadRequest):
     try:
-        vol = store.load(req.path, is_mask=req.is_mask, force=req.force)
+        vol = store.load(req.path, is_mask=req.is_mask, force=req.force, series_uid=req.series_uid)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Path not found: {req.path}")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to load volume: {e}")
     return vol.info_dict()
+
+
+@app.get("/api/volumes/list_dicom_series")
+def list_dicom_series(path: str):
+    """Enumerate every DICOM series found under `path` (root itself or any
+    subdirectory), so the frontend can offer a Previous/Next series
+    navigator when a folder holds more than one. A non-directory path (a
+    plain NIFTI/MHA file) or a directory with no readable series returns an
+    empty list rather than an error — callers treat that as "just load it
+    plainly", so this never blocks a normal single-file load."""
+    path = os.path.abspath(clean_path(path))
+    if not os.path.isdir(path):
+        return {"series": []}
+    try:
+        pairs = _find_all_dicom_series(path)
+    except Exception:
+        return {"series": []}
+    result = []
+    for dirpath, series_id in pairs:
+        file_names = sitk.ImageSeriesReader.GetGDCMSeriesFileNames(dirpath, series_id)
+        result.append({
+            "series_uid": series_id,
+            "directory": dirpath,
+            "description": _series_description(dirpath, series_id, file_names),
+            "num_files": len(file_names),
+        })
+    return {"series": result}
 
 
 @app.get("/api/volumes/{volume_id}/info")
@@ -260,6 +292,7 @@ class RegionGrowRequest(BaseModel):
     col: float
     threshold_min: float
     new_label: int
+    search_radius_mm: Optional[float] = None
 
 
 @app.post("/api/mask/region_grow")
@@ -279,6 +312,7 @@ def mask_region_grow(req: RegionGrowRequest):
             req.col,
             req.threshold_min,
             req.new_label,
+            search_radius_mm=req.search_radius_mm,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -296,6 +330,7 @@ class LesionScoreRequest(BaseModel):
     row: float
     col: float
     hu_threshold: float = DEFAULT_HU_THRESHOLD
+    search_radius_mm: Optional[float] = None
 
 
 @app.post("/api/mask/lesion_score")
@@ -306,7 +341,7 @@ def mask_lesion_score(req: LesionScoreRequest):
     except KeyError:
         raise HTTPException(status_code=404, detail="volume not loaded")
     result = find_lesion_component(
-        mask_vol, ct_vol, req.plane, req.index, req.row, req.col, req.hu_threshold
+        mask_vol, ct_vol, req.plane, req.index, req.row, req.col, req.hu_threshold, search_radius_mm=req.search_radius_mm
     )
     if result is None:
         return {"found": False, "label": None, "voxel_count": 0, "agatston_score": 0.0, "is_coronary": False}
@@ -350,6 +385,7 @@ class LesionVolumeRequest(BaseModel):
     row: float
     col: float
     hu_threshold: float
+    search_radius_mm: Optional[float] = None
 
 
 @app.post("/api/mask/lesion_volume")
@@ -359,7 +395,9 @@ def mask_lesion_volume(req: LesionVolumeRequest):
         ct_vol = store.get(req.ct_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="volume not loaded")
-    result = find_lesion_component(mask_vol, ct_vol, req.plane, req.index, req.row, req.col, req.hu_threshold)
+    result = find_lesion_component(
+        mask_vol, ct_vol, req.plane, req.index, req.row, req.col, req.hu_threshold, search_radius_mm=req.search_radius_mm
+    )
     if result is None:
         return {"found": False, "label": None, "voxel_count": 0, "volume_mm3": 0.0}
     region, label = result
@@ -405,6 +443,7 @@ class ContrastThresholdRequest(BaseModel):
     ct_path: Optional[str] = None
     mask_path: Optional[str] = None
     patient_id: Optional[str] = None
+    save_dir: Optional[str] = None
 
 
 @app.post("/api/contrast/compute_threshold")
@@ -430,14 +469,14 @@ def contrast_compute_threshold(req: ContrastThresholdRequest):
             "patient_id": req.patient_id,
             "saved_at": datetime.datetime.now().isoformat(),
         }
-        save_sidecar(req.ct_path, record)
+        save_sidecar(req.ct_path, record, base_dir=req.save_dir, series_uid=ct_vol.dicom_series_uid)
 
     return stats
 
 
 @app.get("/api/contrast/load_threshold")
-def contrast_load_threshold(ct_path: str):
-    record = load_sidecar(ct_path)
+def contrast_load_threshold(ct_path: str, save_dir: Optional[str] = None, series_uid: Optional[str] = None):
+    record = load_sidecar(ct_path, base_dir=save_dir, series_uid=series_uid)
     if record is None:
         raise HTTPException(status_code=404, detail="No saved contrast seed for this image")
     return record
@@ -446,6 +485,7 @@ def contrast_load_threshold(ct_path: str):
 class SaveMaskRequest(BaseModel):
     mask_id: str
     tag: Optional[str] = None
+    save_dir: Optional[str] = None
 
 
 @app.post("/api/mask/save")
@@ -455,7 +495,7 @@ def mask_save(req: SaveMaskRequest):
     except KeyError:
         raise HTTPException(status_code=404, detail="mask volume not loaded")
     try:
-        out_path = save_mask(mask_vol, tag=req.tag)
+        out_path = save_mask(mask_vol, tag=req.tag, base_dir=req.save_dir)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"save failed: {e}")
     return {"path": out_path}

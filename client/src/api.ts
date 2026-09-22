@@ -1,4 +1,4 @@
-import type { LabelColor, ManifestPairsResult, OverwriteMode, Plane, VolumeInfo } from './types'
+import type { DicomSeriesInfo, LabelColor, ManifestPairsResult, OverwriteMode, Plane, VolumeInfo } from './types'
 
 async function handleJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -14,13 +14,48 @@ async function handleJson<T>(res: Response): Promise<T> {
   return res.json()
 }
 
-export async function loadVolume(path: string, isMask: boolean, force = false): Promise<VolumeInfo> {
+export async function loadVolume(path: string, isMask: boolean, force = false, seriesUid?: string): Promise<VolumeInfo> {
   const res = await fetch('/api/volumes/load', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, is_mask: isMask, force }),
+    body: JSON.stringify({ path, is_mask: isMask, force, series_uid: seriesUid ?? null }),
   })
   return handleJson<VolumeInfo>(res)
+}
+
+export async function listDicomSeries(path: string): Promise<DicomSeriesInfo[]> {
+  const res = await fetch(`/api/volumes/list_dicom_series?path=${encodeURIComponent(path)}`)
+  const data = await handleJson<{
+    series: { series_uid: string; directory: string; description: string; num_files: number }[]
+  }>(res)
+  return data.series.map((s) => ({
+    seriesUid: s.series_uid,
+    directory: s.directory,
+    description: s.description,
+    numFiles: s.num_files,
+  }))
+}
+
+// Shared by every CT-loading entry point (single-scan Load CT, manifest row
+// select/navigate): resolves a user-given path to the exact directory+series
+// to actually load, and — when the path is a DICOM directory holding more
+// than one series — the full series list so the caller can drive a
+// Previous/Next navigator. A listing failure (not a DICOM directory, or any
+// other error) never blocks a plain load: it just falls back to loading
+// `path` as-is with no series hint.
+export async function resolveDicomLoad(
+  path: string,
+): Promise<{ directory: string; seriesUid?: string; seriesList: DicomSeriesInfo[] }> {
+  let series: DicomSeriesInfo[] = []
+  try {
+    series = await listDicomSeries(path)
+  } catch {
+    series = []
+  }
+  if (series.length === 0) {
+    return { directory: path, seriesUid: undefined, seriesList: [] }
+  }
+  return { directory: series[0].directory, seriesUid: series[0].seriesUid, seriesList: series }
 }
 
 export function renderUrl(params: {
@@ -214,6 +249,7 @@ export async function regionGrowMask(params: {
   col: number
   thresholdMin: number
   newLabel: number
+  searchRadiusMm?: number
 }): Promise<{ changed: number; labels: number[] }> {
   const res = await fetch('/api/mask/region_grow', {
     method: 'POST',
@@ -227,6 +263,7 @@ export async function regionGrowMask(params: {
       col: params.col,
       threshold_min: params.thresholdMin,
       new_label: params.newLabel,
+      search_radius_mm: params.searchRadiusMm ?? null,
     }),
   })
   return handleJson(res)
@@ -240,6 +277,7 @@ export async function computeLesionScore(params: {
   row: number
   col: number
   huThreshold?: number
+  searchRadiusMm?: number
 }): Promise<{ found: boolean; label: number | null; voxelCount: number; agatstonScore: number; isCoronary: boolean }> {
   const res = await fetch('/api/mask/lesion_score', {
     method: 'POST',
@@ -252,6 +290,7 @@ export async function computeLesionScore(params: {
       row: params.row,
       col: params.col,
       hu_threshold: params.huThreshold ?? 130,
+      search_radius_mm: params.searchRadiusMm ?? null,
     }),
   })
   const data = await handleJson<{
@@ -298,6 +337,7 @@ export async function computeLesionVolume(params: {
   row: number
   col: number
   huThreshold: number
+  searchRadiusMm?: number
 }): Promise<{ found: boolean; label: number | null; voxelCount: number; volumeMm3: number }> {
   const res = await fetch('/api/mask/lesion_volume', {
     method: 'POST',
@@ -310,6 +350,7 @@ export async function computeLesionVolume(params: {
       row: params.row,
       col: params.col,
       hu_threshold: params.huThreshold,
+      search_radius_mm: params.searchRadiusMm ?? null,
     }),
   })
   const data = await handleJson<{ found: boolean; label: number | null; voxel_count: number; volume_mm3: number }>(res)
@@ -372,7 +413,10 @@ function parseContrastThresholdResult(data: {
   return {
     meanHu: data.mean_hu,
     stdHu: data.std_hu,
-    thresholdHu: data.threshold_hu,
+    // Rounded once here so every consumer (display, mismatch check, the
+    // mirrored editThresholdMin/editRegionGrowThreshold fields) sees the
+    // same 2-decimal value instead of each one re-rounding independently.
+    thresholdHu: Math.round(data.threshold_hu * 100) / 100,
     voxelCount: data.voxel_count,
     actualVolumeMm3: data.actual_volume_mm3,
     targetVolumeMm3: data.target_volume_mm3,
@@ -399,6 +443,7 @@ export async function computeContrastThreshold(params: {
   ctPath?: string
   maskPath?: string | null
   patientId?: string | null
+  saveDir?: string | null
 }): Promise<ContrastThresholdResult> {
   const res = await fetch('/api/contrast/compute_threshold', {
     method: 'POST',
@@ -415,14 +460,22 @@ export async function computeContrastThreshold(params: {
       ct_path: params.ctPath,
       mask_path: params.maskPath,
       patient_id: params.patientId,
+      save_dir: params.saveDir || null,
     }),
   })
   const data = await handleJson<Parameters<typeof parseContrastThresholdResult>[0]>(res)
   return parseContrastThresholdResult(data)
 }
 
-export async function loadContrastThreshold(ctPath: string): Promise<ContrastThresholdResult | null> {
-  const res = await fetch(`/api/contrast/load_threshold?ct_path=${encodeURIComponent(ctPath)}`)
+export async function loadContrastThreshold(
+  ctPath: string,
+  saveDir?: string | null,
+  seriesUid?: string | null,
+): Promise<ContrastThresholdResult | null> {
+  const params = new URLSearchParams({ ct_path: ctPath })
+  if (saveDir) params.set('save_dir', saveDir)
+  if (seriesUid) params.set('series_uid', seriesUid)
+  const res = await fetch(`/api/contrast/load_threshold?${params.toString()}`)
   if (res.status === 404) return null
   const data = await handleJson<Parameters<typeof parseContrastThresholdResult>[0]>(res)
   return parseContrastThresholdResult(data)
@@ -437,11 +490,11 @@ export async function refreshMaskLabels(maskId: string): Promise<{ labels: numbe
   return handleJson(res)
 }
 
-export async function saveMask(maskId: string, tag?: string): Promise<{ path: string }> {
+export async function saveMask(maskId: string, tag?: string, saveDir?: string | null): Promise<{ path: string }> {
   const res = await fetch('/api/mask/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mask_id: maskId, tag: tag || null }),
+    body: JSON.stringify({ mask_id: maskId, tag: tag || null, save_dir: saveDir || null }),
   })
   return handleJson(res)
 }

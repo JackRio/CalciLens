@@ -12,9 +12,10 @@ import {
   DEFAULT_WINDOW_LEVEL,
   DEFAULT_WINDOW_WIDTH,
   inferMaskAnnotationType,
+  detectMaskLooksLikeCt,
   comboMatches,
 } from './types'
-import { loadVolume, saveManifestComment, saveManifestReason } from './api'
+import { loadVolume, resolveDicomLoad, saveManifestComment, saveManifestReason } from './api'
 import { useKeybinds } from './useKeybinds'
 
 let paneCounter = 0
@@ -27,6 +28,8 @@ function makePane(): PaneState {
     manifestRows: [],
     activeRowIndex: null,
     manifestError: null,
+    dicomSeriesList: [],
+    dicomSeriesIndex: null,
     batchLoadCollapsed: false,
     wlMinimized: true,
     reasonOptions: [],
@@ -61,9 +64,10 @@ function makePane(): PaneState {
 
     error: null,
     loading: false,
+    maskWarning: null,
 
     editMode: false,
-    editTool: 'brush',
+    editTool: 'region-grow',
     editActiveLabel: 1,
     editOverwriteMode: 'any',
     editOverwriteLabel: null,
@@ -126,8 +130,14 @@ export default function App() {
     if (!pane || !pane.ctPath) return
     updatePane(paneId, { loading: true, loadingMessage: 'Reloading...', error: null })
     try {
-      const ctInfo = await loadVolume(pane.ctPath, false, true)
-      const maskInfo = pane.maskPath ? await loadVolume(pane.maskPath, true, true) : pane.maskInfo
+      // Pass the tracked series UID (when the CT came from a DICOM
+      // directory) so a reload re-resolves the *same* series rather than
+      // whichever one auto-pick would otherwise pick first if that
+      // directory holds more than one.
+      const ctInfo = await loadVolume(pane.ctPath, false, true, pane.ctInfo?.dicom_series_uid ?? undefined)
+      const maskInfo = pane.maskPath
+        ? await loadVolume(pane.maskPath, true, true, pane.maskInfo?.dicom_series_uid ?? undefined)
+        : pane.maskInfo
       updatePane(paneId, { ctInfo, maskInfo, loading: false, loadingMessage: null })
     } catch (e) {
       updatePane(paneId, { loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
@@ -201,6 +211,9 @@ export default function App() {
       // stale lesion results / recomputed totals look like they applied to
       // whatever case was just navigated to.
       maskAnnotationType: null,
+      maskWarning: null,
+      dicomSeriesList: [],
+      dicomSeriesIndex: null,
       editMode: false,
       lesionResults: [],
       volumeScores: null,
@@ -221,11 +234,20 @@ export default function App() {
       })
       return
     }
+    let ctPathForMaskCheck = ''
     try {
-      const ctInfo = await loadVolume(row.image_path, false)
+      const { directory, seriesUid, seriesList } = await resolveDicomLoad(row.image_path)
+      const ctInfo = await loadVolume(directory, false, false, seriesUid)
+      ctPathForMaskCheck = directory
       updatePane(paneId, {
-        ctPath: row.image_path,
+        ctPath: directory,
         ctInfo,
+        // A multi-series folder still just auto-loads its first series here
+        // — manifest case navigation takes precedence over series
+        // switching, so the series-nav bar stays hidden while a manifest is
+        // active (see Pane.tsx).
+        dicomSeriesList: seriesList.length > 1 ? seriesList : [],
+        dicomSeriesIndex: seriesList.length > 1 ? 0 : null,
         index: Math.floor(ctInfo.plane_lengths[currentPlane] / 2),
       })
     } catch (e) {
@@ -249,16 +271,17 @@ export default function App() {
             maskPath: row.mask_path,
             maskInfo,
             maskAnnotationType: inferMaskAnnotationType(row.mask_path),
+            maskWarning: detectMaskLooksLikeCt(maskInfo, ctPathForMaskCheck, row.mask_path),
             showMask: true,
           })
         } catch (e) {
           updatePane(paneId, { manifestError: e instanceof Error ? e.message : String(e) })
         }
       } else {
-        updatePane(paneId, { maskPath: '', maskInfo: null, manifestError: `Mask not found: ${row.mask_path}` })
+        updatePane(paneId, { maskPath: '', maskInfo: null, maskWarning: null, manifestError: `Mask not found: ${row.mask_path}` })
       }
     } else {
-      updatePane(paneId, { maskPath: '', maskInfo: null })
+      updatePane(paneId, { maskPath: '', maskInfo: null, maskWarning: null })
     }
     updatePane(paneId, { loading: false, loadingMessage: null })
   }
@@ -268,6 +291,7 @@ export default function App() {
       activeRowIndex: null,
       ctInfo: null,
       maskInfo: null,
+      maskWarning: null,
       ctPath: '',
       maskPath: '',
       manifestError: errorMsg,

@@ -9,10 +9,12 @@ import {
   CORONARY_LABELS,
   SCORE_CLASS_BY_LABEL,
   inferMaskAnnotationType,
+  detectMaskLooksLikeCt,
   comboMatches,
 } from '../types'
 import {
   loadVolume,
+  resolveDicomLoad,
   probeVoxel,
   renderUrl,
   createBlankMask,
@@ -33,6 +35,7 @@ import {
 } from '../api'
 import { getCachedCac, setCachedCac } from '../lesionCache'
 import { useContrastSettings } from '../useContrastSettings'
+import { useAnnotationSaveDir } from '../useAnnotationSaveDir'
 import InfoPanel from './InfoPanel'
 import LabelColorEditor from './LabelColorEditor'
 import CaseLoader from './CaseLoader'
@@ -55,6 +58,15 @@ function formatShortDate(d: Date): string {
 function sphereRadiusMmFromVolume(targetVolumeMm3: number): number {
   return Math.cbrt((3 * targetVolumeMm3) / (4 * Math.PI))
 }
+
+// Shift+click circle-seed feature (Score/Volume-compute and Region-grow): a
+// user-sized search radius for isolating tiny/isolated lesions the exact
+// click missed. Kept small and physically meaningful (mm) rather than a
+// generic "pixel size" so it means the same thing regardless of zoom level.
+const MIN_SEED_RADIUS_MM = 1
+const MAX_SEED_RADIUS_MM = 15
+const SEED_RADIUS_STEP_MM = 0.5
+const DEFAULT_SEED_RADIUS_MM = 3
 
 // Physical spacing (mm) of one index-step for the given plane — same axis
 // mapping as the server's plane_length/_seed_index_3d (axial steps through
@@ -185,6 +197,7 @@ export default function Pane({
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
   const [navModalDirection, setNavModalDirection] = useState<1 | -1 | null>(null)
   const [jumpPos, setJumpPos] = useState<number | null>(null)
+  const [seriesStepDirection, setSeriesStepDirection] = useState<1 | -1 | null>(null)
   const [counterDraft, setCounterDraft] = useState('')
   const [counterFocused, setCounterFocused] = useState(false)
   const [counterError, setCounterError] = useState<string | null>(null)
@@ -204,10 +217,22 @@ export default function Pane({
   const [computingScore, setComputingScore] = useState(false)
   const [flashRowId, setFlashRowId] = useState<number | null>(null)
   const [contrastSettings, setContrastSettings] = useContrastSettings()
+  const [annotationSaveDir, setAnnotationSaveDir] = useAnnotationSaveDir()
   const [contrastSaving, setContrastSaving] = useState(false)
   const [contrastError, setContrastError] = useState<string | null>(null)
   const [contrastBoxMinimized, setContrastBoxMinimized] = useState(false)
   const [computingVolumeScores, setComputingVolumeScores] = useState(false)
+  // Shift+click circle-seed (see MIN/MAX_SEED_RADIUS_MM above): shiftHeld only
+  // drives the preview cursor; the actual click/scroll handlers read
+  // e.shiftKey directly off the native event instead, so they stay correct
+  // regardless of which element currently has focus.
+  const [shiftHeld, setShiftHeld] = useState(false)
+  const [seedRadiusMm, setSeedRadiusMm] = useState(DEFAULT_SEED_RADIUS_MM)
+  const seedRadiusRef = useRef(seedRadiusMm)
+  seedRadiusRef.current = seedRadiusMm
+  const circleClickActive = pane.scoreComputeMode || (pane.editMode && pane.editTool === 'region-grow')
+  const circleClickActiveRef = useRef(circleClickActive)
+  circleClickActiveRef.current = circleClickActive
   const lesionIdCounter = useRef(0)
   const flashTimeoutRef = useRef<number | null>(null)
   const jumpMarkerTimeoutRef = useRef<number | null>(null)
@@ -217,7 +242,7 @@ export default function Pane({
   // we write straight to the DOM node (via ref) in a requestAnimationFrame
   // callback instead of paying for a React re-render on every mouse move.
   const cursorDivRef = useRef<HTMLDivElement>(null)
-  const pendingCursor = useRef<{ x: number; y: number; diameter: number } | null>(null)
+  const pendingCursor = useRef<{ x: number; y: number; diameter: number; variant: 'brush' | 'seed-radius' } | null>(null)
   const cursorRafId = useRef<number | null>(null)
   const imgRef = useRef<HTMLImageElement>(null)
   const viewerAreaRef = useRef<HTMLDivElement>(null)
@@ -333,7 +358,7 @@ export default function Pane({
     const ctInfo = pane.ctInfo
     const ctPath = pane.ctPath
     ;(async () => {
-      const saved = await loadContrastThreshold(ctPath).catch(() => null)
+      const saved = await loadContrastThreshold(ctPath, annotationSaveDir, ctInfo.dicom_series_uid).catch(() => null)
       if (cancelled) return
       if (!saved) {
         // No seed saved for this scan yet — don't carry over whatever
@@ -395,12 +420,15 @@ export default function Pane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.contrastMode, pane.ctInfo?.volume_id])
 
-  async function doLoadCt(path: string) {
+  // Loads one resolved CT directory+series. Shared by the initial CT load
+  // (below) and by series-stepping (stepSeries), so both go through the
+  // same reset-everything-mask-related logic.
+  async function loadCtEntry(directory: string, seriesUid?: string) {
     onChange({ loading: true, loadingMessage: 'Loading CT scan...', error: null })
     try {
-      const info = await loadVolume(path, false)
+      const info = await loadVolume(directory, false, false, seriesUid)
       onChange({
-        ctPath: path,
+        ctPath: directory,
         ctInfo: info,
         loading: false,
         loadingMessage: null,
@@ -413,6 +441,7 @@ export default function Pane({
         maskPath: '',
         maskInfo: null,
         maskAnnotationType: null,
+        maskWarning: null,
         editMode: false,
         lesionResults: [],
         volumeScores: null,
@@ -423,6 +452,42 @@ export default function Pane({
     }
   }
 
+  async function doLoadCt(path: string) {
+    const { directory, seriesUid, seriesList } = await resolveDicomLoad(path)
+    onChange({
+      dicomSeriesList: seriesList.length > 1 ? seriesList : [],
+      dicomSeriesIndex: seriesList.length > 1 ? 0 : null,
+    })
+    await loadCtEntry(directory, seriesUid)
+  }
+
+  // Series Previous/Next (only relevant when doLoadCt found >1 series in the
+  // loaded DICOM folder — see the series-nav-tabs bar below). Reuses the
+  // same "Before you move on..." unsaved-mask-edits confirmation as manifest
+  // case navigation, rather than a parallel modal.
+  function requestSeriesStep(direction: 1 | -1) {
+    if (pane.editMode && pane.maskInfo) {
+      setSeriesStepDirection(direction)
+    } else {
+      stepSeries(direction)
+    }
+  }
+
+  function confirmSeriesStep() {
+    if (seriesStepDirection !== null) stepSeries(seriesStepDirection)
+    setSeriesStepDirection(null)
+  }
+
+  function stepSeries(direction: 1 | -1) {
+    const idx = pane.dicomSeriesIndex
+    if (idx === null) return
+    const next = idx + direction
+    if (next < 0 || next >= pane.dicomSeriesList.length) return
+    const entry = pane.dicomSeriesList[next]
+    onChange({ dicomSeriesIndex: next })
+    loadCtEntry(entry.directory, entry.seriesUid)
+  }
+
   async function doLoadMask(path: string) {
     onChange({ loading: true, loadingMessage: 'Loading mask...', error: null })
     try {
@@ -431,6 +496,7 @@ export default function Pane({
         maskPath: path,
         maskInfo: info,
         maskAnnotationType: inferMaskAnnotationType(path),
+        maskWarning: detectMaskLooksLikeCt(info, pane.ctPath, path),
         loading: false,
         loadingMessage: null,
         showMask: true,
@@ -462,6 +528,7 @@ export default function Pane({
         ctPath: pane.ctPath,
         maskPath: pane.maskPath || null,
         patientId: currentRow?.patient_id || null,
+        saveDir: annotationSaveDir || null,
       })
       onChange({
         contrastThreshold: result.thresholdHu,
@@ -513,6 +580,7 @@ export default function Pane({
         // Unambiguous: a brand-new mask's annotation type is exactly
         // whatever mode is active right now, no filename guessing needed.
         maskAnnotationType: pane.contrastMode ? 'contrast' : 'non-contrast',
+        maskWarning: null,
         loading: false,
         loadingMessage: null,
         showMask: true,
@@ -531,7 +599,7 @@ export default function Pane({
       // volume_store.save_mask's default tags) so re-loading it later can
       // recognize it via inferMaskAnnotationType instead of guessing.
       const tag = pane.contrastMode ? (pane.maskInfo.is_new_mask ? 'ContrastAnnotations' : 'ContrastEdits') : undefined
-      const res = await saveMask(pane.maskInfo.volume_id, tag)
+      const res = await saveMask(pane.maskInfo.volume_id, tag, annotationSaveDir || null)
       let message = `Saved to ${res.path}`
       setMaskBaseline({ volumeId: pane.maskInfo.volume_id, version: pane.editVersion })
       setLastSavedAt(new Date())
@@ -585,7 +653,7 @@ export default function Pane({
           editMessage: 'Reset to blank',
         })
       } else {
-        const info = await loadVolume(pane.maskPath, true, true)
+        const info = await loadVolume(pane.maskPath, true, true, pane.maskInfo?.dicom_series_uid ?? undefined)
         const nextVersion = pane.editVersion + 1
         onChange({
           maskInfo: info,
@@ -779,7 +847,7 @@ export default function Pane({
     }
   }
 
-  async function doRegionGrow(row: number, col: number) {
+  async function doRegionGrow(row: number, col: number, searchRadiusMm?: number) {
     if (!pane.ctInfo || !pane.maskInfo) return
     try {
       const res = await regionGrowMask({
@@ -791,6 +859,7 @@ export default function Pane({
         col,
         thresholdMin: pane.editRegionGrowThreshold,
         newLabel: pane.editActiveLabel,
+        searchRadiusMm,
       })
       onChange({
         editVersion: pane.editVersion + 1,
@@ -924,6 +993,56 @@ export default function Pane({
     contrastSettings.targetVolumeMm3,
   ])
 
+  // The effect above only re-runs on viewer *state* changes, not on the
+  // image/container's actual on-screen geometry — so toggling Settings,
+  // entering split view, or resizing the window (none of which touch any of
+  // those state fields) left the marker/circle stuck at their last computed
+  // screen position until the next slice change happened to fire the effect
+  // above. A ResizeObserver on both elements catches every such layout
+  // change directly. Routed through a ref (rather than putting
+  // updateSeedMarkerPosition itself in the deps) so this observer isn't
+  // torn down and recreated on every render.
+  const updateSeedMarkerPositionRef = useRef(updateSeedMarkerPosition)
+  updateSeedMarkerPositionRef.current = updateSeedMarkerPosition
+
+  useEffect(() => {
+    const container = viewerAreaRef.current
+    const img = imgRef.current
+    if (!container || !img) return
+    const ro = new ResizeObserver(() => updateSeedMarkerPositionRef.current())
+    ro.observe(container)
+    ro.observe(img)
+    return () => ro.disconnect()
+  }, [])
+
+  // Global Shift tracking for the circle-seed preview cursor. Deliberately a
+  // fresh window-level listener rather than reusing the keybind effect
+  // above (or below) it, which bails out whenever document.activeElement is
+  // an INPUT/TEXTAREA/SELECT — the Score/Volume Compute checkbox
+  // (LesionScoreBox.tsx) is exactly such an input, so tracking Shift there
+  // would silently stop working right after the user clicks it. This only
+  // toggles the preview-cursor boolean; the actual click/scroll handlers
+  // read e.shiftKey directly off the native event instead.
+  useEffect(() => {
+    function handleShiftDown(e: KeyboardEvent) {
+      if (e.key === 'Shift') setShiftHeld(true)
+    }
+    function handleShiftUp(e: KeyboardEvent) {
+      if (e.key === 'Shift') setShiftHeld(false)
+    }
+    function handleBlur() {
+      setShiftHeld(false) // window/tab lost focus while Shift was held — don't get stuck
+    }
+    window.addEventListener('keydown', handleShiftDown)
+    window.addEventListener('keyup', handleShiftUp)
+    window.addEventListener('blur', handleBlur)
+    return () => {
+      window.removeEventListener('keydown', handleShiftDown)
+      window.removeEventListener('keyup', handleShiftUp)
+      window.removeEventListener('blur', handleBlur)
+    }
+  }, [])
+
   function jumpToLesion(entry: LesionScoreResult) {
     const samePlaneAndIndex = pane.plane === entry.plane && pane.index === entry.index
     if (samePlaneAndIndex) {
@@ -991,7 +1110,7 @@ export default function Pane({
     setScoreConfirmPending({ label, voxelCount, agatstonScore, targetClass, plane, index, row, col })
   }
 
-  async function doLesionScore(row: number, col: number) {
+  async function doLesionScore(row: number, col: number, searchRadiusMm?: number) {
     if (!pane.ctInfo || !pane.maskInfo) return
     onChange({ loading: true, loadingMessage: 'Computing lesion score...' })
     try {
@@ -1002,6 +1121,7 @@ export default function Pane({
         index: pane.index,
         row,
         col,
+        searchRadiusMm,
       })
       onChange({ loading: false, loadingMessage: null })
       if (!res.found || res.label === null) {
@@ -1029,7 +1149,7 @@ export default function Pane({
   // Agatston score, and skips the manifest-baseline lookup/confirm-total
   // dance entirely — there's no "existing manifest volume" concept to
   // reconcile against, so every click just computes and appends fresh.
-  async function doLesionVolume(row: number, col: number) {
+  async function doLesionVolume(row: number, col: number, searchRadiusMm?: number) {
     if (!pane.ctInfo || !pane.maskInfo || pane.contrastThreshold === null) return
     onChange({ loading: true, loadingMessage: 'Computing lesion volume...' })
     try {
@@ -1041,6 +1161,7 @@ export default function Pane({
         row,
         col,
         huThreshold: pane.contrastThreshold,
+        searchRadiusMm,
       })
       onChange({ loading: false, loadingMessage: null })
       if (!res.found || res.label === null) {
@@ -1248,6 +1369,18 @@ export default function Pane({
       // isOverUIBox here rather than relying on propagation order.
       if (isOverUIBox(e.target)) return
       e.preventDefault()
+      if (e.shiftKey && circleClickActiveRef.current) {
+        // Shift+scroll resizes the circle-seed radius instead of scrubbing
+        // slices — scoped to when the circle-seed feature is actually
+        // relevant (Score/Volume-compute or Region-grow) so Shift held
+        // incidentally during plain viewing doesn't silently disable slice
+        // scroll with no visible reason.
+        const delta = e.deltaY > 0 ? -SEED_RADIUS_STEP_MM : SEED_RADIUS_STEP_MM
+        const next = Math.max(MIN_SEED_RADIUS_MM, Math.min(MAX_SEED_RADIUS_MM, seedRadiusRef.current + delta))
+        seedRadiusRef.current = next
+        setSeedRadiusMm(next)
+        return
+      }
       if (e.ctrlKey) {
         const factor = e.deltaY > 0 ? 0.9 : 1.1
         const next = Math.max(0.2, Math.min(10, liveRef.current.zoom * factor))
@@ -1397,8 +1530,9 @@ export default function Pane({
     if (e.button === 0 && pane.scoreComputeMode && pane.ctInfo && pane.maskInfo) {
       const coords = getDisplayCoords(e.clientX, e.clientY)
       if (!coords) return
-      if (pane.contrastMode) doLesionVolume(coords.row, coords.col)
-      else doLesionScore(coords.row, coords.col)
+      const searchRadiusMm = e.shiftKey ? seedRadiusMm : undefined
+      if (pane.contrastMode) doLesionVolume(coords.row, coords.col, searchRadiusMm)
+      else doLesionScore(coords.row, coords.col, searchRadiusMm)
       return
     }
     if (e.button === 0 && !pane.editMode && !pane.scoreComputeMode && !pane.seedPlacementMode) {
@@ -1417,7 +1551,7 @@ export default function Pane({
         paintDrag.current.erasing = e.ctrlKey
         doPaint(coords.row, coords.col, true)
       } else {
-        doRegionGrow(coords.row, coords.col)
+        doRegionGrow(coords.row, coords.col, e.shiftKey ? seedRadiusMm : undefined)
       }
     }
   }
@@ -1483,6 +1617,7 @@ export default function Pane({
         return
       }
       el.hidden = false
+      el.classList.toggle('seed-radius-cursor', p.variant === 'seed-radius')
       el.style.width = `${p.diameter}px`
       el.style.height = `${p.diameter}px`
       el.style.transform = `translate(${p.x - p.diameter / 2}px, ${p.y - p.diameter / 2}px)`
@@ -1496,7 +1631,44 @@ export default function Pane({
     }
   }
 
+  // Last known mouse position over the viewer, so the circle-seed preview
+  // cursor can be refreshed the instant Shift is pressed/released even if
+  // the mouse itself hasn't moved yet (see the shiftHeld effect below) —
+  // otherwise it would wait for the next mousemove to appear/disappear.
+  const lastViewerMousePos = useRef<{ clientX: number; clientY: number } | null>(null)
+
+  function updateSeedRadiusCursorAt(clientX: number, clientY: number) {
+    const container = viewerAreaRef.current
+    const img = imgRef.current
+    if (!container || !img || !pane.ctInfo) return
+    const containerRect = container.getBoundingClientRect()
+    const imgRect = img.getBoundingClientRect()
+    const scaleX = imgRect.width / (img.naturalWidth || 1)
+    const finestSpacing = Math.min(...pane.ctInfo.spacing_lps) || 1
+    const diameter = Math.max(8, 2 * (seedRadiusRef.current / finestSpacing) * scaleX)
+    pendingCursor.current = {
+      x: clientX - containerRect.left,
+      y: clientY - containerRect.top,
+      diameter,
+      variant: 'seed-radius',
+    }
+    scheduleCursorApply()
+  }
+
+  useEffect(() => {
+    if (!shiftHeld || !circleClickActive) {
+      // Only hide if a seed-radius cursor is what's currently shown — don't
+      // stomp on the brush cursor if that's active instead.
+      if (pendingCursor.current?.variant === 'seed-radius') hideCursor()
+      return
+    }
+    const pos = lastViewerMousePos.current
+    if (pos) updateSeedRadiusCursorAt(pos.clientX, pos.clientY)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shiftHeld, circleClickActive])
+
   function onMouseMove(e: React.MouseEvent) {
+    lastViewerMousePos.current = { clientX: e.clientX, clientY: e.clientY }
     // Self-heal against a missed mouseup (e.g. the button was released while
     // briefly outside the window, or a fast click dropped/coalesced the
     // event): if our own flag says a drag is still active but the browser
@@ -1524,9 +1696,15 @@ export default function Pane({
         const imgRect = img.getBoundingClientRect()
         const scale = imgRect.width / (img.naturalWidth || 1)
         const diameter = Math.max(4, 2 * pane.editBrushRadius * scale)
-        pendingCursor.current = { x: e.clientX - containerRect.left, y: e.clientY - containerRect.top, diameter }
+        pendingCursor.current = { x: e.clientX - containerRect.left, y: e.clientY - containerRect.top, diameter, variant: 'brush' }
         scheduleCursorApply()
       }
+    } else if (e.shiftKey && circleClickActive && pane.ctInfo && !isOverUIBox(e.target)) {
+      // Shift+click circle-seed preview — same cursor DOM/RAF machinery as
+      // the brush cursor above (mutually exclusive with it: this only
+      // engages in Score/Volume-compute or Region-grow, brush's own branch
+      // above already claims 'brush' edit mode).
+      updateSeedRadiusCursorAt(e.clientX, e.clientY)
     } else {
       hideCursor()
     }
@@ -1803,6 +1981,27 @@ export default function Pane({
             )}
           </div>
         )}
+        {pane.manifestRows.length === 0 && pane.dicomSeriesList.length > 1 && (
+          <div className="series-nav-tabs">
+            <button
+              onClick={() => requestSeriesStep(-1)}
+              disabled={pane.dicomSeriesIndex === 0}
+              title="Previous DICOM series in this folder"
+            >
+              ◂ Previous
+            </button>
+            <span className="case-nav-count">
+              {(pane.dicomSeriesIndex ?? 0) + 1}/{pane.dicomSeriesList.length}
+            </span>
+            <button
+              onClick={() => requestSeriesStep(1)}
+              disabled={pane.dicomSeriesIndex === pane.dicomSeriesList.length - 1}
+              title="Next DICOM series in this folder"
+            >
+              Next ▸
+            </button>
+          </div>
+        )}
         <div className="pane-toolbar-right">
           {pane.loading && (
             <span className="loading-tag">
@@ -1830,6 +2029,14 @@ export default function Pane({
       </div>
 
       {pane.error && <div className="pane-error">{pane.error}</div>}
+      {pane.maskWarning && (
+        <div className="pane-error pane-warning">
+          {pane.maskWarning}
+          <button className="pane-warning-dismiss" onClick={() => onChange({ maskWarning: null })} title="Dismiss">
+            ×
+          </button>
+        </div>
+      )}
 
       <div className="pane-body">
         <div
@@ -1876,7 +2083,7 @@ export default function Pane({
               {pane.loadingMessage || 'Loading...'}
             </div>
           ) : (
-            <div className="viewer-placeholder">No CT loaded — open Settings to load a scan</div>
+            <div className="viewer-placeholder">Developed by a bored PhD student with vibes only</div>
           )}
           {/* Always mounted (just hidden) so cursorDivRef is available the
               moment a mouse move needs it — positioned and shown/hidden via
@@ -2069,6 +2276,7 @@ export default function Pane({
                 onSave={doSaveMask}
                 onDragHandleDown={handleEditBoxDragStart}
                 thresholdLocked={pane.contrastMode && pane.contrastThresholdLocked}
+                seedRadiusMm={seedRadiusMm}
               />
               {pane.editMode && pane.maskInfo && (
                 <div className="edit-quick-actions" onWheel={(e) => e.stopPropagation()}>
@@ -2104,6 +2312,7 @@ export default function Pane({
                 onRowClick={jumpToLesion}
                 onComputeAll={computeAllScores}
                 computingAll={computingVolumeScores}
+                seedRadiusMm={seedRadiusMm}
               />
             </div>
           )}
@@ -2122,7 +2331,14 @@ export default function Pane({
 
         {settingsOpen && (
           <div className="pane-settings">
-            <CaseLoader pane={pane} onChange={onChange} onLoadCt={doLoadCt} onLoadMask={doLoadMask} />
+            <CaseLoader
+              pane={pane}
+              onChange={onChange}
+              onLoadCt={doLoadCt}
+              onLoadMask={doLoadMask}
+              annotationSaveDir={annotationSaveDir}
+              onAnnotationSaveDirChange={setAnnotationSaveDir}
+            />
 
             <div className="settings-section">
               <LabelColorEditor colors={pane.maskColors} onChange={(colors) => onChange({ maskColors: colors })} />
@@ -2174,12 +2390,13 @@ export default function Pane({
         </div>
       )}
 
-      {(navModalDirection !== null || jumpPos !== null) && (
+      {(navModalDirection !== null || jumpPos !== null || seriesStepDirection !== null) && (
         <div
           className="comment-modal-backdrop"
           onClick={() => {
             setNavModalDirection(null)
             setJumpPos(null)
+            setSeriesStepDirection(null)
           }}
         >
           <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
@@ -2200,18 +2417,20 @@ export default function Pane({
                     : 'No changes to save'}
             </button>
 
-            <div className="nav-modal-status-row">
-              {STATUS_OPTIONS.map((s) => (
-                <button
-                  key={s}
-                  className={(currentRow?.status || 'Not Started') === s ? 'active' : ''}
-                  onClick={() => handleSetStatus(s)}
-                  disabled={statusSaving}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
+            {pane.manifestRows.length > 0 && (
+              <div className="nav-modal-status-row">
+                {STATUS_OPTIONS.map((s) => (
+                  <button
+                    key={s}
+                    className={(currentRow?.status || 'Not Started') === s ? 'active' : ''}
+                    onClick={() => handleSetStatus(s)}
+                    disabled={statusSaving}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
             {statusError && <div className="busy-msg manifest-error">{statusError}</div>}
 
             <div className="comment-modal-buttons">
@@ -2219,17 +2438,18 @@ export default function Pane({
                 onClick={() => {
                   setNavModalDirection(null)
                   setJumpPos(null)
+                  setSeriesStepDirection(null)
                 }}
               >
                 Cancel
               </button>
               <button
                 className="add-label-btn"
-                onClick={navModalDirection !== null ? confirmNavigate : confirmJump}
+                onClick={navModalDirection !== null ? confirmNavigate : jumpPos !== null ? confirmJump : confirmSeriesStep}
               >
-                {navModalDirection === 1
+                {(navModalDirection ?? seriesStepDirection) === 1
                   ? 'Continue to Next ▸'
-                  : navModalDirection === -1
+                  : (navModalDirection ?? seriesStepDirection) === -1
                     ? '◂ Continue to Previous'
                     : 'Continue ▸'}
               </button>

@@ -17,6 +17,17 @@ export interface VolumeInfo {
   plane_lengths: Record<Plane, number>
   labels: number[] | null
   is_new_mask: boolean
+  dicom_series_uid: string | null
+}
+
+// One entry per series found under a DICOM directory (see
+// api.ts's listDicomSeries) — used to drive the series Previous/Next
+// navigator when a folder holds more than one.
+export interface DicomSeriesInfo {
+  seriesUid: string
+  directory: string
+  description: string
+  numFiles: number
 }
 
 export interface LabelColor {
@@ -49,6 +60,31 @@ export function inferMaskAnnotationType(maskPath: string): 'contrast' | 'non-con
   const base = maskPath.toLowerCase()
   if (base.includes('contrast')) return 'contrast'
   if (base.includes('manualannotation') || base.includes('manualedit')) return 'non-contrast'
+  return null
+}
+
+function normalizePathForCompare(p: string): string {
+  return p.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
+// A real segmentation mask has a small number of small integer labels; a CT
+// scan loaded by mistake as a mask (same file picked for both, or a
+// manifest's image/mask columns mixed up) has either a huge number of
+// distinct voxel values or a Hounsfield-like value range (air ~ -1000 HU up
+// through bone/metal several hundred+) — either is a strong signal the
+// "mask" is actually another CT scan, not a segmentation.
+const MASK_LOOKS_LIKE_CT_LABEL_COUNT = 64
+const MASK_LOOKS_LIKE_CT_VALUE_RANGE = 500
+
+export function detectMaskLooksLikeCt(maskInfo: VolumeInfo, ctPath: string, maskPath: string): string | null {
+  if (ctPath && maskPath && normalizePathForCompare(ctPath) === normalizePathForCompare(maskPath)) {
+    return 'The mask path is the same file as the loaded CT scan — this overlays the CT on itself, not a real segmentation.'
+  }
+  const labelCount = maskInfo.labels?.length ?? 0
+  const valueRange = maskInfo.value_max - maskInfo.value_min
+  if (labelCount > MASK_LOOKS_LIKE_CT_LABEL_COUNT || valueRange > MASK_LOOKS_LIKE_CT_VALUE_RANGE) {
+    return 'This mask looks like a CT scan rather than a segmentation (too many distinct values) — double-check the mask path or manifest column.'
+  }
   return null
 }
 
@@ -153,6 +189,14 @@ export interface PaneState {
   manifestRows: ManifestRow[]
   activeRowIndex: number | null
   manifestError: string | null
+
+  // Populated whenever the loaded CT came from a DICOM directory holding
+  // more than one series — drives the series Previous/Next navigator.
+  // Empty/null for a single-series DICOM load or a plain file load. Only
+  // shown when no manifest is active (manifest case-navigation takes
+  // precedence — see Pane.tsx).
+  dicomSeriesList: DicomSeriesInfo[]
+  dicomSeriesIndex: number | null
   batchLoadCollapsed: boolean
   wlMinimized: boolean
   reasonOptions: string[] // base + discovered-in-sheet + session-added tags
@@ -188,6 +232,13 @@ export interface PaneState {
 
   error: string | null
   loading: boolean
+
+  // Non-blocking heads-up when a loaded "mask" looks like it's actually
+  // another CT scan (huge label count / CT-like HU range, or the exact same
+  // path as the loaded CT) rather than a real segmentation — see
+  // detectMaskLooksLikeCt in Pane.tsx. Distinct from `error` since the load
+  // itself succeeded; this is a content sanity check, not a failure.
+  maskWarning: string | null
 
   // Mask editing — deliberately never synced between split-view panes.
   editMode: boolean

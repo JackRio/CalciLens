@@ -1,13 +1,14 @@
 {
   "name": "ct-viewer",
-  "version": "0.1.0",
+  "version": "1.0.0-beta",
   "private": true,
   "description": "CT / segmentation mask viewer desktop app",
   "main": "electron/main.js",
   "scripts": {
     "build:client": "cd client && npm run build",
     "start": "electron .",
-    "app": "npm run build:client && electron ."
+    "app": "npm run build:client && electron .",
+    "dist": "npm run build:client && electron-builder"
   },
   "devDependencies": {
     "electron": "^33.0.0",

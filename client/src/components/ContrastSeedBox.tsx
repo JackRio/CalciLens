@@ -40,7 +40,7 @@ export default function ContrastSeedBox({
           {pane.contrastThresholdLocked && pane.contrastMeta ? (
             <>
               <div className="contrast-stat-row">
-                Threshold <strong>{pane.contrastThreshold?.toFixed(1)} HU</strong>
+                Threshold <strong>{pane.contrastThreshold?.toFixed(2)} HU</strong>
               </div>
               <div className="contrast-stat-row">
                 Mean {pane.contrastMeta.meanHu.toFixed(1)} · STD {pane.contrastMeta.stdHu.toFixed(1)}

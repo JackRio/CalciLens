@@ -42,34 +42,88 @@ errors that `vite build` alone can surface less clearly.
     `/api/mask/save` — mask editing.
   - `/api/manifest_columns`, `/api/manifest_pairs`, `/api/manifest/comment`,
     `/api/manifest/status`, `/api/manifest/reason`, `/api/manifest/mask_path` — CSV/Excel
-    case-manifest read/write.
+      case-manifest read/write, plus `/api/manifest/annotation_path` and `/api/manifest/contrast`.
+  - `/api/annotations/lookup` — **what previous sessions already recorded about a scan**
+    (annotation path, saved-at, annotation type, whether a contrast seed exists), independent of
+    any UI state. Takes an optional `annotation_path` hint so the lookup doesn't depend on the save
+    directory still being configured the way it was when the seed was saved.
 - **`volume_store.py`** — `VolumeStore` (in-memory LRU-ish cache of loaded volumes keyed by a hash
   of the path, `+"_mask"` suffix for masks), `LoadedVolume` dataclass, slice extraction
   (`get_plane_slice`), mask painting/region-growing, PNG compositing (`render_composited_png` —
   uses `compress_level=1` deliberately, since it's re-encoded on every request including every
   brush dab). `store.load(path, is_mask, force)` — `force=True` bypasses the cache and re-reads
   from disk (used by the reload shortcut and Reset).
+  - **`save_mask(mask_vol, ct_path, ...)` is atomic and conflict-aware**: it resolves its
+    destination through `annotation_paths.resolve_target`, returns `{"status": "conflict", ...}`
+    without writing when something is already there, and otherwise writes via a temp file +
+    `os.replace` (`_atomic_write_image`). It used to write straight over the destination, so a
+    crash or the Electron shutdown kill mid-write truncated the file with the previous good
+    version already gone. Never regress to a direct `sitk.WriteImage(img, out_path)`.
+  - **`assert_same_geometry(mask_vol, ct_vol)`** is called by `paint_mask` and `region_grow_mask`
+    (and by the scoring endpoints in `app.py`). Nothing checked this before: `get_plane_raw_view`
+    clamps the slice index against *each volume independently*, so a mask with fewer slices than
+    the CT didn't error — viewing CT slice 200 and painting wrote the mask's **last** slice and
+    saved it. A loud failure is the only safe behavior; a silent partial write is worse than none.
+  - **The LRU never evicts unsaved work** (`_evict_locked`): a volume with `is_new_mask` or
+    `dirty=True` is skipped, and the cache is allowed to grow rather than drop it. A brand-new mask
+    exists *only* in this cache; evicting it destroyed the annotation and the client only found out
+    when the next paint 404'd. `dirty` is set by `paint_mask`/`region_grow_mask` and cleared by a
+    successful save.
 - **`folder_scan.py`** — the manifest (CSV/XLSX) system. `list_manifest_pairs()` reads the sheet,
   auto-creates `Status`/`Comment`/the configured reason column if missing, returns rows + reason
   options + which `*_Agatston` score columns are present. Only `image_column` is required — `mask_
   column`, `patient_id_column`, and `reason_column` are all independently optional (falsy/"-- none
   --" means "don't track this"), so a CT-only manifest with no mask/PatientID/Reason column still
-  loads. `reason_column` may point at any pre-existing column (e.g. a lab's `kernel_type` column
+  loads. `status_column`, `annotation_column` and `contrast_column` are configurable the same way
+  (`annotation_column`/`contrast_column` are auto-created if absent — an annotation with nowhere to
+  be recorded is how a whole session's work went missing). `reason_column` may point at any
+  pre-existing column (e.g. a lab's `kernel_type` column
   repurposed as Reason tags) instead of the app's own default `"Reason"` name; `include_default_
   reason_tags` controls whether the built-in tag set (Mislabel, Artefacts, etc.) is merged into
   the picker's options alongside whatever's already in that column — off by default use case is a
   reason column whose existing values have nothing to do with those built-in tags. `image_exists`/
   `mask_exists` use `os.path.exists` (not `isfile`) since both columns may point at a DICOM series
   directory, not just a NIFTI/MHA file (see `volume_store.py`'s `_is_dicom_dir`, which treats any
-  directory as one). `save_comment`/`save_status`/`save_reason`/`save_mask_path` each do a full
-  read-modify-write of the sheet via `_save_cell`. **`_write_table` is atomic**: writes to a
-  per-call-unique temp file (`.tmp_<pid>_<threadid>_<random>_<basename>`) in the same directory,
-  then `os.replace()`s it into place — this uniqueness matters because FastAPI runs sync `def`
-  endpoints in a threadpool, so two saves landing close together (e.g. the Copy-to-other-pane
-  button) really do write concurrently; a shared temp filename previously let them corrupt each
-  other mid-write. Never regress this to a shared/non-unique temp name.
+  directory as one). `save_comment`/`save_status`/`save_reason`/`save_mask_path`/`save_annotation_path`/
+  `save_contrast_flag` all go through `_save_cell`.
+  - **Excel is edited in place, not rewritten** (`_set_cells_in_place`, openpyxl). The old
+    read-with-pandas / write-with-pandas round trip rebuilt the workbook from a DataFrame, which
+    **deleted every other sheet**, lost formatting and formulas, and re-inferred values. `_write_table`
+    (the full rewrite) is now the CSV path and a last-resort fallback only — don't route Excel saves
+    back through it.
+  - **`_read_table` reads every cell as text** (`dtype=str`). Without it pandas infers a dtype per
+    column and a PatientID of `007` comes back as the integer `7`, so the app displayed and matched
+    on the wrong value even though the cell on disk was fine. Only the score columns need numbers and
+    `_score_value` parses those itself.
+  - **`_ensure_tracking_columns` creates missing columns but never rewrites existing values.** It
+    used to replace every Status cell whose value wasn't one of the app's four options with
+    "Not Started", so opening a manifest whose Status column meant something else to the lab wiped it
+    before the user had done anything. Unknown values are merged into the options instead
+    (`_collect_status_options`), the same way reason tags are.
+  - Both `_write_table` and `_write_workbook_atomically` write to a per-call-unique temp file
+    (`.tmp_<pid>_<threadid>_<random>_<basename>`) in the same directory, then `os.replace()`. The
+    uniqueness matters because FastAPI runs sync `def` endpoints in a threadpool, so two saves
+    landing close together (e.g. the Copy-to-other-pane button) really do write concurrently; a
+    shared temp filename previously let them corrupt each other mid-write. Never regress this.
 - **`pathutil.py`** — `clean_path()`, small path normalization helper used everywhere a path comes
   from the frontend or a manifest cell.
+- **`annotation_paths.py`** — **where a saved annotation goes, and whether saving there would
+  destroy something.** Every annotation lives in its own per-scan folder:
+  `<root>/Manual_Annotations_<DD_Mon_YYYY>/<scan folder>/annotation.nii.gz`, alongside
+  `_source.json` (provenance) and, for contrast scans, `contrast_seed.json`. `<root>` is the
+  configured save directory, or the CT's own directory when none is set. `<scan folder>` is the
+  DICOM SeriesInstanceUID, or the NIFTI/MHA stem. **The name is derived from the CT, never from the
+  loaded mask** — deriving it from the mask made every save append another tag
+  (`X_ManualAnnotations_ManualEdits...`) and orphan the previous file. `resolve_target()` reports a
+  `conflict` of `None` / `"overwrite"` (same scan, today's file) / `"earlier"` (same scan, an
+  earlier day) / `"collision"` (a *different* scan already owns this folder name) and **writes
+  nothing** — the caller asks the user and calls back with `resolution="overwrite"` or
+  `"new_copy"`. A folder name alone cannot tell a re-save from a collision, which is exactly why
+  `_source.json` exists; `_same_scan()` decides by SeriesInstanceUID when both have one, else by CT
+  path. `find_existing_scan_dirs()` searches **all** dated folders and **also the `__2`/`__3`
+  variants** — once a collision diverted a scan into `<name>__2`, that is its folder from then on,
+  and not searching it would make it collide with the original on every save and spawn `__3`,
+  `__4`, ... forever. Don't regress either of those.
 - **`contrast_threshold.py`** (contrast-viewer branch only) — per-scan calcium-detection threshold
   for contrast CT, in place of the fixed 130 HU used for non-contrast. `compute_sphere_stats()`
   takes a seed click (converted to a 3D index via `volume_store._seed_index_3d`, reused as-is) and
@@ -84,12 +138,11 @@ errors that `vite build` alone can surface less clearly.
   seed. Don't regress to that.) The *emergent* radius (the farthest included voxel's actual
   distance) is what's returned as `radius_mm` and used for the sphere-VOI preview circle, not the
   formula radius. Returns `threshold_hu = mean + k*std` (`k` default 3) over the selected voxels'
-  HU values. `save_sidecar`/`load_sidecar` persist/read a `<stem>_contrast_seed.json` file next to
-  the CT (atomic write, same convention as `folder_scan._write_table`, and — like
-  `volume_store._insert_tag` — must check `os.path.isdir()` before ever touching `os.path.splitext`
-  on the path, since a DICOM series directory's name is a dotted UID that splitext would otherwise
-  misread as a file extension) so a later session can reload the seed and recompute+verify instead
-  of re-placing it. `compute_lesion_volume_mm3`/`compute_volume_total_mm3` are the contrast-mode
+  HU values. `save_sidecar`/`load_sidecar` persist/read `contrast_seed.json` **inside the scan's own
+  annotation folder** (`annotation_paths`), atomically. It used to be `<stem>_contrast_seed.json`
+  next to the CT — a name derived from the image's basename, so two patients whose CTs were both
+  `image.nii.gz` shared one sidecar and the second scan silently loaded the first one's threshold.
+  `load_sidecar` still finds the old locations so existing seeds aren't stranded. `compute_lesion_volume_mm3`/`compute_volume_total_mm3` are the contrast-mode
   scoring functions — physical mm³, **no Agatston density weighting** — reusing
   `agatston.find_lesion_component` for lesion isolation (that function is generic; weighting only
   happens in `agatston.compute_agatston_score`, which contrast mode never calls). Watch the
@@ -102,7 +155,23 @@ errors that `vite build` alone can surface less clearly.
   is capped at 2 via `addSplit`), split-view sync toggles (`linked`/"Interaction",
   `syncNavByPatientId`/"Iteration"), global Review mode state (`reviewModeOn`, `reviewTags`,
   `reviewParentPaneId`), keybinds, and the case-navigation logic (`navigate`, `goToPosition`,
-  `loadRowIntoPane`, `reloadPane`). `updatePane(id, partial)` is the single mutator; it also
+  `loadRowIntoPane`, `reloadPane`).
+  - **`loadRowIntoPane` is the ONLY correct way to load a manifest row** — it prefers the row's
+    saved `annotation_path` over the original `mask_path`, checks CT/mask geometry, and applies
+    whatever is recorded about the scan being contrast-enhanced. `CaseLoader` reaches it through the
+    `onLoadRow` prop; it used to call `onLoadCt`/`onLoadMask` directly for the first case after a
+    manifest load, which silently took a different route from every subsequent case.
+  - **`applyContrastEvidence`** runs on *every* CT load regardless of whether contrast mode is on,
+    and decides from recorded evidence (a saved seed, a previous annotation's own type, or the
+    manifest's contrast column) — not from the checkbox. That check used to be gated behind
+    `pane.contrastMode`, so a contrast scan opened without ticking the box was silently annotated
+    against the fixed 130 HU threshold. It also clears per-scan contrast state so a threshold can
+    never carry into the next case.
+  - **`withUnsavedGuard(paneIds, what, action)`** wraps every App-level action that can destroy an
+    in-memory mask — the reload-from-disk shortcut and cross-pane Patient-ID sync, neither of which
+    used to ask at all (the guard only ever ran for the pane the user clicked in).
+  - `CASE_RESET` is the single list of what a case change must clear. Add to it rather than
+    scattering resets. `updatePane(id, partial)` is the single mutator; it also
   handles cross-pane sync for a fixed set of `syncKeys` (`plane`, `index`, `zoom`, `wlMinimized`,
   `showMask`, `thresholdEnabled`) when `linked` is on.
 - **`types.ts`** — `PaneState` (the full per-pane state shape), `ManifestRow`, keybind types
@@ -114,7 +183,21 @@ errors that `vite build` alone can surface less clearly.
 - **`components/Pane.tsx`** (~1400 lines, the biggest file) — one CT viewport: toolbar, image
   viewer, mask painting/region-grow, Window/Level box, Score panel, case comment/reason UI,
   keyboard shortcut handling (`useEffect` + `window.addEventListener('keydown', ...)`, gated on
-  `isActive` — "whichever pane you last clicked into"). Per-pane keyboard shortcuts (toggle mask,
+  `isActive` — "whichever pane you last clicked into").
+  - **The unsaved-work guard tests `hasUnsavedMaskChanges`, never `editMode`.** `editMode &&
+    maskInfo` both cried wolf when nothing had changed and stayed silent whenever edit mode had
+    been switched off with edits pending — which seed placement, Re-seed and Score-compute mode all
+    do on their own. `hasUnsavedMaskChanges`/`maskBaselineVersion`/`lastSavedAt` live on
+    `PaneState` (not in the component) precisely so `App.tsx` can check them before loading
+    something over the top.
+  - `doSaveMask(resolution?)` handles the conflict round trip: a `status: "conflict"` response
+    opens `saveConflict`'s modal and **nothing has been written**; the user's answer is passed back
+    as `resolution`. The conflict modal suppresses the "Before you move on..." modal while it is
+    open, or the two stack on top of each other.
+  - `annotationBlockedReason()` refuses painting/region-grow on a contrast scan with no finalized
+    threshold, instead of quietly drawing labels against 130 HU.
+  - The Contrast CT toggle's logic lives here (`requestContrastToggle`/`applyContrastToggle`), not
+    in `MaskEditor` — it can unload an edited mask, so it has to be able to ask first. Per-pane keyboard shortcuts (toggle mask,
   toggle threshold, prev/next slice, toggle review mode) live here; **global** shortcuts that
   should apply regardless of which pane is active (reload-from-disk, in split view) live in
   `App.tsx`'s own `window.addEventListener` instead.
@@ -206,6 +289,12 @@ errors that `vite build` alone can surface less clearly.
   split view (it's a global App-level listener, not per-pane-scoped).
 - **Mask editing**: brush + region-grow tools, overwrite modes (any/label/threshold), undo via
   `editVersion` counter, save/reset, never synced between split-view panes.
+- **Annotation saving**: one folder per scan under `Manual_Annotations_<date>/` (see
+  `annotation_paths.py`), a prompt rather than a silent overwrite in all three conflict cases
+  (same scan today / same scan an earlier day / a different scan with the same name), the saved
+  path recorded in the manifest's own `annotation_path` column, and a toolbar tag saying whether
+  you are looking at **your annotation**, the **original prediction**, or a **new, unsaved** mask —
+  plus "• unsaved edits" when it has diverged from disk.
 - **Contrast CT mode** (contrast-viewer branch only, per-pane toggle **inside the Annotation
   floating window** — `MaskEditor.tsx`'s `contrastToggle`, not the pane toolbar — `pane.contrastMode`):
   non-contrast's fixed 130 HU threshold doesn't apply to contrast scans, so this derives one per scan
@@ -224,6 +313,11 @@ errors that `vite build` alone can surface less clearly.
   to both apply and verify it (a mismatch beyond a small tolerance shows a warning banner rather than
   silently trusting the saved number); if no sidecar exists for the new scan, the threshold fields
   reset to the plain 130 HU default rather than carrying over whatever the previous case left locked.
+  **Contrast-ness is detected, not remembered by the user**: every CT load checks for a saved seed,
+  a previous annotation's recorded type, and the manifest's `Contrast` column, and turns contrast
+  mode on itself. If a scan is known to be contrast but has no seed yet, a banner says so and
+  painting/region-grow are refused until one is finalized. Finalizing a seed writes the manifest
+  flag too, so the next session knows before loading.
   Score Compute mode computes a physical **volume (mm³)** instead of an Agatston score for contrast
   panes (no manifest-baseline/confirm-total step per lesion click, since there's no
   `<CLASS>_Agatston`-style baseline for a volume metric — always computed fresh); its box also gets a
@@ -237,8 +331,18 @@ errors that `vite build` alone can surface less clearly.
 ## Known caveats
 
 - Repeatedly hard-killing Electron/Python (`taskkill /F`) mid-write used to corrupt manifest files
-  before the atomic-write fix; it's now safe, but still prefer waiting for in-flight saves to
-  settle before restarting when possible.
+  and annotation files; **every write the app makes is now atomic** (manifest cells, annotation
+  images, `_source.json`, seed sidecars), so a kill leaves the previous version intact. Still
+  prefer waiting for in-flight saves to settle when possible.
+- `electron/main.js` takes a single-instance lock and probes port 8000 before spawning Python. A
+  second launch used to leave its uvicorn unable to bind while its window silently attached to the
+  *first* copy's backend — two windows on one volume cache, and closing either killed the server
+  for both.
+- openpyxl preserves other sheets, formatting and formulas, but it is not perfectly lossless:
+  charts, images and pivot tables can be dropped on save. Manifests here are plain single-sheet
+  exports (sometimes with extra columns the app ignores), which is what this is designed for. If
+  that ever changes, the alternative is to stop writing to the user's sheet entirely and keep
+  status/comment/reason in a sidecar.
 - `/api/render` recomposites the full PNG server-side on every request; it's fast (~15ms) against
   the small synthetic test volume, but scales with slice pixel count — full-resolution real
   clinical volumes will be slower, especially with several mask labels active.

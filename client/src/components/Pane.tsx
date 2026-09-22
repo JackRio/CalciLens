@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { KeybindMap, LesionScoreResult, PaneState, Plane, ScoreClass, VolumeInfo } from '../types'
+import type { KeybindMap, LesionScoreResult, ManifestRow, PaneState, Plane, ScoreClass, VolumeInfo } from '../types'
 import {
   WINDOW_PRESETS,
   DEFAULT_WINDOW_LEVEL,
@@ -168,6 +168,7 @@ export default function Pane({
   annotationSaveDir,
   onAnnotationSaveDirChange,
   onApplyContrastEvidence,
+  onLoadRow,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -183,6 +184,10 @@ export default function Pane({
   annotationSaveDir: string
   onAnnotationSaveDirChange: (next: string) => void
   onApplyContrastEvidence: (ctPath: string, ctInfo: VolumeInfo | null) => Promise<boolean>
+  // The one path that loads a manifest row properly: prefers a saved
+  // annotation over the original prediction, checks geometry, and applies
+  // whatever is recorded about the scan being contrast-enhanced.
+  onLoadRow: (row: ManifestRow) => void
 }) {
   const [settingsOpen, setSettingsOpen] = useState(true)
   const [copyingToOtherPane, setCopyingToOtherPane] = useState(false)
@@ -2602,6 +2607,7 @@ export default function Pane({
               annotationSaveDir={annotationSaveDir}
               onAnnotationSaveDirChange={onAnnotationSaveDirChange}
               onRequestSelectRow={requestSelectRow}
+              onLoadRow={onLoadRow}
               hasUnsavedMaskChanges={hasUnsavedMaskChanges}
             />
 
@@ -2655,7 +2661,10 @@ export default function Pane({
         </div>
       )}
 
-      {(navModalDirection !== null || jumpPos !== null || seriesStepDirection !== null) && (
+      {/* A save conflict raised from inside this modal takes precedence, or
+          the two stack on top of each other. The navigation intent is kept,
+          so this modal comes back once the conflict is resolved. */}
+      {(navModalDirection !== null || jumpPos !== null || seriesStepDirection !== null) && !saveConflict && (
         <div
           className="comment-modal-backdrop"
           onClick={() => {

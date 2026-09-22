@@ -53,6 +53,7 @@ export default function CaseLoader({
   annotationSaveDir,
   onAnnotationSaveDirChange,
   onRequestSelectRow,
+  onLoadRow,
   hasUnsavedMaskChanges,
 }: {
   pane: PaneState
@@ -65,6 +66,7 @@ export default function CaseLoader({
   // unsaved-work prompt Prev/Next gets. It used to load straight over the
   // top with no prompt at all.
   onRequestSelectRow: (rowIndex: number) => void
+  onLoadRow: (row: ManifestRow) => void
   hasUnsavedMaskChanges: boolean
 }) {
   const electronAvailable = isElectron()
@@ -147,36 +149,13 @@ export default function CaseLoader({
     }
   }
 
-  // Sequential (not fire-and-forget-both-at-once) so only one load is ever
-  // actually in flight — running them concurrently let whichever request
-  // finished first flip `loading` back off while the other one was still
-  // going, turning the loading indicator off early.
-  async function selectRow(row: ManifestRow) {
-    onChange({ activeRowIndex: row.index, manifestError: null })
-    if (row.image_exists) {
-      await onLoadCt(row.image_path)
-    } else {
-      // Clear any previously-loaded scan instead of leaving it on screen —
-      // otherwise it can look like it belongs to the row just selected.
-      onChange({
-        ctPath: '',
-        ctInfo: null,
-        maskPath: '',
-        maskInfo: null,
-        maskWarning: null,
-        manifestError: `Image not found: ${row.image_path}`,
-      })
-      return
-    }
-    if (row.mask_path) {
-      if (row.mask_exists) {
-        await onLoadMask(row.mask_path)
-      } else {
-        onChange({ maskPath: '', maskInfo: null, maskWarning: null, manifestError: `Mask not found: ${row.mask_path}` })
-      }
-    } else {
-      onChange({ maskPath: '', maskInfo: null, maskWarning: null })
-    }
+  // Loads a manifest row through App's loadRowIntoPane — the same path
+  // Previous/Next uses. It used to call onLoadCt/onLoadMask directly, which
+  // meant the first case after loading a manifest took a different route
+  // from every subsequent one: it loaded the original prediction even when a
+  // saved annotation existed, and skipped the CT/mask geometry check.
+  function selectRow(row: ManifestRow) {
+    onLoadRow(row)
   }
 
   async function handleLoadManifest() {
@@ -213,8 +192,7 @@ export default function CaseLoader({
       if (rows.length === 0) {
         onChange({ loading: false, loadingMessage: null, manifestError: 'Manifest loaded but no valid rows found (check the image column has paths).' })
       } else {
-        await selectRow(rows[0])
-        onChange({ loading: false, loadingMessage: null })
+        selectRow(rows[0])
       }
     } catch (e) {
       onChange({ loading: false, loadingMessage: null, manifestError: e instanceof Error ? e.message : String(e) })

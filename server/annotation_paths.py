@@ -128,19 +128,26 @@ def _same_scan(record: Optional[dict], ct_path: str, series_uid: Optional[str]) 
 
 
 def find_existing_scan_dirs(root: str, folder_name: str) -> list:
-    """Every `<root>/Manual_Annotations_*/<folder_name>` that already exists,
-    most recently modified first.
+    """Every existing `<root>/Manual_Annotations_*/<folder_name>` — including
+    the `__2`, `__3` … variants a previous collision was diverted into — most
+    recently modified first.
 
     Searching *all* dated folders, not just today's, is what makes "you
     already saved this scan on the 18th" visible. If only today's folder were
-    checked, saving the same scan on a later day would look brand new and the
-    user would never learn that an earlier copy exists.
+    checked, saving the same scan on a later day would look brand new.
+
+    Including the suffixed variants matters just as much: the scan that once
+    lost a name clash lives in `<name>__2` from then on, and if its own folder
+    weren't searched it would collide with the original every single time and
+    spawn `__3`, `__4`, ... on every save.
     """
     if not root or not os.path.isdir(root):
         return []
+    patterns = [folder_name, f"{folder_name}__*"]
     matches = [
         d
-        for d in glob.glob(os.path.join(root, f"{DATED_FOLDER_PREFIX}*", folder_name))
+        for pattern in patterns
+        for d in glob.glob(os.path.join(root, f"{DATED_FOLDER_PREFIX}*", pattern))
         if os.path.isdir(d)
     ]
     matches.sort(key=os.path.getmtime, reverse=True)
@@ -182,34 +189,40 @@ def resolve_target(
     existing_source = None
     existing_dir = None
 
-    for candidate in existing:
-        record = read_source_record(candidate)
-        has_annotation = os.path.isfile(os.path.join(candidate, ANNOTATION_FILENAME))
-        if _same_scan(record, ct_path, series_uid):
-            # A folder holding only a contrast seed (placed before any mask
-            # was saved) is this scan's own folder with nothing at stake —
-            # reporting a conflict there would make the very first save of
-            # every contrast scan ask a pointless question.
-            if not has_annotation:
-                continue
+    # This scan's OWN folder wins over any name clash: once a previous save
+    # was diverted to "<name>__2", that is where this scan lives, and it must
+    # keep landing there instead of colliding with the original again.
+    own = next((d for d in existing if _same_scan(read_source_record(d), ct_path, series_uid)), None)
+    if own is not None:
+        folder_name = os.path.basename(own)
+        today_dir = os.path.join(root, dated_folder_name(), folder_name)
+        record = read_source_record(own)
+        # A folder holding only a contrast seed (placed before any mask was
+        # saved) is this scan's own folder with nothing at stake — reporting a
+        # conflict there would make the very first save of every contrast
+        # scan ask a pointless question.
+        if os.path.isfile(os.path.join(own, ANNOTATION_FILENAME)):
             existing_source = record
-            existing_dir = candidate
+            existing_dir = own
             # Replacing today's file is the only genuinely destructive case;
             # an earlier day's copy is kept either way, but the user is still
-            # told it exists so "am I updating or branching?" is never a
-            # guess.
-            same_dir = _normalize_for_compare(candidate) == _normalize_for_compare(today_dir)
+            # told it exists so "am I updating or branching?" is never a guess.
+            same_dir = _normalize_for_compare(own) == _normalize_for_compare(today_dir)
             conflict = "overwrite" if same_dir else "earlier"
+    else:
+        for candidate in existing:
+            if os.path.basename(candidate) != folder_name:
+                continue  # a "__N" folder belonging to some other scan is not in our way
+            record = read_source_record(candidate)
+            has_annotation = os.path.isfile(os.path.join(candidate, ANNOTATION_FILENAME))
+            if not has_annotation and record is None:
+                continue  # an empty/unclaimed folder — nothing to collide with
+            # Folder name taken by something that is NOT this scan — the exact
+            # failure the per-scan folder scheme exists to catch.
+            existing_source = record
+            existing_dir = candidate
+            conflict = "collision"
             break
-        if not has_annotation and record is None:
-            # An empty/unclaimed folder — nothing to collide with.
-            continue
-        # Folder name taken by something that is NOT this scan — the exact
-        # failure the per-scan folder scheme exists to catch.
-        existing_source = record
-        existing_dir = candidate
-        conflict = "collision"
-        break
 
     scan_dir = today_dir
     if resolution == "new_copy":

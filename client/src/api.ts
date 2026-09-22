@@ -624,10 +624,15 @@ export async function lookupAnnotation(
   ctPath: string,
   seriesUid?: string | null,
   saveDir?: string | null,
+  // The manifest's recorded annotation path, when there is one: a direct
+  // pointer at this case's annotation folder, so the lookup doesn't depend
+  // on the save directory still being set the way it was when it was saved.
+  annotationPath?: string | null,
 ): Promise<AnnotationLookup> {
   const q = new URLSearchParams({ ct_path: ctPath })
   if (seriesUid) q.set('series_uid', seriesUid)
   if (saveDir) q.set('save_dir', saveDir)
+  if (annotationPath) q.set('annotation_path', annotationPath)
   const res = await fetch(`/api/annotations/lookup?${q.toString()}`)
   const data = await handleJson<{
     found: boolean

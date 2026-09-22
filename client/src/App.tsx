@@ -415,7 +415,12 @@ export default function App() {
   ): Promise<boolean> {
     let lookup = null
     try {
-      lookup = await lookupAnnotation(ctPath, ctInfo?.dicom_series_uid ?? null, annotationSaveDir || null)
+      lookup = await lookupAnnotation(
+        ctPath,
+        ctInfo?.dicom_series_uid ?? null,
+        annotationSaveDir || null,
+        row?.annotation_path || null,
+      )
     } catch {
       /* the lookup is advisory — a failure must not block loading a scan */
     }
@@ -708,6 +713,7 @@ export default function App() {
             annotationSaveDir={annotationSaveDir}
             onAnnotationSaveDirChange={setAnnotationSaveDir}
             onApplyContrastEvidence={(ctPath, ctInfo) => applyContrastEvidence(pane.id, ctPath, ctInfo)}
+            onLoadRow={(row) => loadRowIntoPane(pane.id, row, pane.plane)}
           />
         ))}
       </div>

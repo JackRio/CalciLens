@@ -547,7 +547,12 @@ def mask_save(req: SaveMaskRequest):
 
 
 @app.get("/api/annotations/lookup")
-def annotations_lookup(ct_path: str, series_uid: Optional[str] = None, save_dir: Optional[str] = None):
+def annotations_lookup(
+    ct_path: str,
+    series_uid: Optional[str] = None,
+    save_dir: Optional[str] = None,
+    annotation_path: Optional[str] = None,
+):
     """What this app already knows about a scan, before anything is loaded:
     whether an annotation was saved for it, when, and whether it was
     annotated as contrast.
@@ -555,9 +560,23 @@ def annotations_lookup(ct_path: str, series_uid: Optional[str] = None, save_dir:
     This is what makes "is this a contrast scan?" answerable from the data
     rather than from whether the user remembered to tick a checkbox."""
     ct_path = clean_path(ct_path)
+
+    # The manifest already records exactly where this case's annotation
+    # folder is, so trust that before searching. Without it the search is
+    # rooted at the *currently configured* save directory, and a seed saved
+    # under a different (or since-cleared) save folder became invisible —
+    # which would silently put a contrast scan back on the 130 HU default.
+    candidates = []
+    if annotation_path:
+        hinted = os.path.dirname(clean_path(annotation_path))
+        if os.path.isdir(hinted):
+            candidates.append(hinted)
+
     root = annotation_paths.annotation_root(ct_path, save_dir)
     folder_name = annotation_paths.scan_folder_name(ct_path, series_uid)
-    for scan_dir in annotation_paths.find_existing_scan_dirs(root, folder_name):
+    candidates.extend(annotation_paths.find_existing_scan_dirs(root, folder_name))
+
+    for scan_dir in candidates:
         record = annotation_paths.read_source_record(scan_dir)
         if not annotation_paths._same_scan(record, ct_path, series_uid):
             continue

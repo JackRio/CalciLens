@@ -59,10 +59,18 @@ SCORE_COLUMN_SUFFIX = "_Agatston"
 
 
 def _read_table(manifest_path: str) -> pd.DataFrame:
+    """Read every cell as text.
+
+    Without dtype=str, pandas infers a type per column and a PatientID of
+    "007" comes back as the integer 7 — so the app displayed the wrong ID and
+    matched split-view panes on the wrong value, even though the cell on disk
+    was correct. Nothing here needs a numeric dtype: the only numbers the app
+    reads are the score columns, and _score_value parses those itself.
+    """
     ext = os.path.splitext(manifest_path)[1].lower()
     if ext in (".xlsx", ".xls", ".xlsm"):
-        return pd.read_excel(manifest_path)
-    return pd.read_csv(manifest_path)
+        return pd.read_excel(manifest_path, dtype=str)
+    return pd.read_csv(manifest_path, dtype=str)
 
 
 def _write_table(manifest_path: str, df: pd.DataFrame, reason_column: str = DEFAULT_REASON_COLUMN) -> None:

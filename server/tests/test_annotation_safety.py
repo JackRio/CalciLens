@@ -387,3 +387,59 @@ def test_source_record_captures_what_a_later_save_needs(tmp_path):
     assert record["patient_id"] == "P42"
     assert record["annotation_type"] == "contrast", "the type belongs in the record, not in the filename"
     assert record["save_count"] == 1
+
+
+def test_zero_padded_ids_survive_being_read(tmp_path):
+    """pandas infers a dtype per column, so a PatientID of "007" used to come
+    back as the integer 7 — the file was fine, but the app showed and matched
+    on the wrong value."""
+    path = str(tmp_path / "manifest.xlsx")
+    _make_workbook(path)
+    rows = folder_scan.list_manifest_pairs(
+        path, image_column="image_path", mask_column=None, patient_id_column="PatientId"
+    )["rows"]
+    assert rows[0]["patient_id"] == "007", f"expected '007', got {rows[0]['patient_id']!r}"
+    assert rows[1]["patient_id"] == "012"
+
+
+def test_score_columns_still_parse_as_numbers(tmp_path):
+    """Reading everything as text must not break the Agatston score columns."""
+    path = str(tmp_path / "manifest.csv")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("image_path,CAC_Agatston,LAD_Agatston\nC:/data/a.nii.gz,123.45,\n")
+    result = folder_scan.list_manifest_pairs(path, image_column="image_path", mask_column=None)
+    assert result["rows"][0]["scores"]["CAC"] == pytest.approx(123.45)
+    assert result["rows"][0]["scores"]["LAD"] is None
+
+
+def test_a_diverted_scan_keeps_its_own_folder_on_later_saves(tmp_path):
+    """Once a collision pushed a scan into "<name>__2", that is its folder.
+    If only the plain name were searched it would collide with the original
+    on every subsequent save and spawn __3, __4, ... forever."""
+    save_dir = str(tmp_path / "out")
+    ct_a = make_ct(str(tmp_path / "caseA" / "image.nii.gz"))
+    ct_b = make_ct(str(tmp_path / "caseB" / "image.nii.gz"))
+
+    mask = fake_volume()
+    vs.save_mask(mask, ct_path=ct_a, base_dir=save_dir, annotation_type="non-contrast", patient_id="A")
+
+    clash = vs.save_mask(fake_volume(), ct_path=ct_b, base_dir=save_dir, annotation_type="non-contrast")
+    assert clash["status"] == "conflict" and clash["conflict"] == "collision"
+    diverted = vs.save_mask(
+        fake_volume(), ct_path=ct_b, base_dir=save_dir, annotation_type="non-contrast",
+        patient_id="B", resolution="new_copy",
+    )
+    assert diverted["folder_name"] == "image__2"
+
+    # Saving case B again must target image__2 as an update, not clash anew.
+    again = vs.save_mask(fake_volume(), ct_path=ct_b, base_dir=save_dir, annotation_type="non-contrast")
+    assert again["status"] == "conflict", "an existing annotation must still be confirmed before replacing"
+    assert again["conflict"] == "overwrite", f"expected an update prompt, got {again['conflict']}"
+    assert again["folder_name"] == "image__2"
+
+    final = vs.save_mask(
+        fake_volume(), ct_path=ct_b, base_dir=save_dir, annotation_type="non-contrast", resolution="overwrite"
+    )
+    assert final["path"] == diverted["path"]
+    dated = os.path.join(save_dir, ap.dated_folder_name())
+    assert sorted(os.listdir(dated)) == ["image", "image__2"], "no __3 should ever appear"

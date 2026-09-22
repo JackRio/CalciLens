@@ -3,7 +3,7 @@ import './App.css'
 import Pane from './components/Pane'
 import KeybindSettings from './components/KeybindSettings'
 import ReviewTagsPicker from './components/ReviewTagsPicker'
-import type { ManifestRow, PaneState } from './types'
+import type { ManifestRow, PaneState, VolumeInfo } from './types'
 import {
   CALCIFICATIONS_PRESET,
   DEFAULT_MANIFEST_CONFIG,
@@ -13,10 +13,13 @@ import {
   DEFAULT_WINDOW_WIDTH,
   inferMaskAnnotationType,
   detectMaskLooksLikeCt,
+  detectGeometryMismatch,
+  detectAnnotationTypeMismatch,
   comboMatches,
 } from './types'
-import { loadVolume, resolveDicomLoad, saveManifestComment, saveManifestReason } from './api'
+import { loadVolume, lookupAnnotation, resolveDicomLoad, saveManifestComment, saveManifestReason } from './api'
 import { useKeybinds } from './useKeybinds'
+import { useAnnotationSaveDir } from './useAnnotationSaveDir'
 
 let paneCounter = 0
 function makePane(): PaneState {
@@ -33,6 +36,9 @@ function makePane(): PaneState {
     batchLoadCollapsed: false,
     wlMinimized: true,
     reasonOptions: [],
+    statusOptions: [],
+    hasAnnotationColumn: false,
+    hasContrastColumn: false,
     scoreClasses: [],
     scorePanelOpen: true,
     scorePanelPos: null,
@@ -94,7 +100,43 @@ function makePane(): PaneState {
     volumeScores: null,
     agatstonScores: null,
     maskAnnotationType: null,
+
+    hasUnsavedMaskChanges: false,
+    maskBaselineVolumeId: null,
+    maskBaselineVersion: 0,
+    lastSavedAt: null,
+    maskSource: null,
+    annotationLookup: null,
+    contrastNotice: null,
   }
+}
+
+// Everything a freshly-loaded case must start from, so nothing computed
+// against the previous scan can survive into this one. Contrast state is in
+// here deliberately: a per-scan threshold carried into the next case is a
+// silently wrong threshold, and "the checkbox is still ticked" is not
+// evidence that the new scan is contrast-enhanced.
+const CASE_RESET: Partial<PaneState> = {
+  maskAnnotationType: null,
+  maskWarning: null,
+  dicomSeriesList: [],
+  dicomSeriesIndex: null,
+  editMode: false,
+  lesionResults: [],
+  volumeScores: null,
+  agatstonScores: null,
+  maskSource: null,
+  hasUnsavedMaskChanges: false,
+  maskBaselineVolumeId: null,
+  maskBaselineVersion: 0,
+  lastSavedAt: null,
+  annotationLookup: null,
+  contrastNotice: null,
+  seedPlacementMode: false,
+  pendingSeed: null,
+  contrastThreshold: null,
+  contrastThresholdLocked: false,
+  contrastMeta: null,
 }
 
 export default function App() {
@@ -104,6 +146,12 @@ export default function App() {
   const [activePaneId, setActivePaneId] = useState<string | null>(panes[0]?.id ?? null)
   const [keybinds, setKeybinds] = useKeybinds()
   const [keybindSettingsOpen, setKeybindSettingsOpen] = useState(false)
+  const [annotationSaveDir, setAnnotationSaveDir] = useAnnotationSaveDir()
+  // An action that would have discarded unsaved annotation work, held back
+  // until the user says what to do with it. Previously these paths — the
+  // reload shortcut, and loading a synced case into the *other* pane —
+  // simply went ahead and the work was gone with no prompt at all.
+  const [blockedAction, setBlockedAction] = useState<{ message: string; run: () => void } | null>(null)
   const effectiveActivePaneId = panes.some((p) => p.id === activePaneId) ? activePaneId : (panes[0]?.id ?? null)
 
   // Review mode — global (not per-pane), so it applies the same way in
@@ -122,6 +170,22 @@ export default function App() {
     : (panes[0]?.id ?? null)
   const allReasonOptions = Array.from(new Set(panes.flatMap((p) => p.reasonOptions)))
 
+  // Runs `action`, unless one of `paneIds` has unsaved annotation changes —
+  // in which case it asks first. Every App-level path that can destroy an
+  // in-memory mask goes through here.
+  function withUnsavedGuard(paneIds: string[], what: string, action: () => void) {
+    const dirty = panes.filter((p) => paneIds.includes(p.id) && p.hasUnsavedMaskChanges)
+    if (dirty.length === 0) {
+      action()
+      return
+    }
+    const names = dirty.map((p) => (panes.length > 1 ? (panes[0].id === p.id ? 'Left' : 'Right') : 'This')).join(' and ')
+    setBlockedAction({
+      message: `${names} pane has unsaved annotation changes. ${what} will discard them.`,
+      run: action,
+    })
+  }
+
   // Re-reads the CT/mask straight from disk (force=true bypasses the
   // backend's in-memory volume cache), keeping the pane's current view
   // (slice/plane/zoom) instead of resetting it the way a fresh load does.
@@ -138,7 +202,21 @@ export default function App() {
       const maskInfo = pane.maskPath
         ? await loadVolume(pane.maskPath, true, true, pane.maskInfo?.dicom_series_uid ?? undefined)
         : pane.maskInfo
-      updatePane(paneId, { ctInfo, maskInfo, loading: false, loadingMessage: null })
+      updatePane(paneId, {
+        ctInfo,
+        maskInfo,
+        loading: false,
+        loadingMessage: null,
+        // Re-read from disk means the in-memory copy IS the on-disk copy
+        // again, so the unsaved-changes baseline resets with it.
+        hasUnsavedMaskChanges: false,
+        maskBaselineVolumeId: maskInfo?.volume_id ?? null,
+        maskBaselineVersion: pane.editVersion + 1,
+        // Bumped so the <img> URL changes: the render request is otherwise
+        // byte-identical to the one already in the browser cache, and a
+        // reload-from-disk would appear to do nothing.
+        editVersion: pane.editVersion + 1,
+      })
     } catch (e) {
       updatePane(paneId, { loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
     }
@@ -154,7 +232,11 @@ export default function App() {
       if (active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) return
       if (keybinds.reloadCurrent.some((c) => comboMatches(e, c))) {
         e.preventDefault()
-        panes.forEach((p) => reloadPane(p.id))
+        withUnsavedGuard(
+          panes.map((p) => p.id),
+          'Reloading from disk',
+          () => panes.forEach((p) => reloadPane(p.id)),
+        )
       }
     }
     window.addEventListener('keydown', handleKeyDown)
@@ -210,14 +292,7 @@ export default function App() {
       // one) belongs to that case, not this one — leaving it in place made
       // stale lesion results / recomputed totals look like they applied to
       // whatever case was just navigated to.
-      maskAnnotationType: null,
-      maskWarning: null,
-      dicomSeriesList: [],
-      dicomSeriesIndex: null,
-      editMode: false,
-      lesionResults: [],
-      volumeScores: null,
-      agatstonScores: null,
+      ...CASE_RESET,
     })
     if (!row.image_exists) {
       // Clear whatever scan was showing before rather than leaving it up
@@ -235,10 +310,12 @@ export default function App() {
       return
     }
     let ctPathForMaskCheck = ''
+    let loadedCtInfo: VolumeInfo | null = null
     try {
       const { directory, seriesUid, seriesList } = await resolveDicomLoad(row.image_path)
       const ctInfo = await loadVolume(directory, false, false, seriesUid)
       ctPathForMaskCheck = directory
+      loadedCtInfo = ctInfo
       updatePane(paneId, {
         ctPath: directory,
         ctInfo,
@@ -262,28 +339,114 @@ export default function App() {
       })
       return
     }
-    if (row.mask_path) {
-      if (row.mask_exists) {
-        updatePane(paneId, { loadingMessage: 'Loading mask...' })
+
+    const isContrastScan = await applyContrastEvidence(paneId, ctPathForMaskCheck, loadedCtInfo, row)
+
+    // Prefer this app's own saved annotation over the original prediction.
+    // Without this, a case that shipped with a mask always re-opened that
+    // mask, and every previous session's work stayed invisible on disk —
+    // and got overwritten by the next save.
+    const useAnnotation = row.annotation_exists && !!row.annotation_path
+    const maskToLoad = useAnnotation ? row.annotation_path : row.mask_path
+    const maskSource: PaneState['maskSource'] = useAnnotation ? 'annotation' : 'prediction'
+    const maskIsPresent = useAnnotation || row.mask_exists
+
+    if (maskToLoad) {
+      if (maskIsPresent) {
+        updatePane(paneId, { loadingMessage: useAnnotation ? 'Loading your annotation...' : 'Loading mask...' })
         try {
-          const maskInfo = await loadVolume(row.mask_path, true)
-          updatePane(paneId, {
-            maskPath: row.mask_path,
-            maskInfo,
-            maskAnnotationType: inferMaskAnnotationType(row.mask_path),
-            maskWarning: detectMaskLooksLikeCt(maskInfo, ctPathForMaskCheck, row.mask_path),
-            showMask: true,
-          })
+          const maskInfo = await loadVolume(maskToLoad, true)
+          const mismatch = loadedCtInfo ? detectGeometryMismatch(loadedCtInfo, maskInfo) : null
+          if (mismatch) {
+            // Refuse rather than display: painting against a mismatched mask
+            // writes to the wrong slice, and it saves that silently.
+            updatePane(paneId, {
+              maskPath: '',
+              maskInfo: null,
+              maskSource: null,
+              manifestError: mismatch,
+            })
+          } else {
+            const annotationType = inferMaskAnnotationType(maskToLoad)
+            const contrastOn = isContrastScan
+            updatePane(paneId, {
+              maskPath: maskToLoad,
+              maskInfo,
+              maskSource,
+              maskBaselineVolumeId: maskInfo.volume_id,
+              maskBaselineVersion: 0,
+              hasUnsavedMaskChanges: false,
+              maskAnnotationType: annotationType,
+              maskWarning:
+                detectMaskLooksLikeCt(maskInfo, ctPathForMaskCheck, maskToLoad) ||
+                detectAnnotationTypeMismatch(annotationType, contrastOn),
+              showMask: true,
+            })
+          }
         } catch (e) {
           updatePane(paneId, { manifestError: e instanceof Error ? e.message : String(e) })
         }
       } else {
-        updatePane(paneId, { maskPath: '', maskInfo: null, maskWarning: null, manifestError: `Mask not found: ${row.mask_path}` })
+        updatePane(paneId, {
+          maskPath: '',
+          maskInfo: null,
+          maskWarning: null,
+          maskSource: null,
+          manifestError: `Mask not found: ${maskToLoad}`,
+        })
       }
     } else {
-      updatePane(paneId, { maskPath: '', maskInfo: null, maskWarning: null })
+      updatePane(paneId, { maskPath: '', maskInfo: null, maskWarning: null, maskSource: null })
     }
     updatePane(paneId, { loading: false, loadingMessage: null })
+  }
+
+  // Decide whether this scan is contrast-enhanced from what is actually
+  // recorded — a saved seed, a previous annotation's own record of its type,
+  // or the manifest's contrast column — instead of from whether the Contrast
+  // checkbox happens to be ticked. That check used to run only when contrast
+  // mode was already on, so opening a contrast scan without ticking the box
+  // silently annotated it against the fixed 130 HU non-contrast threshold.
+  async function applyContrastEvidence(
+    paneId: string,
+    ctPath: string,
+    ctInfo: PaneState['ctInfo'],
+    row?: ManifestRow,
+  ): Promise<boolean> {
+    let lookup = null
+    try {
+      lookup = await lookupAnnotation(ctPath, ctInfo?.dicom_series_uid ?? null, annotationSaveDir || null)
+    } catch {
+      /* the lookup is advisory — a failure must not block loading a scan */
+    }
+    const isContrast = row?.contrast === true || !!lookup?.hasSeed || lookup?.annotationType === 'contrast'
+
+    if (!isContrast) {
+      // Nothing says this scan is contrast — make sure the previous case's
+      // contrast threshold isn't still in force. Carrying a per-scan
+      // threshold into a different scan is silently wrong every time.
+      updatePane(paneId, {
+        annotationLookup: lookup,
+        contrastMode: false,
+        contrastNotice: null,
+        thresholdValue: DEFAULT_THRESHOLD_HU,
+        thresholdEnabled: false,
+        editThresholdMin: DEFAULT_THRESHOLD_HU,
+        editRegionGrowThreshold: DEFAULT_THRESHOLD_HU,
+      })
+      return false
+    }
+    updatePane(paneId, {
+      annotationLookup: lookup,
+      contrastMode: true,
+      // If there is a seed, Pane's own effect loads and re-verifies it and
+      // clears this. If there isn't, this is the warning that stops someone
+      // annotating a contrast scan against 130 HU.
+      contrastNotice: lookup?.hasSeed
+        ? null
+        : 'This is recorded as a contrast scan, but no seed/threshold has been placed for it yet. Place and finalize a seed before annotating.',
+    })
+    return true
   }
 
   function clearPaneScan(paneId: string, errorMsg: string) {
@@ -394,11 +557,15 @@ export default function App() {
       if (other && other.manifestRows.length > 0 && other.manifestConfig.patientIdColumn) {
         if (!row.patient_id) return
         const match = other.manifestRows.find((r) => r.patient_id === row.patient_id)
-        if (match) {
-          loadRowIntoPane(other.id, match, other.plane)
-        } else {
-          clearPaneScan(other.id, `No image path for PatientID ${row.patient_id}`)
-        }
+        // The other pane's own unsaved work is at stake here and it never
+        // used to be asked about — only the pane the user clicked in was.
+        withUnsavedGuard([other.id], 'Loading the matching case there', () => {
+          if (match) {
+            loadRowIntoPane(other.id, match, other.plane)
+          } else {
+            clearPaneScan(other.id, `No image path for PatientID ${row.patient_id}`)
+          }
+        })
       }
     }
   }
@@ -538,11 +705,35 @@ export default function App() {
             keybinds={keybinds}
             onCopyToOtherPane={panes.length > 1 ? () => copyReasonCommentToOtherPane(pane.id) : undefined}
             onToggleReviewMode={toggleReviewMode}
+            annotationSaveDir={annotationSaveDir}
+            onAnnotationSaveDirChange={setAnnotationSaveDir}
+            onApplyContrastEvidence={(ctPath, ctInfo) => applyContrastEvidence(pane.id, ctPath, ctInfo)}
           />
         ))}
       </div>
       {keybindSettingsOpen && (
         <KeybindSettings keybinds={keybinds} onChange={setKeybinds} onClose={() => setKeybindSettingsOpen(false)} />
+      )}
+      {blockedAction && (
+        <div className="comment-modal-backdrop" onClick={() => setBlockedAction(null)}>
+          <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="comment-modal-title">Unsaved annotation changes</div>
+            <div className="nav-modal-body">{blockedAction.message}</div>
+            <div className="comment-modal-buttons">
+              <button onClick={() => setBlockedAction(null)}>Go back and save</button>
+              <button
+                className="danger-btn"
+                onClick={() => {
+                  const run = blockedAction.run
+                  setBlockedAction(null)
+                  run()
+                }}
+              >
+                Discard and continue
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

@@ -22,7 +22,8 @@ import numpy as np
 import SimpleITK as sitk
 from PIL import Image
 
-from pathutil import clean_path, dated_annotation_dir
+import annotation_paths
+from pathutil import clean_path
 
 PLANES = ("axial", "sagittal", "coronal")
 
@@ -110,8 +111,10 @@ class LoadedVolume:
     is_new_mask: bool = False  # True for a blank mask created in-app (never loaded from a file)
     source_ct_path: Optional[str] = None  # the CT path a new mask was created against, for save-path naming
     dicom_series_uid: Optional[str] = None  # SeriesInstanceUID, when path is a DICOM directory —
-    # used instead of the folder's basename for save-path naming (see _insert_tag), since a
-    # folder can hold multiple series and the basename alone can't disambiguate them.
+    # used instead of the folder's basename for save-path naming (see
+    # annotation_paths.scan_folder_name), since a folder can hold multiple series and the
+    # basename alone can't disambiguate them.
+    dirty: bool = False  # has unsaved in-memory edits — see VolumeStore._register
 
     def size_lps(self):
         nz, ny, nx = self.array.shape
@@ -163,7 +166,7 @@ class LoadedVolume:
 class VolumeStore:
     """Simple LRU cache of LoadedVolume keyed by volume_id (hash of abs path)."""
 
-    def __init__(self, max_items: int = 12):
+    def __init__(self, max_items: int = 24):
         self._max_items = max_items
         self._cache: "OrderedDict[str, LoadedVolume]" = OrderedDict()
         self._lock = threading.Lock()
@@ -261,8 +264,33 @@ class VolumeStore:
         with self._lock:
             self._cache[vol.volume_id] = vol
             self._cache.move_to_end(vol.volume_id)
-            while len(self._cache) > self._max_items:
-                self._cache.popitem(last=False)
+            self._evict_locked()
+
+    def _evict_locked(self):
+        """Drop least-recently-used entries, but NEVER one holding unsaved
+        work.
+
+        A brand-new in-app mask exists only here — it has no file on disk at
+        all — and an edited-but-unsaved mask's changes likewise live only in
+        this array. Evicting either silently destroys annotation work, and
+        the client only finds out when the next paint request 404s. A CT is
+        always safe to evict: it can be re-read from disk unchanged.
+
+        If everything in the cache is unevictable the cache is simply allowed
+        to grow. Using more memory is strictly better than discarding work
+        the user cannot get back.
+        """
+        while len(self._cache) > self._max_items:
+            evictable = next(
+                (vid for vid, v in self._cache.items() if not (v.dirty or v.is_new_mask)),
+                None,
+            )
+            if evictable is None:
+                return
+            self._cache.pop(evictable)
+
+    def mark_dirty(self, vol: LoadedVolume):
+        vol.dirty = True
 
     def get(self, volume_id: str) -> LoadedVolume:
         with self._lock:
@@ -410,6 +438,7 @@ def paint_mask(
     """Stamp an (elliptical, so it reads as a circle in the isotropic display)
     brush at display coordinates (row, col). Returns the number of voxels
     changed."""
+    assert_same_geometry(mask_vol, ct_vol)
     mask_view, flipped = get_plane_raw_view(mask_vol, plane, index)
     ct_view, _ = get_plane_raw_view(ct_vol, plane, index)
 
@@ -431,6 +460,7 @@ def paint_mask(
     changed = int(np.count_nonzero(final))
     if changed:
         mask_view[final] = new_label
+        mask_vol.dirty = True
         # Deliberately not recomputing mask_vol.labels here: np.unique() over
         # the full 3D volume is expensive (tens of millions of voxels for a
         # real CT), and this runs on every brush dab — up to ~25x/sec while
@@ -532,6 +562,7 @@ def region_grow_mask(
     """
     from scipy import ndimage
 
+    assert_same_geometry(mask_vol, ct_vol)
     nz, ny, nx = ct_vol.array.shape
     z, y, x = _seed_index_3d(ct_vol, plane, index, row, col)
     if not (0 <= z < nz and 0 <= y < ny and 0 <= x < nx):
@@ -556,71 +587,102 @@ def region_grow_mask(
         )
     if changed:
         mask_vol.array[region] = new_label
+        mask_vol.dirty = True
         recompute_labels(mask_vol)
     return changed
 
 
-def _insert_tag(
-    path: str,
-    tag: str,
-    default_dir: str = "",
-    default_stem: str = "",
-    base_dir: Optional[str] = None,
-    series_uid: Optional[str] = None,
-) -> str:
-    if path:
-        dirn = os.path.dirname(path)
-        base = os.path.basename(path)
-    else:
-        dirn = default_dir
-        base = default_stem
-    if path and os.path.isdir(path):
-        # A DICOM series directory has no file extension of its own — dots in
-        # its name (e.g. a series UID like "1.2.840.113654...") are NOT an
-        # extension, so this must be checked before the splitext-based
-        # branches below, or splitext wrongly treats the tail after the last
-        # dot as the extension (SimpleITK then can't find a writer for it —
-        # "Unable to determine ImageIO writer").
-        # Prefer the actual SeriesInstanceUID over the folder's basename: a
-        # folder can hold multiple series, and two series saved under the
-        # same folder-basename-derived filename would silently overwrite
-        # each other. Fall back to the basename only when the series UID
-        # wasn't tracked (e.g. a caller that never loaded through the normal
-        # DICOM-dir path).
-        stem, ext = (series_uid or base), ".nii.gz"
-    elif base.lower().endswith(".nii.gz"):
-        stem, ext = base[:-7], ".nii.gz"
-    else:
-        stem, ext = os.path.splitext(base)
-        ext = ext or ".nii.gz"
-    if base_dir:
-        dirn = dated_annotation_dir(base_dir)
-    return os.path.join(dirn, f"{stem}_{tag}{ext}")
+def assert_same_geometry(mask_vol: LoadedVolume, ct_vol: LoadedVolume) -> None:
+    """Refuse to let a mask and CT of different shapes be used together.
 
-
-def save_mask(mask_vol: LoadedVolume, tag: Optional[str] = None, base_dir: Optional[str] = None) -> str:
-    """Write the current in-memory mask array to disk, preserving the
-    geometry it currently occupies (LPS-reoriented space). If the mask was
-    loaded from a file, it's saved alongside it with the tag appended; if it
-    was created fresh in-app (no source file), it's saved alongside the CT
-    image instead. If `base_dir` is set (the user configured an annotation
-    save directory in Settings), the save is redirected into
-    `<base_dir>/Manual_Annotations_<date>/` instead of next to the image.
+    Nothing used to check this. Every slice lookup clamps its index against
+    the volume it came from *independently* (see get_plane_raw_view), so a
+    mask with fewer slices than the CT didn't error — viewing CT slice 200
+    and painting wrote into the mask's last slice instead, and that wrong
+    data then got saved. A loud failure is the only safe behavior here: a
+    silent partial write is worse than no write at all.
     """
-    if mask_vol.is_new_mask:
-        tag = tag or "ManualAnnotations"
-        ct_path = mask_vol.source_ct_path or ""
-        out_path = _insert_tag(ct_path, tag, base_dir=base_dir, series_uid=mask_vol.dicom_series_uid)
-    else:
-        tag = tag or "ManualEdits"
-        out_path = _insert_tag(mask_vol.path, tag, base_dir=base_dir, series_uid=mask_vol.dicom_series_uid)
+    if mask_vol.array.shape != ct_vol.array.shape:
+        raise ValueError(
+            f"Mask and CT geometry do not match: mask is {tuple(int(v) for v in mask_vol.array.shape)} "
+            f"(z,y,x), CT is {tuple(int(v) for v in ct_vol.array.shape)}. "
+            "They must be the same volume geometry to be edited or scored together."
+        )
+
+
+def _atomic_write_image(img: "sitk.Image", out_path: str) -> None:
+    """Write via a temp file in the same directory, then os.replace().
+
+    Annotation files were previously written straight over the destination,
+    so a crash or a hard kill mid-write (Electron kills the Python process on
+    window close) truncated the file — and the previous good version was
+    already gone. Manifest writes and seed sidecars were made atomic long
+    ago; the annotations themselves, the most valuable output this app has,
+    were not. os.replace is atomic on both POSIX and Windows.
+
+    The temp file has to keep the real extension: SimpleITK picks its writer
+    from the path's extension, and ".nii.gz.tmp" has no writer.
+    """
+    dirn = os.path.dirname(out_path) or "."
+    os.makedirs(dirn, exist_ok=True)
+    tmp_path = annotation_paths._temp_path(dirn, os.path.basename(out_path))
+    try:
+        sitk.WriteImage(img, tmp_path)
+        os.replace(tmp_path, out_path)
+    finally:
+        annotation_paths._cleanup(tmp_path)
+
+
+def save_mask(
+    mask_vol: LoadedVolume,
+    ct_path: str,
+    series_uid: Optional[str] = None,
+    base_dir: Optional[str] = None,
+    annotation_type: Optional[str] = None,
+    patient_id: Optional[str] = None,
+    resolution: Optional[str] = None,
+) -> dict:
+    """Write the current in-memory mask into this scan's own annotation
+    folder, preserving the geometry it currently occupies (LPS-reoriented
+    space).
+
+    The destination is derived from the **CT**, never from whatever mask
+    happens to be loaded. Deriving it from the loaded mask is what made
+    filenames grow a suffix per session ("X_ManualAnnotations_ManualEdits...")
+    and left each previous save orphaned, since re-saving produced a
+    different path every time. Keyed off the CT, re-saving the same scan
+    lands on the same path and is an update.
+
+    Returns either {"status": "saved", ...} or, when something is already at
+    the destination, {"status": "conflict", ...} without writing anything —
+    the caller asks the user and calls back with `resolution`.
+    """
+    target = annotation_paths.resolve_target(ct_path, series_uid, base_dir, resolution)
+    if target["conflict"]:
+        return {"status": "conflict", **target}
 
     img = sitk.GetImageFromArray(mask_vol.array)
     img.SetSpacing(mask_vol.spacing_lps)
     img.SetOrigin(mask_vol.reoriented_origin)
     img.SetDirection(mask_vol.reoriented_direction)
-    sitk.WriteImage(img, out_path)
-    return out_path
+    _atomic_write_image(img, target["annotation_path"])
+
+    record = annotation_paths.write_source_record(
+        target["scan_dir"],
+        ct_path=ct_path,
+        series_uid=series_uid,
+        patient_id=patient_id,
+        annotation_type=annotation_type,
+        source_mask_path=mask_vol.path or None,
+    )
+    mask_vol.dirty = False
+    return {
+        "status": "saved",
+        "path": target["annotation_path"],
+        "scan_dir": target["scan_dir"],
+        "folder_name": target["folder_name"],
+        "source_record": record,
+    }
 
 
 def window_to_uint8(slice_arr: np.ndarray, level: float, width: float) -> np.ndarray:

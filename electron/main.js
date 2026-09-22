@@ -27,6 +27,22 @@ function resolveServerDir() {
   return path.join(base, 'server')
 }
 
+// Is something already serving on our port? If so it is almost certainly a
+// second copy of this app, and attaching to it is dangerous: both windows
+// would share one volume cache, and whichever window closes first kills the
+// backend out from under the other, taking any unsaved annotation with it.
+function probePort(callback) {
+  const req = http.get(`${SERVER_URL}/api/defaults`, (res) => {
+    res.resume()
+    callback(true)
+  })
+  req.on('error', () => callback(false))
+  req.setTimeout(1500, () => {
+    req.destroy()
+    callback(false)
+  })
+}
+
 function startPythonServer() {
   const pythonExe = resolvePython()
   const serverDir = resolveServerDir()
@@ -37,6 +53,16 @@ function startPythonServer() {
   pyProc.stderr.on('data', (d) => process.stderr.write(`[server] ${d}`))
   pyProc.on('exit', (code) => {
     console.log(`[server] exited with code ${code}`)
+    // If the backend dies while the app is still up, every request from here
+    // on fails and any unsaved annotation is already gone. Say so plainly
+    // rather than leaving the window looking functional.
+    if (code !== 0 && code !== null && mainWindow && !mainWindow.isDestroyed()) {
+      dialog.showErrorBox(
+        'Backend stopped',
+        'The CT Viewer backend process exited unexpectedly. Any unsaved annotation changes have been lost. ' +
+          'Please restart the application.',
+      )
+    }
   })
 }
 
@@ -90,14 +116,43 @@ ipcMain.handle('pick-path', async (_event, options = {}) => {
   return result.filePaths[0]
 })
 
-app.whenReady().then(() => {
-  startPythonServer()
-  waitForServerReady(createWindow)
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+// One instance only. Without this lock, launching the app twice left the
+// second copy's uvicorn unable to bind the port while its window silently
+// attached to the FIRST copy's backend — two windows sharing one volume
+// cache, and closing either one killing the server for both.
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
   })
-})
+
+  app.whenReady().then(() => {
+    probePort((inUse) => {
+      if (inUse) {
+        // Something else already answers on this port. Attaching to it would
+        // mean operating on a backend this process does not control.
+        dialog.showErrorBox(
+          'Port already in use',
+          `Something is already serving on port ${PORT}. If another copy of CT Viewer is running, use that window. ` +
+            'Otherwise stop whatever is using the port and start the app again.',
+        )
+        app.quit()
+        return
+      }
+      startPythonServer()
+      waitForServerReady(createWindow)
+    })
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
+  })
+}
 
 function killPython() {
   if (pyProc) {
@@ -106,9 +161,17 @@ function killPython() {
   }
 }
 
-app.on('window-all-closed', () => {
+// Annotation, manifest and sidecar writes are all atomic (temp file +
+// os.replace), so a kill here can no longer leave a half-written file — the
+// previous version is simply kept. The grace period below is belt and
+// braces for an in-flight request, not the thing that makes saving safe.
+function shutdown() {
   killPython()
+}
+
+app.on('window-all-closed', () => {
+  shutdown()
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', killPython)
+app.on('before-quit', shutdown)

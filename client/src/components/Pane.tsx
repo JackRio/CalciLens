@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AnnotationStatus, KeybindMap, LesionScoreResult, PaneState, Plane, ScoreClass } from '../types'
+import type { KeybindMap, LesionScoreResult, PaneState, Plane, ScoreClass, VolumeInfo } from '../types'
 import {
   WINDOW_PRESETS,
   DEFAULT_WINDOW_LEVEL,
@@ -10,6 +10,7 @@ import {
   SCORE_CLASS_BY_LABEL,
   inferMaskAnnotationType,
   detectMaskLooksLikeCt,
+  detectGeometryMismatch,
   comboMatches,
 } from '../types'
 import {
@@ -31,11 +32,12 @@ import {
   saveManifestComment,
   saveManifestStatus,
   saveManifestReason,
-  saveManifestMaskPath,
+  saveManifestAnnotationPath,
+  saveManifestContrast,
 } from '../api'
+import type { SaveMaskConflict } from '../api'
 import { getCachedCac, setCachedCac } from '../lesionCache'
 import { useContrastSettings } from '../useContrastSettings'
-import { useAnnotationSaveDir } from '../useAnnotationSaveDir'
 import InfoPanel from './InfoPanel'
 import LabelColorEditor from './LabelColorEditor'
 import CaseLoader from './CaseLoader'
@@ -163,6 +165,9 @@ export default function Pane({
   keybinds,
   onCopyToOtherPane,
   onToggleReviewMode,
+  annotationSaveDir,
+  onAnnotationSaveDirChange,
+  onApplyContrastEvidence,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -175,6 +180,9 @@ export default function Pane({
   keybinds: KeybindMap
   onCopyToOtherPane?: () => Promise<void>
   onToggleReviewMode: () => void
+  annotationSaveDir: string
+  onAnnotationSaveDirChange: (next: string) => void
+  onApplyContrastEvidence: (ctPath: string, ctInfo: VolumeInfo | null) => Promise<boolean>
 }) {
   const [settingsOpen, setSettingsOpen] = useState(true)
   const [copyingToOtherPane, setCopyingToOtherPane] = useState(false)
@@ -187,14 +195,6 @@ export default function Pane({
   const [commentError, setCommentError] = useState<string | null>(null)
   const [reasonPickerOpen, setReasonPickerOpen] = useState(false)
   const [reasonOptionsSnapshot, setReasonOptionsSnapshot] = useState<string[]>([])
-  // Tracks whether the currently-loaded mask has unsaved edits: baseline is
-  // the editVersion at the moment this exact mask (by volume_id) was loaded
-  // or last saved/reset; any later editVersion means it has diverged.
-  const [maskBaseline, setMaskBaseline] = useState<{ volumeId: string | null; version: number }>({
-    volumeId: null,
-    version: 0,
-  })
-  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null)
   const [navModalDirection, setNavModalDirection] = useState<1 | -1 | null>(null)
   const [jumpPos, setJumpPos] = useState<number | null>(null)
   const [seriesStepDirection, setSeriesStepDirection] = useState<1 | -1 | null>(null)
@@ -217,7 +217,13 @@ export default function Pane({
   const [computingScore, setComputingScore] = useState(false)
   const [flashRowId, setFlashRowId] = useState<number | null>(null)
   const [contrastSettings, setContrastSettings] = useContrastSettings()
-  const [annotationSaveDir, setAnnotationSaveDir] = useAnnotationSaveDir()
+  // A save that reported something already at the destination, waiting for
+  // the user to say what to do about it. Nothing has been written yet.
+  const [saveConflict, setSaveConflict] = useState<SaveMaskConflict | null>(null)
+  // Turning the Contrast toggle off/on can unload an edited mask; this holds
+  // that intent until the user confirms they're willing to lose the edits.
+  const [contrastUnloadPending, setContrastUnloadPending] = useState<boolean | null>(null)
+  const [renderError, setRenderError] = useState<string | null>(null)
   const [contrastSaving, setContrastSaving] = useState(false)
   const [contrastError, setContrastError] = useState<string | null>(null)
   const [contrastBoxMinimized, setContrastBoxMinimized] = useState(false)
@@ -298,7 +304,20 @@ export default function Pane({
   const planeLength = pane.ctInfo ? pane.ctInfo.plane_lengths[pane.plane] : 1
   const currentRowPos = pane.manifestRows.findIndex((r) => r.index === pane.activeRowIndex)
   const currentRow = currentRowPos >= 0 ? pane.manifestRows[currentRowPos] : null
-  const hasUnsavedMaskChanges = !!pane.maskInfo && pane.editVersion !== maskBaseline.version
+  // Whatever the sheet already uses, merged with the built-ins by the
+  // backend — the app must not assume its own four values are the only ones.
+  const statusOptions = pane.statusOptions.length > 0 ? pane.statusOptions : [...STATUS_OPTIONS]
+  // Whether the loaded mask has edits that aren't on disk. Derived here but
+  // mirrored onto the pane (below) because App.tsx owns navigation and has to
+  // be able to check it before loading something over the top.
+  const hasUnsavedMaskChanges = !!pane.maskInfo && pane.editVersion !== pane.maskBaselineVersion
+  const lastSavedAt = pane.lastSavedAt ? new Date(pane.lastSavedAt) : null
+
+  useEffect(() => {
+    if (pane.hasUnsavedMaskChanges !== hasUnsavedMaskChanges) {
+      onChange({ hasUnsavedMaskChanges })
+    }
+  }, [hasUnsavedMaskChanges, pane.hasUnsavedMaskChanges, onChange])
 
   // Most-used reason tags first, so the picker surfaces what's actually
   // being picked as the session goes on. Only recomputed when the picker is
@@ -340,9 +359,8 @@ export default function Pane({
   // never itself a "changed since load" signal on its own).
   useEffect(() => {
     const id = pane.maskInfo?.volume_id ?? null
-    if (id !== maskBaseline.volumeId) {
-      setMaskBaseline({ volumeId: id, version: pane.editVersion })
-      setLastSavedAt(null)
+    if (id !== pane.maskBaselineVolumeId) {
+      onChange({ maskBaselineVolumeId: id, maskBaselineVersion: pane.editVersion, lastSavedAt: null })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.maskInfo?.volume_id])
@@ -446,7 +464,23 @@ export default function Pane({
         lesionResults: [],
         volumeScores: null,
         agatstonScores: null,
+        maskSource: null,
+        hasUnsavedMaskChanges: false,
+        maskBaselineVolumeId: null,
+        maskBaselineVersion: 0,
+        lastSavedAt: null,
+        // Contrast state belongs to the scan it was derived from, never to
+        // the next one. Cleared here and re-established below from what is
+        // actually recorded for the newly-loaded scan.
+        seedPlacementMode: false,
+        pendingSeed: null,
+        contrastThreshold: null,
+        contrastThresholdLocked: false,
+        contrastMeta: null,
+        annotationLookup: null,
+        contrastNotice: null,
       })
+      await onApplyContrastEvidence(directory, info)
     } catch (e) {
       onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
     }
@@ -466,7 +500,7 @@ export default function Pane({
   // same "Before you move on..." unsaved-mask-edits confirmation as manifest
   // case navigation, rather than a parallel modal.
   function requestSeriesStep(direction: 1 | -1) {
-    if (pane.editMode && pane.maskInfo) {
+    if (hasUnsavedMaskChanges) {
       setSeriesStepDirection(direction)
     } else {
       stepSeries(direction)
@@ -492,9 +526,18 @@ export default function Pane({
     onChange({ loading: true, loadingMessage: 'Loading mask...', error: null })
     try {
       const info = await loadVolume(path, true)
+      // A mask of different geometry cannot be shown or edited against this
+      // CT — every slice index would silently mean a different slice in each
+      // volume, and painting would write to the wrong one and save it.
+      const mismatch = pane.ctInfo ? detectGeometryMismatch(pane.ctInfo, info) : null
+      if (mismatch) {
+        onChange({ loading: false, loadingMessage: null, error: mismatch })
+        return
+      }
       onChange({
         maskPath: path,
         maskInfo: info,
+        maskSource: 'manual',
         maskAnnotationType: inferMaskAnnotationType(path),
         maskWarning: detectMaskLooksLikeCt(info, pane.ctPath, path),
         loading: false,
@@ -503,6 +546,97 @@ export default function Pane({
       })
     } catch (e) {
       onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  // The Contrast toggle can unload the loaded mask when its annotation type
+  // no longer matches. That used to happen with no warning at all, taking any
+  // unsaved edits with it.
+  function requestContrastToggle(checked: boolean) {
+    const willUnload = !!pane.maskInfo && !!pane.maskAnnotationType &&
+      pane.maskAnnotationType !== (checked ? 'contrast' : 'non-contrast')
+    if (willUnload && hasUnsavedMaskChanges) {
+      setContrastUnloadPending(checked)
+      return
+    }
+    applyContrastToggle(checked)
+  }
+
+  function applyContrastToggle(checked: boolean) {
+    setContrastUnloadPending(null)
+    // Record the answer so the next session doesn't have to rely on anyone
+    // remembering to tick this box again — that is exactly how a contrast
+    // scan ended up annotated against the fixed 130 HU threshold.
+    if (currentRow && pane.manifestConfig.manifestPath && pane.manifestConfig.contrastColumn) {
+      saveManifestContrast(
+        pane.manifestConfig.manifestPath,
+        currentRow.index,
+        pane.manifestConfig.contrastColumn,
+        checked,
+      )
+        .then(() => {
+          onChange({
+            manifestRows: pane.manifestRows.map((r) =>
+              r.index === currentRow.index ? { ...r, contrast: checked } : r,
+            ),
+          })
+        })
+        .catch((e) => onChange({ manifestError: e instanceof Error ? e.message : String(e) }))
+    }
+    // A mask painted under the other threshold basis isn't meaningful here —
+    // contrast annotations are gated by a per-scan computed threshold, non-
+    // contrast by the fixed 130 HU, so a label boundary drawn under one
+    // doesn't mean the same thing under the other. Only unload on a
+    // *confirmed* mismatch; an unknown type (e.g. a mask from outside this
+    // app) is left alone rather than guessed at and discarded.
+    const mismatched = !!pane.maskInfo && !!pane.maskAnnotationType &&
+      pane.maskAnnotationType !== (checked ? 'contrast' : 'non-contrast')
+    const unload: Partial<PaneState> = mismatched
+      ? {
+          maskPath: '',
+          maskInfo: null,
+          maskAnnotationType: null,
+          maskSource: null,
+          hasUnsavedMaskChanges: false,
+          maskBaselineVolumeId: null,
+          maskBaselineVersion: 0,
+          editMode: false,
+          lesionResults: [],
+          volumeScores: null,
+          agatstonScores: null,
+          editMessage: `Unloaded the mask - it was annotated ${pane.maskAnnotationType === 'contrast' ? 'with' : 'without'} contrast mode, which no longer matches.`,
+        }
+      : {}
+
+    if (checked) {
+      onChange({
+        contrastMode: true,
+        editMode: mismatched ? false : pane.editMode,
+        scoreComputeMode: false,
+        contrastNotice: pane.contrastThreshold
+          ? null
+          : 'Contrast mode is on but no threshold has been derived for this scan yet. Place and finalize a seed before annotating.',
+        ...unload,
+      })
+    } else {
+      // Leaving contrast mode clears the seed/sphere and the computed
+      // threshold — it shouldn't keep driving the render overlay / paint /
+      // region-grow HU fields once contrast mode is off.
+      onChange({
+        contrastMode: false,
+        seedPlacementMode: false,
+        pendingSeed: null,
+        contrastThreshold: null,
+        contrastThresholdLocked: false,
+        contrastMeta: null,
+        volumeScores: null,
+        thresholdValue: DEFAULT_THRESHOLD_HU,
+        thresholdEnabled: false,
+        editThresholdMin: DEFAULT_THRESHOLD_HU,
+        editRegionGrowThreshold: DEFAULT_THRESHOLD_HU,
+        contrastNotice: null,
+        ...unload,
+      })
     }
   }
 
@@ -549,7 +683,20 @@ export default function Pane({
           savedAt: result.savedAt || new Date().toISOString(),
           mismatch: false,
         },
+        contrastNotice: null,
       })
+      // A finalized seed is itself the record that this scan is contrast —
+      // mirror it into the manifest so the next session knows before loading.
+      if (currentRow && pane.manifestConfig.manifestPath && pane.manifestConfig.contrastColumn) {
+        saveManifestContrast(
+          pane.manifestConfig.manifestPath,
+          currentRow.index,
+          pane.manifestConfig.contrastColumn,
+          true,
+        ).catch(() => {
+          /* advisory only — the seed sidecar is the authoritative record */
+        })
+      }
     } catch (e) {
       setContrastError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -566,6 +713,7 @@ export default function Pane({
       seedPlacementMode: true,
       editMode: false,
       scoreComputeMode: false,
+      contrastNotice: 'No threshold is active while re-seeding — finalize a seed before annotating.',
     })
   }
 
@@ -577,6 +725,7 @@ export default function Pane({
       onChange({
         maskPath: '',
         maskInfo: info,
+        maskSource: 'new',
         // Unambiguous: a brand-new mask's annotation type is exactly
         // whatever mode is active right now, no filename guessing needed.
         maskAnnotationType: pane.contrastMode ? 'contrast' : 'non-contrast',
@@ -591,41 +740,62 @@ export default function Pane({
     }
   }
 
-  async function doSaveMask() {
-    if (!pane.maskInfo) return
+  async function doSaveMask(resolution?: 'overwrite' | 'new_copy') {
+    if (!pane.maskInfo || !pane.ctPath) return
     onChange({ editBusy: true, editMessage: null })
     try {
-      // Bake the annotation type into the saved filename (see
-      // volume_store.save_mask's default tags) so re-loading it later can
-      // recognize it via inferMaskAnnotationType instead of guessing.
-      const tag = pane.contrastMode ? (pane.maskInfo.is_new_mask ? 'ContrastAnnotations' : 'ContrastEdits') : undefined
-      const res = await saveMask(pane.maskInfo.volume_id, tag, annotationSaveDir || null)
-      let message = `Saved to ${res.path}`
-      setMaskBaseline({ volumeId: pane.maskInfo.volume_id, version: pane.editVersion })
-      setLastSavedAt(new Date())
+      const res = await saveMask({
+        maskId: pane.maskInfo.volume_id,
+        // Derived from the CT, not from the loaded mask: a path built from
+        // the mask's own name grew another suffix every session and orphaned
+        // the previous save.
+        ctPath: pane.ctPath,
+        seriesUid: pane.ctInfo?.dicom_series_uid ?? null,
+        saveDir: annotationSaveDir || null,
+        annotationType: pane.contrastMode ? 'contrast' : 'non-contrast',
+        patientId: currentRow?.patient_id || null,
+        resolution: resolution || null,
+      })
 
-      // This case had no mask configured in the manifest — record the
-      // newly-saved file as its mask path, both in the manifest on disk and
-      // in this pane's own row list, so navigating away and back (or
-      // reopening the manifest later) picks it up instead of showing "no
-      // mask" again.
-      if (currentRow && !currentRow.mask_path && pane.manifestConfig.manifestPath) {
+      if (res.status === 'conflict') {
+        // Nothing was written. Ask, then call back with the answer.
+        setSaveConflict(res)
+        onChange({ editBusy: false })
+        return
+      }
+
+      let message = `Saved to ${res.path}`
+      onChange({
+        maskBaselineVolumeId: pane.maskInfo.volume_id,
+        maskBaselineVersion: pane.editVersion,
+        hasUnsavedMaskChanges: false,
+        lastSavedAt: new Date().toISOString(),
+      })
+
+      // Record where this case's annotation now lives, in its own column —
+      // ALWAYS, not just when the row had no mask. Skipping it for rows that
+      // already had a mask is what made every previous session's work
+      // invisible on the next visit (and overwritten by the next save).
+      if (currentRow && pane.manifestConfig.manifestPath && pane.manifestConfig.annotationColumn) {
         try {
-          await saveManifestMaskPath(
+          await saveManifestAnnotationPath(
             pane.manifestConfig.manifestPath,
             currentRow.index,
-            pane.manifestConfig.maskColumn,
+            pane.manifestConfig.annotationColumn,
             res.path,
           )
           onChange({
             maskPath: res.path,
+            maskSource: 'annotation',
             manifestRows: pane.manifestRows.map((r) =>
-              r.index === currentRow.index ? { ...r, mask_path: res.path, mask_exists: true } : r,
+              r.index === currentRow.index ? { ...r, annotation_path: res.path, annotation_exists: true } : r,
             ),
           })
         } catch (e) {
-          message += ` (but failed to update the manifest: ${e instanceof Error ? e.message : String(e)})`
+          message += ` (but failed to record it in the manifest: ${e instanceof Error ? e.message : String(e)})`
         }
+      } else {
+        onChange({ maskPath: res.path, maskSource: 'annotation' })
       }
       onChange({ editBusy: false, editMessage: message })
     } catch (e) {
@@ -661,9 +831,11 @@ export default function Pane({
           loadingMessage: null,
           editVersion: nextVersion,
           editMessage: 'Reset to last saved state',
+          maskBaselineVolumeId: info.volume_id,
+          maskBaselineVersion: nextVersion,
+          hasUnsavedMaskChanges: false,
+          lastSavedAt: null,
         })
-        setMaskBaseline({ volumeId: info.volume_id, version: nextVersion })
-        setLastSavedAt(null)
       }
     } catch (e) {
       onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
@@ -679,8 +851,14 @@ export default function Pane({
     onChange({ editActiveLabel: 0 })
   }
 
+  // Guarded on whether anything actually CHANGED, not on whether the
+  // annotation checkbox happens to be ticked. The old `editMode && maskInfo`
+  // test both cried wolf when nothing had changed and — worse — stayed silent
+  // whenever edit mode had been switched off with edits still pending, which
+  // several other controls do on their own (seed placement, re-seed, score
+  // compute mode).
   function requestNavigate(direction: 1 | -1) {
-    if (pane.editMode && pane.maskInfo) {
+    if (hasUnsavedMaskChanges) {
       setNavModalDirection(direction)
     } else {
       onNavigate(direction)
@@ -693,7 +871,7 @@ export default function Pane({
   }
 
   function requestJumpToPosition(targetPos: number) {
-    if (pane.editMode && pane.maskInfo) {
+    if (hasUnsavedMaskChanges) {
       setJumpPos(targetPos)
     } else {
       onJumpTo(targetPos)
@@ -703,6 +881,14 @@ export default function Pane({
   function confirmJump() {
     if (jumpPos !== null) onJumpTo(jumpPos)
     setJumpPos(null)
+  }
+
+  // The case dropdown in the settings panel used to load straight over the
+  // top with no prompt at all, unlike Prev/Next and the jump box.
+  function requestSelectRow(rowIndex: number) {
+    const pos = pane.manifestRows.findIndex((r) => r.index === rowIndex)
+    if (pos < 0) return
+    requestJumpToPosition(pos)
   }
 
   function submitCounterJump() {
@@ -718,12 +904,17 @@ export default function Pane({
     if (targetPos !== currentRowPos) requestJumpToPosition(targetPos)
   }
 
-  async function handleSetStatus(status: AnnotationStatus) {
+  async function handleSetStatus(status: string) {
     if (!currentRow) return
     setStatusSaving(true)
     setStatusError(null)
     try {
-      await saveManifestStatus(pane.manifestConfig.manifestPath, currentRow.index, status)
+      await saveManifestStatus(
+        pane.manifestConfig.manifestPath,
+        currentRow.index,
+        status,
+        pane.manifestConfig.statusColumn,
+      )
       onChange({
         manifestRows: pane.manifestRows.map((r) => (r.index === currentRow.index ? { ...r, status } : r)),
       })
@@ -814,8 +1005,23 @@ export default function Pane({
     return { col: relX * img.naturalWidth, row: relY * img.naturalHeight }
   }
 
+  // Contrast scans have no meaningful fixed threshold, so annotating one
+  // before a seed has been finalized would silently produce labels drawn
+  // against the 130 HU non-contrast value. Refuse instead.
+  function annotationBlockedReason(): string | null {
+    if (pane.contrastMode && pane.contrastThreshold === null) {
+      return 'No contrast threshold yet — place and finalize a seed before annotating this scan.'
+    }
+    return null
+  }
+
   async function doPaint(row: number, col: number, forceRefresh = false) {
     if (!pane.ctInfo || !pane.maskInfo) return
+    const blocked = annotationBlockedReason()
+    if (blocked) {
+      onChange({ editMessage: blocked })
+      return
+    }
     const erasing = paintDrag.current.erasing
     try {
       await paintMask({
@@ -842,13 +1048,22 @@ export default function Pane({
         lastRenderBumpTs.current = now
         onChange({ editVersion: pane.editVersion + 1 })
       }
-    } catch {
-      /* ignore transient paint errors during a drag */
+    } catch (e) {
+      // Previously swallowed entirely. A dead backend, a geometry mismatch,
+      // or a mask that fell out of the server's cache then looked exactly
+      // like a successful brush stroke: the user kept painting and nothing
+      // was being recorded anywhere.
+      onChange({ editMessage: e instanceof Error ? e.message : String(e) })
     }
   }
 
   async function doRegionGrow(row: number, col: number, searchRadiusMm?: number) {
     if (!pane.ctInfo || !pane.maskInfo) return
+    const blocked = annotationBlockedReason()
+    if (blocked) {
+      onChange({ editMessage: blocked })
+      return
+    }
     try {
       const res = await regionGrowMask({
         maskId: pane.maskInfo.volume_id,
@@ -1095,7 +1310,11 @@ export default function Pane({
   ) {
     const targetClass = targetClassForLabel(label)
     const volumeId = pane.maskInfo!.volume_id
-    const cacheKey = `${volumeId}:${targetClass}`
+    // editVersion is part of the key: the cached total is a property of the
+    // mask's CONTENTS, and the volume id alone survives every edit and every
+    // reset, so a stale total was being subtracted from long after the mask
+    // it was computed from had changed.
+    const cacheKey = `${volumeId}:${pane.editVersion}:${targetClass}`
     const cached = getCachedCac(cacheKey)
     if (cached) {
       applyScoreResult(label, voxelCount, agatstonScore, targetClass, cached.total, cached.source, plane, index, row, col)
@@ -1276,7 +1495,7 @@ export default function Pane({
         ctId: pane.ctInfo.volume_id,
         labels,
       })
-      const cacheKey = `${pane.maskInfo.volume_id}:${scoreConfirmPending.targetClass}`
+      const cacheKey = `${pane.maskInfo.volume_id}:${pane.editVersion}:${scoreConfirmPending.targetClass}`
       setCachedCac(cacheKey, res.totalScore, 'computed')
       applyScoreResult(
         scoreConfirmPending.label,
@@ -2009,6 +2228,24 @@ export default function Pane({
               {pane.loadingMessage || 'Loading...'}
             </span>
           )}
+          {/* Which file the visible mask came from. Without this there was no
+              way to tell your own saved annotation from the original
+              prediction, which matters because saving overwrites one of them. */}
+          {pane.maskInfo && pane.maskSource && (
+            <span
+              className={`mask-source-tag mask-source-${pane.maskSource}`}
+              title={pane.maskPath || 'Created in this session'}
+            >
+              {pane.maskSource === 'annotation'
+                ? `Your annotation${pane.lastSavedAt ? ` (saved ${formatShortDate(new Date(pane.lastSavedAt))})` : ''}`
+                : pane.maskSource === 'prediction'
+                  ? 'Original prediction'
+                  : pane.maskSource === 'new'
+                    ? 'New, unsaved'
+                    : 'Manually loaded'}
+              {hasUnsavedMaskChanges ? ' • unsaved edits' : ''}
+            </span>
+          )}
           {pane.ctInfo &&
             (pane.zoom !== 1 ||
               pane.panX !== 0 ||
@@ -2029,6 +2266,24 @@ export default function Pane({
       </div>
 
       {pane.error && <div className="pane-error">{pane.error}</div>}
+      {pane.contrastNotice && (
+        <div className="pane-warning pane-warning-contrast">
+          {pane.contrastNotice}
+          <button className="pane-warning-dismiss" onClick={() => onChange({ contrastNotice: null })} title="Dismiss">
+            x
+          </button>
+        </div>
+      )}
+
+      {renderError && (
+        <div className="pane-warning">
+          {renderError}
+          <button className="pane-warning-dismiss" onClick={() => setRenderError(null)} title="Dismiss">
+            x
+          </button>
+        </div>
+      )}
+
       {pane.maskWarning && (
         <div className="pane-error pane-warning">
           {pane.maskWarning}
@@ -2068,7 +2323,14 @@ export default function Pane({
               draggable={false}
               className="slice-image"
               style={{ transform: `translate(${pane.panX}px, ${pane.panY}px) scale(${pane.zoom})` }}
+              onError={() =>
+                // Without this a failed render (e.g. the backend restarted,
+                // or the volume fell out of its cache) just showed an empty
+                // viewport with no explanation at all.
+                setRenderError('Could not render this slice. The scan may need reloading (the backend may have restarted).')
+              }
               onLoad={() => {
+                if (renderError) setRenderError(null)
                 if (pendingJumpMarkerRef.current) {
                   const { row, col } = pendingJumpMarkerRef.current
                   pendingJumpMarkerRef.current = null
@@ -2273,8 +2535,9 @@ export default function Pane({
                 pane={pane}
                 onChange={onChange}
                 onCreateMask={doCreateMask}
-                onSave={doSaveMask}
+                onSave={() => doSaveMask()}
                 onDragHandleDown={handleEditBoxDragStart}
+                onToggleContrast={requestContrastToggle}
                 thresholdLocked={pane.contrastMode && pane.contrastThresholdLocked}
                 seedRadiusMm={seedRadiusMm}
               />
@@ -2337,7 +2600,9 @@ export default function Pane({
               onLoadCt={doLoadCt}
               onLoadMask={doLoadMask}
               annotationSaveDir={annotationSaveDir}
-              onAnnotationSaveDirChange={setAnnotationSaveDir}
+              onAnnotationSaveDirChange={onAnnotationSaveDirChange}
+              onRequestSelectRow={requestSelectRow}
+              hasUnsavedMaskChanges={hasUnsavedMaskChanges}
             />
 
             <div className="settings-section">
@@ -2404,7 +2669,7 @@ export default function Pane({
 
             <button
               className="nav-modal-save-btn"
-              onClick={doSaveMask}
+              onClick={() => doSaveMask()}
               disabled={pane.editBusy || !hasUnsavedMaskChanges}
               title={hasUnsavedMaskChanges ? 'Save the current annotation' : 'No changes since last save'}
             >
@@ -2419,10 +2684,10 @@ export default function Pane({
 
             {pane.manifestRows.length > 0 && (
               <div className="nav-modal-status-row">
-                {STATUS_OPTIONS.map((s) => (
+                {statusOptions.map((s) => (
                   <button
                     key={s}
-                    className={(currentRow?.status || 'Not Started') === s ? 'active' : ''}
+                    className={currentRow?.status === s ? 'active' : ''}
                     onClick={() => handleSetStatus(s)}
                     disabled={statusSaving}
                   >
@@ -2480,6 +2745,105 @@ export default function Pane({
             <div className="comment-modal-buttons">
               <button className="add-label-btn" onClick={() => setLesionNotFound(false)}>
                 OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {saveConflict && (
+        <div className="comment-modal-backdrop" onClick={() => setSaveConflict(null)}>
+          <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="comment-modal-title">
+              {saveConflict.conflict === 'collision'
+                ? 'That name is already taken by a different scan'
+                : saveConflict.conflict === 'overwrite'
+                  ? 'An annotation for this scan already exists'
+                  : 'You already saved this scan'}
+            </div>
+            <div className="nav-modal-body">
+              {saveConflict.conflict === 'collision' ? (
+                <>
+                  <p>
+                    <code>{saveConflict.folder_name}</code> already holds an annotation for a <strong>different</strong>{' '}
+                    scan
+                    {saveConflict.existing_source?.patient_id
+                      ? ` (patient ${saveConflict.existing_source.patient_id})`
+                      : ''}
+                    :
+                  </p>
+                  <p>
+                    <code>{saveConflict.existing_source?.ct_path || saveConflict.existing_dir}</code>
+                  </p>
+                  <p>Overwriting would destroy that annotation. Saving alongside it is almost always what you want.</p>
+                </>
+              ) : saveConflict.conflict === 'overwrite' ? (
+                <>
+                  <p>
+                    This scan already has an annotation saved today
+                    {saveConflict.existing_source?.updated_at ? ` at ${saveConflict.existing_source.updated_at}` : ''}.
+                  </p>
+                  <p>
+                    <code>{saveConflict.annotation_path}</code>
+                  </p>
+                  <p>Saving replaces it with what is on screen now.</p>
+                </>
+              ) : (
+                <>
+                  <p>
+                    You saved an annotation for this scan on an earlier date
+                    {saveConflict.existing_source?.updated_at ? ` (${saveConflict.existing_source.updated_at})` : ''}:
+                  </p>
+                  <p>
+                    <code>{saveConflict.existing_dir}</code>
+                  </p>
+                  <p>Saving now creates today's copy. The earlier one is kept.</p>
+                </>
+              )}
+            </div>
+            <div className="comment-modal-buttons">
+              <button onClick={() => setSaveConflict(null)}>Cancel</button>
+              {saveConflict.conflict === 'collision' && (
+                <button
+                  className="add-label-btn"
+                  onClick={() => {
+                    setSaveConflict(null)
+                    doSaveMask('new_copy')
+                  }}
+                >
+                  Save as {saveConflict.alternative_folder}
+                </button>
+              )}
+              <button
+                className={saveConflict.conflict === 'collision' ? 'danger-btn' : 'add-label-btn'}
+                onClick={() => {
+                  setSaveConflict(null)
+                  doSaveMask('overwrite')
+                }}
+              >
+                {saveConflict.conflict === 'collision'
+                  ? 'Overwrite the other scan'
+                  : saveConflict.conflict === 'overwrite'
+                    ? 'Overwrite'
+                    : "Save today's copy"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {contrastUnloadPending !== null && (
+        <div className="comment-modal-backdrop" onClick={() => setContrastUnloadPending(null)}>
+          <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="comment-modal-title">Unsaved annotation changes</div>
+            <div className="nav-modal-body">
+              Switching contrast mode will unload this mask, because it was annotated under the other threshold basis.
+              It has unsaved changes that would be lost.
+            </div>
+            <div className="comment-modal-buttons">
+              <button onClick={() => setContrastUnloadPending(null)}>Go back and save</button>
+              <button className="danger-btn" onClick={() => applyContrastToggle(contrastUnloadPending)}>
+                Discard and switch
               </button>
             </div>
           </div>

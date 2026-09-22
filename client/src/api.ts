@@ -1,4 +1,12 @@
-import type { DicomSeriesInfo, LabelColor, ManifestPairsResult, OverwriteMode, Plane, VolumeInfo } from './types'
+import type {
+  AnnotationLookup,
+  DicomSeriesInfo,
+  LabelColor,
+  ManifestPairsResult,
+  OverwriteMode,
+  Plane,
+  VolumeInfo,
+} from './types'
 
 async function handleJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -132,6 +140,9 @@ export async function getManifestPairs(params: {
   patientIdColumn?: string
   reasonColumn: string
   includeDefaultReasonTags: boolean
+  statusColumn: string
+  annotationColumn: string
+  contrastColumn: string
 }): Promise<ManifestPairsResult> {
   const res = await fetch('/api/manifest_pairs', {
     method: 'POST',
@@ -144,12 +155,27 @@ export async function getManifestPairs(params: {
       patient_id_column: params.patientIdColumn || null,
       reason_column: params.reasonColumn,
       include_default_reason_tags: params.includeDefaultReasonTags,
+      status_column: params.statusColumn || null,
+      annotation_column: params.annotationColumn || null,
+      contrast_column: params.contrastColumn || null,
     }),
   })
-  const data = await handleJson<{ rows: ManifestPairsResult['rows']; reason_options: string[]; score_classes: ManifestPairsResult['scoreClasses'] }>(
-    res,
-  )
-  return { rows: data.rows, reasonOptions: data.reason_options, scoreClasses: data.score_classes }
+  const data = await handleJson<{
+    rows: ManifestPairsResult['rows']
+    reason_options: string[]
+    status_options: string[]
+    score_classes: ManifestPairsResult['scoreClasses']
+    has_annotation_column: boolean
+    has_contrast_column: boolean
+  }>(res)
+  return {
+    rows: data.rows,
+    reasonOptions: data.reason_options,
+    statusOptions: data.status_options,
+    scoreClasses: data.score_classes,
+    hasAnnotationColumn: data.has_annotation_column,
+    hasContrastColumn: data.has_contrast_column,
+  }
 }
 
 export async function saveManifestComment(manifestPath: string, rowIndex: number, comment: string): Promise<void> {
@@ -161,11 +187,59 @@ export async function saveManifestComment(manifestPath: string, rowIndex: number
   await handleJson(res)
 }
 
-export async function saveManifestStatus(manifestPath: string, rowIndex: number, status: string): Promise<void> {
+export async function saveManifestStatus(
+  manifestPath: string,
+  rowIndex: number,
+  status: string,
+  statusColumn: string,
+): Promise<void> {
   const res = await fetch('/api/manifest/status', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ manifest_path: manifestPath, row_index: rowIndex, status }),
+    body: JSON.stringify({
+      manifest_path: manifestPath,
+      row_index: rowIndex,
+      status,
+      status_column: statusColumn || null,
+    }),
+  })
+  await handleJson(res)
+}
+
+export async function saveManifestAnnotationPath(
+  manifestPath: string,
+  rowIndex: number,
+  annotationColumn: string,
+  annotationPath: string,
+): Promise<void> {
+  const res = await fetch('/api/manifest/annotation_path', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      manifest_path: manifestPath,
+      row_index: rowIndex,
+      annotation_column: annotationColumn,
+      annotation_path: annotationPath,
+    }),
+  })
+  await handleJson(res)
+}
+
+export async function saveManifestContrast(
+  manifestPath: string,
+  rowIndex: number,
+  contrastColumn: string,
+  isContrast: boolean,
+): Promise<void> {
+  const res = await fetch('/api/manifest/contrast', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      manifest_path: manifestPath,
+      row_index: rowIndex,
+      contrast_column: contrastColumn,
+      is_contrast: isContrast,
+    }),
   })
   await handleJson(res)
 }
@@ -490,11 +564,86 @@ export async function refreshMaskLabels(maskId: string): Promise<{ labels: numbe
   return handleJson(res)
 }
 
-export async function saveMask(maskId: string, tag?: string, saveDir?: string | null): Promise<{ path: string }> {
+// A save either writes, or comes back reporting what is already at the
+// destination so the user can decide. `resolution` is that decision on the
+// retry: 'overwrite' replaces what is there, 'new_copy' saves alongside it
+// under a suffixed folder name.
+export interface SaveMaskConflict {
+  status: 'conflict'
+  conflict: 'overwrite' | 'earlier' | 'collision'
+  scan_dir: string
+  annotation_path: string
+  folder_name: string
+  existing_dir: string | null
+  alternative_folder: string | null
+  existing_source: {
+    ct_path?: string
+    patient_id?: string
+    updated_at?: string
+    annotation_type?: string
+    save_count?: number
+  } | null
+}
+
+export interface SaveMaskSuccess {
+  status: 'saved'
+  path: string
+  scan_dir: string
+  folder_name: string
+}
+
+export async function saveMask(params: {
+  maskId: string
+  ctPath: string
+  seriesUid?: string | null
+  saveDir?: string | null
+  annotationType?: 'contrast' | 'non-contrast' | null
+  patientId?: string | null
+  resolution?: 'overwrite' | 'new_copy' | null
+}): Promise<SaveMaskSuccess | SaveMaskConflict> {
   const res = await fetch('/api/mask/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mask_id: maskId, tag: tag || null, save_dir: saveDir || null }),
+    body: JSON.stringify({
+      mask_id: params.maskId,
+      ct_path: params.ctPath,
+      series_uid: params.seriesUid || null,
+      save_dir: params.saveDir || null,
+      annotation_type: params.annotationType || null,
+      patient_id: params.patientId || null,
+      resolution: params.resolution || null,
+    }),
   })
-  return handleJson(res)
+  return handleJson<SaveMaskSuccess | SaveMaskConflict>(res)
+}
+
+// What previous sessions already recorded about this scan. Called on every
+// CT load, whether or not contrast mode is on, so the app can tell the user
+// "this is a contrast scan" instead of waiting to be told.
+export async function lookupAnnotation(
+  ctPath: string,
+  seriesUid?: string | null,
+  saveDir?: string | null,
+): Promise<AnnotationLookup> {
+  const q = new URLSearchParams({ ct_path: ctPath })
+  if (seriesUid) q.set('series_uid', seriesUid)
+  if (saveDir) q.set('save_dir', saveDir)
+  const res = await fetch(`/api/annotations/lookup?${q.toString()}`)
+  const data = await handleJson<{
+    found: boolean
+    scan_dir: string | null
+    annotation_path: string | null
+    has_seed: boolean
+    source_record: { annotation_type?: string; updated_at?: string; ct_path?: string } | null
+  }>(res)
+  const type = data.source_record?.annotation_type
+  return {
+    found: data.found,
+    scanDir: data.scan_dir,
+    annotationPath: data.annotation_path,
+    hasSeed: data.has_seed,
+    annotationType: type === 'contrast' || type === 'non-contrast' ? type : null,
+    savedAt: data.source_record?.updated_at || null,
+    savedForCtPath: data.source_record?.ct_path || null,
+  }
 }

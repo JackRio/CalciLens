@@ -3,6 +3,43 @@ import { DEFAULT_MANIFEST_CONFIG } from '../types'
 import { getManifestColumns, getManifestPairs } from '../api'
 import { IMAGE_FILE_FILTERS, isElectron, pickPath } from '../electronApi'
 
+// The optional column pickers all look identical: a select over the
+// manifest's real columns with an explicit "none" option, falling back to a
+// free-text box before a manifest has been read.
+function ColumnPicker({
+  label,
+  title,
+  value,
+  placeholder,
+  columns,
+  onChange,
+}: {
+  label: string
+  title: string
+  value: string
+  placeholder: string
+  columns: string[]
+  onChange: (next: string) => void
+}) {
+  return (
+    <label title={title}>
+      {label}
+      {columns.length > 0 ? (
+        <select value={value} onChange={(e) => onChange(e.target.value)}>
+          <option value="">-- none --</option>
+          {columns.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input type="text" placeholder={placeholder} value={value} onChange={(e) => onChange(e.target.value)} />
+      )}
+    </label>
+  )
+}
+
 const MANIFEST_FILTERS = [
   { name: 'CSV / Excel', extensions: ['csv', 'xlsx', 'xls', 'xlsm'] },
   { name: 'All files', extensions: ['*'] },
@@ -15,6 +52,8 @@ export default function CaseLoader({
   onLoadMask,
   annotationSaveDir,
   onAnnotationSaveDirChange,
+  onRequestSelectRow,
+  hasUnsavedMaskChanges,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -22,6 +61,11 @@ export default function CaseLoader({
   onLoadMask: (path: string) => Promise<void>
   annotationSaveDir: string
   onAnnotationSaveDirChange: (next: string) => void
+  // Routed through Pane so picking a case from this dropdown gets the same
+  // unsaved-work prompt Prev/Next gets. It used to load straight over the
+  // top with no prompt at all.
+  onRequestSelectRow: (rowIndex: number) => void
+  hasUnsavedMaskChanges: boolean
 }) {
   const electronAvailable = isElectron()
 
@@ -90,6 +134,12 @@ export default function CaseLoader({
           maskColumn: resolve(baseConfig.maskColumn, ['mask', 'seg'], true),
           patientIdColumn: resolve(baseConfig.patientIdColumn, ['patient'], true),
           reasonColumn: resolve(baseConfig.reasonColumn, ['reason'], true),
+          statusColumn: resolve(baseConfig.statusColumn, ['status'], true),
+          // optional=false: keep the default name when the manifest has no
+          // such column yet, so the backend creates it. Resolving to "none"
+          // would leave saved annotations with nowhere to be recorded.
+          annotationColumn: resolve(baseConfig.annotationColumn, ['annotation'], false),
+          contrastColumn: resolve(baseConfig.contrastColumn, ['contrast'], false),
         },
       })
     } catch {
@@ -140,15 +190,26 @@ export default function CaseLoader({
       loadingMessage: 'Loading manifest...',
     })
     try {
-      const { rows, reasonOptions, scoreClasses } = await getManifestPairs({
-        manifestPath: cfg.manifestPath,
-        imageColumn: cfg.imageColumn,
-        maskColumn: cfg.maskColumn,
-        patientIdColumn: cfg.patientIdColumn,
-        reasonColumn: cfg.reasonColumn,
-        includeDefaultReasonTags: cfg.includeDefaultReasonTags,
+      const { rows, reasonOptions, statusOptions, scoreClasses, hasAnnotationColumn, hasContrastColumn } =
+        await getManifestPairs({
+          manifestPath: cfg.manifestPath,
+          imageColumn: cfg.imageColumn,
+          maskColumn: cfg.maskColumn,
+          patientIdColumn: cfg.patientIdColumn,
+          reasonColumn: cfg.reasonColumn,
+          includeDefaultReasonTags: cfg.includeDefaultReasonTags,
+          statusColumn: cfg.statusColumn,
+          annotationColumn: cfg.annotationColumn,
+          contrastColumn: cfg.contrastColumn,
+        })
+      onChange({
+        manifestRows: rows,
+        reasonOptions,
+        statusOptions,
+        scoreClasses,
+        hasAnnotationColumn,
+        hasContrastColumn,
       })
-      onChange({ manifestRows: rows, reasonOptions, scoreClasses })
       if (rows.length === 0) {
         onChange({ loading: false, loadingMessage: null, manifestError: 'Manifest loaded but no valid rows found (check the image column has paths).' })
       } else {
@@ -162,8 +223,7 @@ export default function CaseLoader({
 
   function handleSelectRow(indexStr: string) {
     const idx = Number(indexStr)
-    const row = pane.manifestRows.find((r) => r.index === idx)
-    if (row) selectRow(row)
+    if (pane.manifestRows.some((r) => r.index === idx)) onRequestSelectRow(idx)
   }
 
   // Loading a single scan/mask should leave the manifest behind entirely (no
@@ -173,11 +233,17 @@ export default function CaseLoader({
   // loadRowIntoPane) also calls those and must NOT clear the manifest it's
   // actively iterating.
   async function handleLoadCtSingle() {
+    if (hasUnsavedMaskChanges && !window.confirm('This pane has unsaved annotation changes. Loading a different scan will discard them. Continue?')) {
+      return
+    }
     onChange({ manifestRows: [], activeRowIndex: null, reasonOptions: [], scoreClasses: [], manifestError: null })
     await onLoadCt(pane.ctPath)
   }
 
   async function handleLoadMaskSingle() {
+    if (hasUnsavedMaskChanges && !window.confirm('This pane has unsaved annotation changes. Loading a different mask will discard them. Continue?')) {
+      return
+    }
     onChange({ manifestRows: [], activeRowIndex: null, reasonOptions: [], scoreClasses: [], manifestError: null })
     await onLoadMask(pane.maskPath)
   }
@@ -367,6 +433,34 @@ export default function CaseLoader({
                 />
               )}
             </label>
+            {/* Status is configurable for the same reason Reason is: it used
+                to be a hardcoded name whose contents the app overwrote on
+                load, wiping any pre-existing Status column a lab already
+                used for something of their own. */}
+            <ColumnPicker
+              label="Status column"
+              title="Column holding each case's annotation status. Existing values are kept and offered alongside the built-in ones."
+              value={cfg.statusColumn}
+              placeholder="e.g. Status"
+              columns={availableColumns}
+              onChange={(v) => updateConfig({ statusColumn: v })}
+            />
+            <ColumnPicker
+              label="Annotation column"
+              title="Where this app records the path of each saved annotation. Kept separate from the mask column so the original prediction's path is never lost."
+              value={cfg.annotationColumn}
+              placeholder="e.g. annotation_path"
+              columns={availableColumns}
+              onChange={(v) => updateConfig({ annotationColumn: v })}
+            />
+            <ColumnPicker
+              label="Contrast column"
+              title="Records whether a case is a contrast-enhanced scan, so the app knows before anyone starts annotating instead of relying on the Contrast checkbox being remembered."
+              value={cfg.contrastColumn}
+              placeholder="e.g. Contrast"
+              columns={availableColumns}
+              onChange={(v) => updateConfig({ contrastColumn: v })}
+            />
           </div>
 
           {cfg.imageColumn && cfg.maskColumn && cfg.imageColumn === cfg.maskColumn && (

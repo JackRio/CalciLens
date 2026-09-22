@@ -5,22 +5,20 @@ volume_store.DEFAULT_THRESHOLD_HU). Contrast CT has no such fixed threshold — 
 user places a seed point in the ascending aorta (near the left ostium), we sample a
 small sphere VOI around it, and derive a scan-specific threshold from that sample's
 HU statistics: threshold = mean + k * stddev. The seed/threshold is saved to a JSON
-sidecar next to the CT file so a later session can reload and re-verify it instead of
-re-placing the seed.
+sidecar inside the scan's own annotation folder (see annotation_paths) so a later
+session can reload and re-verify it instead of re-placing the seed.
 """
 from __future__ import annotations
 
-import glob
 import json
 import os
-import threading
-import uuid
 from typing import Optional
 
 import numpy as np
 
+import annotation_paths
 from volume_store import LoadedVolume, _seed_index_3d
-from pathutil import clean_path, dated_annotation_dir
+from pathutil import clean_path
 
 DEFAULT_TARGET_VOLUME_MM3 = 200.0
 DEFAULT_K_MULTIPLIER = 3.0
@@ -140,72 +138,53 @@ def compute_volume_total_mm3(mask_vol: LoadedVolume, ct_vol: LoadedVolume, label
     return float(np.count_nonzero(labeled)) * voxel_volume
 
 
-def _sidecar_filename(ct_path: str, series_uid: Optional[str] = None) -> tuple[str, str]:
-    """Return (default_dir, filename) — default_dir is next to the CT file,
-    used as-is when no save directory is configured, and as the fallback
-    lookup location even when one is."""
-    dirn = os.path.dirname(ct_path)
-    base = os.path.basename(ct_path)
-    if ct_path and os.path.isdir(ct_path):
-        # A DICOM series directory's name is a dotted UID (e.g.
-        # "1.2.840.113654...") — not a file extension, so it must not be run
-        # through splitext (same gotcha as volume_store._insert_tag).
-        # Prefer the real SeriesInstanceUID over the folder's basename when
-        # known — a folder can hold multiple series, and the basename alone
-        # can't disambiguate their sidecars (same overwrite risk as
-        # volume_store._insert_tag).
-        stem = series_uid or base
-    elif base.lower().endswith(".nii.gz"):
-        stem = base[:-7]
-    else:
-        stem = os.path.splitext(base)[0]
-    return dirn, f"{stem}_contrast_seed.json"
+def save_sidecar(
+    ct_path: str,
+    record: dict,
+    base_dir: Optional[str] = None,
+    series_uid: Optional[str] = None,
+    patient_id: Optional[str] = None,
+) -> str:
+    """Write the seed/threshold record into this scan's own annotation folder
+    (see annotation_paths), atomically.
 
-
-def save_sidecar(ct_path: str, record: dict, base_dir: Optional[str] = None, series_uid: Optional[str] = None) -> str:
-    """Write the seed/threshold record next to the CT file (or, if `base_dir`
-    is set, into `<base_dir>/Manual_Annotations_<date>/` instead), atomically
-    (temp file + os.replace, matching folder_scan._write_table's
-    convention)."""
+    It lives beside the annotation rather than next to the CT because the
+    filename it used to get was derived from the image's basename — so two
+    different patients whose CTs are both called `image.nii.gz` shared one
+    sidecar, and the second scan silently loaded the first one's seed. The
+    per-scan folder plus its `_source.json` makes the lookup exact instead of
+    a name match.
+    """
     ct_path = clean_path(ct_path)
-    dirn, filename = _sidecar_filename(ct_path, series_uid)
-    if base_dir:
-        dirn = dated_annotation_dir(base_dir)
-    path = os.path.join(dirn, filename)
-    tmp_path = os.path.join(dirn, f".tmp_{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}_{filename}")
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(record, f, indent=2)
-        os.replace(tmp_path, path)
-    finally:
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+    target = annotation_paths.resolve_target(ct_path, series_uid, base_dir, resolution="overwrite")
+    scan_dir = target["scan_dir"]
+    # Stamp provenance so a later annotation save can recognize this folder
+    # as belonging to this scan (and not mistake it for someone else's).
+    # bump_count=False: placing a seed is not an annotation save.
+    annotation_paths.write_source_record(
+        scan_dir,
+        ct_path=ct_path,
+        series_uid=series_uid,
+        patient_id=patient_id,
+        annotation_type="contrast",
+        bump_count=False,
+    )
+    path = os.path.join(scan_dir, annotation_paths.SEED_SIDECAR_NAME)
+    annotation_paths.atomic_write_json(path, record)
     return path
 
 
-def load_sidecar(ct_path: str, base_dir: Optional[str] = None, series_uid: Optional[str] = None) -> Optional[dict]:
-    ct_path = clean_path(ct_path)
-    dirn, filename = _sidecar_filename(ct_path, series_uid)
-    if base_dir:
-        # Saves are dated per-day, so a sidecar saved on an earlier day lives
-        # in a different Manual_Annotations_<date> folder than today's —
-        # search all of them under base_dir (most recently modified first)
-        # rather than assuming it's in today's.
-        matches = sorted(
-            glob.glob(os.path.join(base_dir, "Manual_Annotations_*", filename)),
-            key=os.path.getmtime,
-            reverse=True,
-        )
-        if matches:
-            with open(matches[0], "r", encoding="utf-8") as f:
-                return json.load(f)
-    # Fall back to next to the image — covers both "no save directory
-    # configured" and "one is configured now, but this sidecar predates it".
-    path = os.path.join(dirn, filename)
-    if not os.path.isfile(path):
+def load_sidecar(
+    ct_path: str, base_dir: Optional[str] = None, series_uid: Optional[str] = None
+) -> Optional[dict]:
+    """Read this scan's saved seed, if there is one. Also finds sidecars
+    written by earlier builds (next to the image, or loose in a dated
+    folder), so upgrading doesn't strand existing seeds."""
+    found = annotation_paths.find_seed_sidecar(clean_path(ct_path), series_uid, base_dir)
+    if not found:
         return None
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(found, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None

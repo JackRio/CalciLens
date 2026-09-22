@@ -13,6 +13,7 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import annotation_paths
 from pathutil import clean_path
 from volume_store import (
     store,
@@ -22,6 +23,7 @@ from volume_store import (
     region_grow_mask,
     recompute_labels,
     save_mask,
+    assert_same_geometry,
     _find_all_dicom_series,
     _series_description,
     DEFAULT_LABEL_COLORS,
@@ -340,6 +342,10 @@ def mask_lesion_score(req: LesionScoreRequest):
         ct_vol = store.get(req.ct_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="volume not loaded")
+    try:
+        assert_same_geometry(mask_vol, ct_vol)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     result = find_lesion_component(
         mask_vol, ct_vol, req.plane, req.index, req.row, req.col, req.hu_threshold, search_radius_mm=req.search_radius_mm
     )
@@ -370,6 +376,10 @@ def volumes_agatston_total(req: VolumeAgatstonRequest):
         ct_vol = store.get(req.ct_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="volume not loaded")
+    try:
+        assert_same_geometry(mask_vol, ct_vol)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     total = compute_volume_agatston(mask_vol, ct_vol, tuple(req.labels), req.hu_threshold)
     return {"total_score": total}
 
@@ -395,6 +405,10 @@ def mask_lesion_volume(req: LesionVolumeRequest):
         ct_vol = store.get(req.ct_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="volume not loaded")
+    try:
+        assert_same_geometry(mask_vol, ct_vol)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     result = find_lesion_component(
         mask_vol, ct_vol, req.plane, req.index, req.row, req.col, req.hu_threshold, search_radius_mm=req.search_radius_mm
     )
@@ -424,6 +438,10 @@ def volumes_volume_total(req: VolumeTotalRequest):
         ct_vol = store.get(req.ct_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="volume not loaded")
+    try:
+        assert_same_geometry(mask_vol, ct_vol)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     total_volume_mm3 = compute_volume_total_mm3(mask_vol, ct_vol, tuple(req.labels), req.hu_threshold)
     return {"total_volume_mm3": total_volume_mm3}
 
@@ -469,7 +487,13 @@ def contrast_compute_threshold(req: ContrastThresholdRequest):
             "patient_id": req.patient_id,
             "saved_at": datetime.datetime.now().isoformat(),
         }
-        save_sidecar(req.ct_path, record, base_dir=req.save_dir, series_uid=ct_vol.dicom_series_uid)
+        save_sidecar(
+            req.ct_path,
+            record,
+            base_dir=req.save_dir,
+            series_uid=ct_vol.dicom_series_uid,
+            patient_id=req.patient_id,
+        )
 
     return stats
 
@@ -484,8 +508,16 @@ def contrast_load_threshold(ct_path: str, save_dir: Optional[str] = None, series
 
 class SaveMaskRequest(BaseModel):
     mask_id: str
-    tag: Optional[str] = None
+    # The CT the annotation belongs to. The save path is derived from this,
+    # never from the loaded mask's own filename — see volume_store.save_mask.
+    ct_path: str
+    series_uid: Optional[str] = None
     save_dir: Optional[str] = None
+    annotation_type: Optional[str] = None  # "contrast" | "non-contrast"
+    patient_id: Optional[str] = None
+    # The user's answer to a conflict reported by a previous call:
+    # "overwrite" or "new_copy". None means "tell me if there's a conflict".
+    resolution: Optional[str] = None
 
 
 @app.post("/api/mask/save")
@@ -494,11 +526,56 @@ def mask_save(req: SaveMaskRequest):
         mask_vol = store.get(req.mask_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="mask volume not loaded")
+    if not req.ct_path:
+        raise HTTPException(status_code=400, detail="ct_path is required to save an annotation")
     try:
-        out_path = save_mask(mask_vol, tag=req.tag, base_dir=req.save_dir)
+        result = save_mask(
+            mask_vol,
+            ct_path=req.ct_path,
+            series_uid=req.series_uid,
+            base_dir=req.save_dir,
+            annotation_type=req.annotation_type,
+            patient_id=req.patient_id,
+            resolution=req.resolution,
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"save failed: {e}")
-    return {"path": out_path}
+    # A conflict comes back as a normal 200 with status="conflict" and
+    # nothing written — the client asks the user and calls again with a
+    # resolution. It is not an error, so it must not be an HTTP error.
+    return result
+
+
+@app.get("/api/annotations/lookup")
+def annotations_lookup(ct_path: str, series_uid: Optional[str] = None, save_dir: Optional[str] = None):
+    """What this app already knows about a scan, before anything is loaded:
+    whether an annotation was saved for it, when, and whether it was
+    annotated as contrast.
+
+    This is what makes "is this a contrast scan?" answerable from the data
+    rather than from whether the user remembered to tick a checkbox."""
+    ct_path = clean_path(ct_path)
+    root = annotation_paths.annotation_root(ct_path, save_dir)
+    folder_name = annotation_paths.scan_folder_name(ct_path, series_uid)
+    for scan_dir in annotation_paths.find_existing_scan_dirs(root, folder_name):
+        record = annotation_paths.read_source_record(scan_dir)
+        if not annotation_paths._same_scan(record, ct_path, series_uid):
+            continue
+        annotation_path = os.path.join(scan_dir, annotation_paths.ANNOTATION_FILENAME)
+        return {
+            "found": True,
+            "scan_dir": scan_dir,
+            "annotation_path": annotation_path if os.path.isfile(annotation_path) else None,
+            "has_seed": os.path.isfile(os.path.join(scan_dir, annotation_paths.SEED_SIDECAR_NAME)),
+            "source_record": record,
+        }
+    return {
+        "found": False,
+        "scan_dir": None,
+        "annotation_path": None,
+        "has_seed": load_sidecar(ct_path, base_dir=save_dir, series_uid=series_uid) is not None,
+        "source_record": None,
+    }
 
 
 # ---- CSV / Excel manifest driven batch loading ----
@@ -526,6 +603,9 @@ class ManifestPairsRequest(BaseModel):
     patient_id_column: Optional[str] = None
     reason_column: Optional[str] = folder_scan.DEFAULT_REASON_COLUMN
     include_default_reason_tags: bool = True
+    status_column: Optional[str] = folder_scan.DEFAULT_STATUS_COLUMN
+    annotation_column: Optional[str] = folder_scan.DEFAULT_ANNOTATION_COLUMN
+    contrast_column: Optional[str] = folder_scan.DEFAULT_CONTRAST_COLUMN
 
 
 @app.post("/api/manifest_pairs")
@@ -539,6 +619,9 @@ def manifest_pairs(req: ManifestPairsRequest):
             patient_id_column=req.patient_id_column,
             reason_column=req.reason_column,
             include_default_reason_tags=req.include_default_reason_tags,
+            status_column=req.status_column,
+            annotation_column=req.annotation_column,
+            contrast_column=req.contrast_column,
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")
@@ -570,12 +653,13 @@ class ManifestStatusRequest(BaseModel):
     manifest_path: str
     row_index: int
     status: str
+    status_column: Optional[str] = folder_scan.DEFAULT_STATUS_COLUMN
 
 
 @app.post("/api/manifest/status")
 def manifest_status(req: ManifestStatusRequest):
     try:
-        folder_scan.save_status(req.manifest_path, req.row_index, req.status)
+        folder_scan.save_status(req.manifest_path, req.row_index, req.status, req.status_column)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")
     except ValueError as e:
@@ -620,6 +704,50 @@ def manifest_mask_path(req: ManifestMaskPathRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to update manifest mask path: {e}")
+    return {"ok": True}
+
+
+class ManifestAnnotationPathRequest(BaseModel):
+    manifest_path: str
+    row_index: int
+    annotation_column: str
+    annotation_path: str
+
+
+@app.post("/api/manifest/annotation_path")
+def manifest_annotation_path(req: ManifestAnnotationPathRequest):
+    try:
+        folder_scan.save_annotation_path(
+            req.manifest_path, req.row_index, req.annotation_column, req.annotation_path
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to record the annotation path: {e}")
+    return {"ok": True}
+
+
+class ManifestContrastRequest(BaseModel):
+    manifest_path: str
+    row_index: int
+    contrast_column: str
+    is_contrast: bool
+
+
+@app.post("/api/manifest/contrast")
+def manifest_contrast(req: ManifestContrastRequest):
+    try:
+        folder_scan.save_contrast_flag(
+            req.manifest_path, req.row_index, req.contrast_column, req.is_contrast
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to record the contrast flag: {e}")
     return {"ok": True}
 
 

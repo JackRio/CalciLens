@@ -1,5 +1,4 @@
 import type { EditTool, OverwriteMode, PaneState } from '../types'
-import { DEFAULT_THRESHOLD_HU } from '../types'
 import LabelSelect from './LabelSelect'
 
 export default function MaskEditor({
@@ -8,6 +7,7 @@ export default function MaskEditor({
   onCreateMask,
   onSave,
   onDragHandleDown,
+  onToggleContrast,
   thresholdLocked,
   seedRadiusMm,
 }: {
@@ -16,6 +16,9 @@ export default function MaskEditor({
   onCreateMask: () => void
   onSave: () => void
   onDragHandleDown: (e: React.MouseEvent) => void
+  // Owned by Pane: switching this can unload an edited mask, so it has to be
+  // able to ask before discarding unsaved work.
+  onToggleContrast: (checked: boolean) => void
   thresholdLocked?: boolean
   seedRadiusMm: number
 }) {
@@ -43,59 +46,12 @@ export default function MaskEditor({
     </button>
   )
 
-  function handleToggleContrast(checked: boolean) {
-    const targetType = checked ? 'contrast' : 'non-contrast'
-    // A mask painted under the other threshold basis isn't meaningful here —
-    // contrast annotations are gated by a per-scan computed threshold, non-
-    // contrast by the fixed 130 HU, so a label boundary drawn under one
-    // doesn't mean the same thing under the other. Only auto-unload on a
-    // *confirmed* mismatch (maskAnnotationType known and different) — an
-    // unknown type (e.g. a mask loaded from outside this app) is left alone
-    // rather than guessed at and possibly discarded.
-    const mismatched = pane.maskInfo && pane.maskAnnotationType && pane.maskAnnotationType !== targetType
-    const unload = mismatched
-      ? {
-          maskPath: '',
-          maskInfo: null,
-          maskAnnotationType: null,
-          editMode: false,
-          lesionResults: [],
-          volumeScores: null,
-          agatstonScores: null,
-          editMessage: `Unloaded the mask — it was annotated ${pane.maskAnnotationType === 'contrast' ? 'with' : 'without'} contrast mode, which no longer matches.`,
-        }
-      : {}
-    onChange(
-      checked
-        ? { contrastMode: true, editMode: mismatched ? false : pane.editMode, scoreComputeMode: false, ...unload }
-        : {
-            // Leaving contrast mode entirely clears the seed/sphere and the
-            // computed threshold — it shouldn't keep driving the render
-            // overlay / paint / region-grow HU fields once contrast mode is
-            // off, and a stale seed marker/sphere for a threshold that no
-            // longer applies would be confusing to still see.
-            contrastMode: false,
-            seedPlacementMode: false,
-            pendingSeed: null,
-            contrastThreshold: null,
-            contrastThresholdLocked: false,
-            contrastMeta: null,
-            volumeScores: null,
-            thresholdValue: DEFAULT_THRESHOLD_HU,
-            thresholdEnabled: false,
-            editThresholdMin: DEFAULT_THRESHOLD_HU,
-            editRegionGrowThreshold: DEFAULT_THRESHOLD_HU,
-            ...unload,
-          },
-    )
-  }
-
   const contrastToggle = (
     <label
       className="edit-header-label contrast-toggle-row"
       title="Contrast CT: derive a per-scan calcium threshold from a seed point instead of the fixed 130 HU"
     >
-      <input type="checkbox" checked={pane.contrastMode} onChange={(e) => handleToggleContrast(e.target.checked)} />
+      <input type="checkbox" checked={pane.contrastMode} onChange={(e) => onToggleContrast(e.target.checked)} />
       Contrast CT
     </label>
   )

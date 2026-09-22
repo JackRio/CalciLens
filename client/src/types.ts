@@ -76,6 +76,39 @@ function normalizePathForCompare(p: string): string {
 const MASK_LOOKS_LIKE_CT_LABEL_COUNT = 64
 const MASK_LOOKS_LIKE_CT_VALUE_RANGE = 500
 
+// A mask can only be edited or scored against a CT of identical geometry.
+// Nothing checked this before: every slice lookup clamps its index against
+// its own volume independently, so a mask with fewer slices than the CT
+// didn't error — viewing CT slice 200 and painting wrote to the mask's LAST
+// slice, and that wrong data was then saved. Returns a message, or null when
+// the two match.
+export function detectGeometryMismatch(ctInfo: VolumeInfo, maskInfo: VolumeInfo): string | null {
+  const a = ctInfo.shape_lps
+  const b = maskInfo.shape_lps
+  if (a[0] === b[0] && a[1] === b[1] && a[2] === b[2]) return null
+  return (
+    `This mask does not match the CT: mask is ${b.join(' x ')} voxels, CT is ${a.join(' x ')}. ` +
+    'They must share the same geometry, so it cannot be displayed or edited against this scan.'
+  )
+}
+
+// The app already infers whether a mask was annotated with or without
+// contrast, and used to do nothing with that but feed the Contrast toggle —
+// so loading a contrast-annotated mask with contrast mode off showed no
+// warning at all, even though its labels were drawn against a completely
+// different threshold.
+export function detectAnnotationTypeMismatch(
+  maskAnnotationType: 'contrast' | 'non-contrast' | null,
+  contrastModeOn: boolean,
+): string | null {
+  if (!maskAnnotationType) return null
+  const expected = contrastModeOn ? 'contrast' : 'non-contrast'
+  if (maskAnnotationType === expected) return null
+  return maskAnnotationType === 'contrast'
+    ? 'This mask was annotated as a contrast scan, but contrast mode is off — its labels were drawn against a per-scan threshold, not the fixed 130 HU.'
+    : 'This mask was annotated without contrast mode, but contrast mode is on — its labels were drawn against the fixed 130 HU, not the threshold derived for this scan.'
+}
+
 export function detectMaskLooksLikeCt(maskInfo: VolumeInfo, ctPath: string, maskPath: string): string | null {
   if (ctPath && maskPath && normalizePathForCompare(ctPath) === normalizePathForCompare(maskPath)) {
     return 'The mask path is the same file as the loaded CT scan — this overlays the CT on itself, not a real segmentation.'
@@ -124,6 +157,21 @@ export interface ManifestConfig {
   patientIdColumn: string // required; used as the case-picker index/label and for split-view sync
   reasonColumn: string // column holding Reason tags — may be a pre-existing column (e.g. "kernel_type")
   includeDefaultReasonTags: boolean // merge the app's built-in tag set into the Reason picker's options
+  // Configurable like reasonColumn, and for the same reason: "Status" used to
+  // be a hardcoded name whose contents the app overwrote on load, which
+  // destroyed any pre-existing Status column a lab already used. '' = don't
+  // track status at all.
+  statusColumn: string
+  // Where a saved annotation's path is recorded. Deliberately NOT maskColumn:
+  // writing there would lose the original prediction's path, and not writing
+  // it anywhere (the old behavior for rows that already had a mask) meant the
+  // next visit silently re-opened the prediction and the previous session's
+  // work was never loaded again. '' = don't record it.
+  annotationColumn: string
+  // Records whether a case is a contrast scan, so the app can know that
+  // before anyone starts annotating rather than relying on a checkbox being
+  // remembered. '' = don't track it.
+  contrastColumn: string
 }
 
 export const DEFAULT_MANIFEST_CONFIG: ManifestConfig = {
@@ -133,6 +181,9 @@ export const DEFAULT_MANIFEST_CONFIG: ManifestConfig = {
   patientIdColumn: 'PatientId',
   reasonColumn: 'Reason',
   includeDefaultReasonTags: true,
+  statusColumn: 'Status',
+  annotationColumn: 'annotation_path',
+  contrastColumn: 'Contrast',
 }
 
 export const STATUS_OPTIONS = ['Not Started', 'Annotated', 'InProgress', 'Review'] as const
@@ -167,19 +218,44 @@ export interface ManifestRow {
   label: string
   patient_id: string
   image_path: string
+  // The original prediction/segmentation this case shipped with.
   mask_path: string
+  // This app's own saved annotation for the case, if one has been saved.
+  // Preferred over mask_path when loading — see App.tsx's loadRowIntoPane.
+  annotation_path: string
   image_exists: boolean
   mask_exists: boolean
+  annotation_exists: boolean
   comment: string
-  status: AnnotationStatus
+  // Free text, not a fixed enum: the column may already hold a lab's own
+  // vocabulary, which the app must preserve rather than replace.
+  status: string
   reason: string[]
   scores: Partial<Record<ScoreClass, number | null>>
+  // true / false / null where null means "nobody has recorded it" — which is
+  // NOT the same as "confirmed non-contrast" and must not be treated as one.
+  contrast: boolean | null
 }
 
 export interface ManifestPairsResult {
   rows: ManifestRow[]
   reasonOptions: string[]
+  statusOptions: string[]
   scoreClasses: ScoreClass[]
+  hasAnnotationColumn: boolean
+  hasContrastColumn: boolean
+}
+
+// What the backend already knows about a scan from previous sessions,
+// independent of any UI state — see /api/annotations/lookup.
+export interface AnnotationLookup {
+  found: boolean
+  scanDir: string | null
+  annotationPath: string | null
+  hasSeed: boolean
+  annotationType: 'contrast' | 'non-contrast' | null
+  savedAt: string | null
+  savedForCtPath: string | null
 }
 
 export interface PaneState {
@@ -200,6 +276,9 @@ export interface PaneState {
   batchLoadCollapsed: boolean
   wlMinimized: boolean
   reasonOptions: string[] // base + discovered-in-sheet + session-added tags
+  statusOptions: string[] // built-in statuses merged with whatever the sheet already uses
+  hasAnnotationColumn: boolean
+  hasContrastColumn: boolean
   scoreClasses: ScoreClass[] // which score columns are present in this manifest
   scorePanelOpen: boolean
   scorePanelPos: { x: number; y: number } | null
@@ -303,6 +382,33 @@ export interface PaneState {
   // disk whose filename doesn't indicate either way) — see Pane.tsx's
   // Contrast CT toggle, which auto-unloads the mask on a confirmed mismatch.
   maskAnnotationType: 'contrast' | 'non-contrast' | null
+
+  // Whether the loaded mask has edits that are not on disk. Lives on the
+  // pane (not inside the Pane component) because App.tsx owns navigation and
+  // has to be able to check it before loading something over the top —
+  // cross-pane Patient-ID sync and the reload-everything shortcut both used
+  // to discard another pane's unsaved work without asking.
+  hasUnsavedMaskChanges: boolean
+  // Baseline for the above: the editVersion at the moment this exact mask
+  // (by volume_id) was loaded, saved, or reset.
+  maskBaselineVolumeId: string | null
+  maskBaselineVersion: number
+  lastSavedAt: string | null // ISO timestamp of the last successful save
+
+  // Which file the visible mask came from, so the pane can say so rather
+  // than leaving the user guessing whether they are looking at their own
+  // annotation or the original prediction.
+  maskSource: 'annotation' | 'prediction' | 'new' | 'manual' | null
+
+  // What previous sessions recorded about this scan (see AnnotationLookup).
+  // Checked on every CT load regardless of whether contrast mode is on —
+  // that check used to be skipped entirely unless the user had already
+  // ticked the Contrast box, so a contrast scan opened without ticking it
+  // silently used the 130 HU non-contrast threshold.
+  annotationLookup: AnnotationLookup | null
+  // Set when the app believes this is a contrast scan but no usable
+  // threshold is active yet; drives the banner and blocks annotation.
+  contrastNotice: string | null
 }
 
 export type EditTool = 'brush' | 'region-grow'

@@ -1625,3 +1625,65 @@ button .loading-spinner {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---- Unsaved-work / save-conflict prompts ------------------------------ */
+
+/* A destructive confirmation must not look like the ordinary "continue"
+   button next to it — these buttons discard annotation work or overwrite
+   another scan's file. */
+.danger-btn {
+  background: #5c2020;
+  border-color: #8a3030;
+  color: #ffd9d9;
+}
+
+.danger-btn:hover {
+  background: #7a2a2a;
+}
+
+.nav-modal-body {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #c9cad3;
+  max-width: 460px;
+}
+
+.nav-modal-body p {
+  margin: 0 0 8px;
+}
+
+.nav-modal-body code {
+  display: block;
+  font-size: 11px;
+  word-break: break-all;
+  background: #1b1c22;
+  border: 1px solid #2c2d36;
+  border-radius: 4px;
+  padding: 4px 6px;
+  color: #9fd0ff;
+}
+
+/* Contrast notices are a different kind of warning from a mask problem:
+   they say the app cannot safely threshold this scan yet. */
+.pane-warning-contrast {
+  background: #142f3a;
+  color: #7fd0f5;
+  border-bottom-color: #1f4a5c;
+}
+
+/* Says which file the visible mask came from, so "is this my work or the
+   original prediction?" is never a guess. */
+.mask-source-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid #2c2d36;
+  background: #1b1c22;
+  color: #8b8c99;
+  white-space: nowrap;
+}
+
+.mask-source-tag.mask-source-annotation {
+  border-color: #2f5c3a;
+  color: #7fd39a;
+}

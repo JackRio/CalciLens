@@ -314,6 +314,17 @@ errors that `vite build` alone can surface less clearly.
   split view (it's a global App-level listener, not per-pane-scoped).
 - **Mask editing**: brush + region-grow tools, overwrite modes (any/label/threshold), undo via
   `editVersion` counter, save/reset, never synced between split-view panes.
+- **Mask sanity checks on load** (`types.ts`), two kinds with deliberately different force:
+  - `detectGeometryMismatch` is **exact and blocking** — a mask whose `shape_lps` differs from the
+    CT's is refused outright, because slice indices are clamped per-volume and painting one would
+    silently write to the wrong slice.
+  - `detectMaskLooksLikeCt` is a **dismissible warning**, because it is a heuristic and the user
+    may legitimately know better. Its criteria: the mask path being the *same file* as the CT
+    (exact), more than 256 distinct non-zero values, `value_min < -100` (air is ~-1000 HU; a label
+    map is never negative), or a floating-point dtype. It reports which of these fired.
+    **Don't reintroduce a total value-RANGE test** — an earlier version flagged range > 500, which
+    false-positived on whole-heart/MMWHS masks whose label *values* run 205…850. Flagging a valid
+    mask trains people to dismiss the banner, which costs more than the case it catches.
 - **Annotation saving/reloading**: one folder per scan under `Manual_Annotations/` (see
   `annotation_paths.py` — no date in the name; the dates are in `_source.json`), reloaded
   automatically whenever that scan is opened again — through the manifest's `annotation_path`

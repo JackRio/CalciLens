@@ -67,14 +67,20 @@ function normalizePathForCompare(p: string): string {
   return p.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 }
 
-// A real segmentation mask has a small number of small integer labels; a CT
-// scan loaded by mistake as a mask (same file picked for both, or a
-// manifest's image/mask columns mixed up) has either a huge number of
-// distinct voxel values or a Hounsfield-like value range (air ~ -1000 HU up
-// through bone/metal several hundred+) — either is a strong signal the
-// "mask" is actually another CT scan, not a segmentation.
-const MASK_LOOKS_LIKE_CT_LABEL_COUNT = 64
-const MASK_LOOKS_LIKE_CT_VALUE_RANGE = 500
+// Signals that a CT was loaded by mistake as a mask (same file picked for
+// both, or a manifest's image/mask columns mixed up).
+//
+// An earlier version also flagged a total value RANGE over 500, on the
+// reasoning that CT spans roughly -1000 HU to +1000s. That produced false
+// positives on real segmentations: whole-heart conventions (MMWHS and
+// anything derived from it) use label VALUES like 205, 420, 500, 550, 600,
+// 820, 850, so a perfectly good cardiac mask has a range of 850 and got
+// flagged. The criteria below key off things a label map genuinely never
+// has, rather than how large its label values happen to be.
+const MASK_LOOKS_LIKE_CT_LABEL_COUNT = 256
+// Air is about -1000 HU, so a CT essentially always goes well below zero;
+// a label map is non-negative. This is the single most specific signal.
+const MASK_LOOKS_LIKE_CT_MIN_VALUE = -100
 
 // A mask can only be edited or scored against a CT of identical geometry.
 // Nothing checked this before: every slice lookup clamps its index against
@@ -113,12 +119,26 @@ export function detectMaskLooksLikeCt(maskInfo: VolumeInfo, ctPath: string, mask
   if (ctPath && maskPath && normalizePathForCompare(ctPath) === normalizePathForCompare(maskPath)) {
     return 'The mask path is the same file as the loaded CT scan — this overlays the CT on itself, not a real segmentation.'
   }
+  // Each reason is reported, so the warning says *why* it fired rather than
+  // leaving the user to guess whether it has misjudged their data.
+  const reasons: string[] = []
+
   const labelCount = maskInfo.labels?.length ?? 0
-  const valueRange = maskInfo.value_max - maskInfo.value_min
-  if (labelCount > MASK_LOOKS_LIKE_CT_LABEL_COUNT || valueRange > MASK_LOOKS_LIKE_CT_VALUE_RANGE) {
-    return 'This mask looks like a CT scan rather than a segmentation (too many distinct values) — double-check the mask path or manifest column.'
+  if (labelCount > MASK_LOOKS_LIKE_CT_LABEL_COUNT) {
+    reasons.push(`${labelCount} distinct values`)
   }
-  return null
+  if (maskInfo.value_min < MASK_LOOKS_LIKE_CT_MIN_VALUE) {
+    reasons.push(`values as low as ${Math.round(maskInfo.value_min)} (a label map is never negative)`)
+  }
+  if (/float/i.test(maskInfo.dtype)) {
+    reasons.push(`a ${maskInfo.dtype} data type (labels are whole numbers)`)
+  }
+
+  if (reasons.length === 0) return null
+  return (
+    `This mask looks like a CT scan rather than a segmentation — ${reasons.join('; ')}. ` +
+    'Double-check the mask path or manifest column. If it is correct, dismiss this and carry on.'
+  )
 }
 
 export const CALCIFICATIONS_PRESET: LabelColor[] = [

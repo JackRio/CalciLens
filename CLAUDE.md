@@ -109,21 +109,40 @@ errors that `vite build` alone can surface less clearly.
   from the frontend or a manifest cell.
 - **`annotation_paths.py`** — **where a saved annotation goes, and whether saving there would
   destroy something.** Every annotation lives in its own per-scan folder:
-  `<root>/Manual_Annotations_<DD_Mon_YYYY>/<scan folder>/annotation.nii.gz`, alongside
-  `_source.json` (provenance) and, for contrast scans, `contrast_seed.json`. `<root>` is the
-  configured save directory, or the CT's own directory when none is set. `<scan folder>` is the
-  DICOM SeriesInstanceUID, or the NIFTI/MHA stem. **The name is derived from the CT, never from the
+  `<root>/Manual_Annotations/<scan folder>/annotation.nii.gz`, alongside `_source.json`
+  (provenance) and, for contrast scans, `contrast_seed.json`. `<root>` is the configured save
+  directory, or the CT's own directory when none is set. `<scan folder>` is the DICOM
+  SeriesInstanceUID, or the NIFTI/MHA stem. **The name is derived from the CT, never from the
   loaded mask** — deriving it from the mask made every save append another tag
-  (`X_ManualAnnotations_ManualEdits...`) and orphan the previous file. `resolve_target()` reports a
-  `conflict` of `None` / `"overwrite"` (same scan, today's file) / `"earlier"` (same scan, an
-  earlier day) / `"collision"` (a *different* scan already owns this folder name) and **writes
-  nothing** — the caller asks the user and calls back with `resolution="overwrite"` or
-  `"new_copy"`. A folder name alone cannot tell a re-save from a collision, which is exactly why
-  `_source.json` exists; `_same_scan()` decides by SeriesInstanceUID when both have one, else by CT
-  path. `find_existing_scan_dirs()` searches **all** dated folders and **also the `__2`/`__3`
-  variants** — once a collision diverted a scan into `<name>__2`, that is its folder from then on,
-  and not searching it would make it collide with the original on every save and spawn `__3`,
-  `__4`, ... forever. Don't regress either of those.
+  (`X_ManualAnnotations_ManualEdits...`) and orphan the previous file.
+  - **No date in the folder name.** An earlier version used one folder per day
+    (`Manual_Annotations_<DD_Mon_YYYY>`), which split a single scan's work across several
+    directories, so "where is this scan's annotation" had more than one answer. The dates live in
+    `_source.json` instead (`created_at`, `updated_at`, and a `saves` entry per save), which is
+    both more precise and in one place. `legacy_dated_folder_name()`/`is_legacy_dir()` exist only
+    so folders written by the old scheme are still *found* — they are never written to again, and
+    a scan whose only copy is in one reports the `"earlier"` conflict.
+  - **`annotation_dir(root)` returns `root` itself when `root` is already a Manual_Annotations
+    folder** (case-insensitive). Pointing the save directory straight at an existing
+    Manual_Annotations folder is the obvious thing for a user to do; without this every such pick
+    would nest another one inside and hide everything already there. `find_existing_scan_dirs()`
+    must go through it for the same reason — searching one level too deep finds nothing and treats
+    every existing annotation as new.
+  - `resolve_target()` reports a `conflict` of `None` / `"overwrite"` (same scan, same file) /
+    `"earlier"` (same scan, only a legacy dated copy) / `"collision"` (a *different* scan already
+    owns this folder name) and **writes nothing** — the caller asks the user and calls back with
+    `resolution="overwrite"` or `"new_copy"`. A folder name alone cannot tell a re-save from a
+    collision, which is exactly why `_source.json` exists; `_same_scan()` decides by
+    SeriesInstanceUID when both have one, else by CT path.
+  - `find_existing_scan_dirs()` also matches the **`__2`/`__3` variants** — once a collision
+    diverted a scan into `<name>__2`, that is its folder from then on, and not searching it would
+    make it collide with the original on every save and spawn `__3`, `__4`, ... forever.
+  - `write_source_record()` keeps two things the plain fields cannot, because the record is
+    rewritten on every save: **`original_mask_path` is write-once** (and never the annotation's own
+    file), so re-editing your own saved work doesn't erase the fact that it started from a model
+    prediction; **`saves`** is one entry per save (timestamp, what it was loaded from, `mask_source`,
+    labels, voxel count), capped at `MAX_SAVE_HISTORY`. Together they replace what the dated folders
+    used to convey by accident.
 - **`contrast_threshold.py`** (contrast-viewer branch only) — per-scan calcium-detection threshold
   for contrast CT, in place of the fixed 130 HU used for non-contrast. `compute_sphere_stats()`
   takes a seed click (converted to a 3D index via `volume_store._seed_index_3d`, reused as-is) and
@@ -295,15 +314,18 @@ errors that `vite build` alone can surface less clearly.
   split view (it's a global App-level listener, not per-pane-scoped).
 - **Mask editing**: brush + region-grow tools, overwrite modes (any/label/threshold), undo via
   `editVersion` counter, save/reset, never synced between split-view panes.
-- **Annotation saving/reloading**: one folder per scan under `Manual_Annotations_<date>/` (see
-  `annotation_paths.py`), reloaded automatically whenever that scan is opened again — through the
-  manifest's `annotation_path` column when there is one, and otherwise straight from
-  `/api/annotations/lookup`, so it works for a plain DICOM-directory load and for series
-  Previous/Next too; a prompt rather than a silent overwrite in all three conflict cases
-  (same scan today / same scan an earlier day / a different scan with the same name), the saved
-  path recorded in the manifest's own `annotation_path` column, and a toolbar tag saying whether
-  you are looking at **your annotation**, the **original prediction**, or a **new, unsaved** mask —
-  plus "• unsaved edits" when it has diverged from disk.
+- **Annotation saving/reloading**: one folder per scan under `Manual_Annotations/` (see
+  `annotation_paths.py` — no date in the name; the dates are in `_source.json`), reloaded
+  automatically whenever that scan is opened again — through the manifest's `annotation_path`
+  column when there is one, and otherwise straight from `/api/annotations/lookup`, so it works for
+  a plain DICOM-directory load and for series Previous/Next too; a prompt rather than a silent
+  overwrite in every conflict case (same scan / only a legacy dated copy / a different scan with
+  the same name), the saved path recorded in the manifest's own `annotation_path` column, and a
+  toolbar tag saying whether you are looking at **your annotation**, the **original prediction**,
+  or a **new, unsaved** mask — plus "• unsaved edits" when it has diverged from disk. A save can
+  never land on a model prediction: the destination is derived from the CT, and predictions live
+  wherever the lab put them. `_source.json` keeps the lineage (`original_mask_path` write-once,
+  plus a `saves` history), so "what was this derived from" survives re-editing your own work.
 - **Contrast CT mode** (contrast-viewer branch only, per-pane toggle **inside the Annotation
   floating window** — `MaskEditor.tsx`'s `contrastToggle`, not the pane toolbar — `pane.contrastMode`):
   non-contrast's fixed 130 HU threshold doesn't apply to contrast scans, so this derives one per scan

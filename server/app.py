@@ -515,6 +515,10 @@ class SaveMaskRequest(BaseModel):
     save_dir: Optional[str] = None
     annotation_type: Optional[str] = None  # "contrast" | "non-contrast"
     patient_id: Optional[str] = None
+    # Where the mask being saved came from, as the pane knows it:
+    # "prediction" | "annotation" | "new" | "manual". Recorded so a later
+    # session can tell what this annotation was originally derived from.
+    mask_source: Optional[str] = None
     # The user's answer to a conflict reported by a previous call:
     # "overwrite" or "new_copy". None means "tell me if there's a conflict".
     resolution: Optional[str] = None
@@ -537,6 +541,7 @@ def mask_save(req: SaveMaskRequest):
             annotation_type=req.annotation_type,
             patient_id=req.patient_id,
             resolution=req.resolution,
+            mask_source=req.mask_source,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"save failed: {e}")

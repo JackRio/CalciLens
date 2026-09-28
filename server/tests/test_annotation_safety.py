@@ -441,7 +441,7 @@ def test_a_diverted_scan_keeps_its_own_folder_on_later_saves(tmp_path):
         fake_volume(), ct_path=ct_b, base_dir=save_dir, annotation_type="non-contrast", resolution="overwrite"
     )
     assert final["path"] == diverted["path"]
-    dated = os.path.join(save_dir, ap.dated_folder_name())
+    dated = ap.annotation_dir(save_dir)
     assert sorted(os.listdir(dated)) == ["image", "image__2"], "no __3 should ever appear"
 
 
@@ -511,3 +511,136 @@ def test_lookup_finds_an_annotation_via_the_recorded_path_hint(tmp_path):
     found = app_mod.annotations_lookup(ct_path=ct, annotation_path=saved["path"])
     assert found["found"] is True
     assert found["annotation_path"] == saved["path"]
+
+
+# --------------------------------------------------------------------------
+# Undated folder + provenance kept in _source.json instead
+# --------------------------------------------------------------------------
+
+
+def test_annotations_land_in_one_undated_folder(tmp_path):
+    save_dir = str(tmp_path / "out")
+    ct = make_ct(str(tmp_path / "case" / "image.nii.gz"))
+    res = vs.save_mask(fake_volume(), ct_path=ct, base_dir=save_dir, annotation_type="non-contrast")
+    assert os.path.basename(os.path.dirname(os.path.dirname(res["path"]))) == "Manual_Annotations"
+    assert os.listdir(save_dir) == ["Manual_Annotations"], "no dated folders should be created"
+
+
+def test_dates_are_recorded_per_save_not_per_folder(tmp_path):
+    """The dated folders used to convey 'when' by accident, one directory per
+    day. That information now lives in _source.json, per save."""
+    save_dir = str(tmp_path / "out")
+    ct = make_ct(str(tmp_path / "case" / "image.nii.gz"))
+
+    vs.save_mask(fake_volume(), ct_path=ct, base_dir=save_dir, annotation_type="non-contrast")
+    res = vs.save_mask(
+        fake_volume(), ct_path=ct, base_dir=save_dir, annotation_type="non-contrast", resolution="overwrite"
+    )
+    record = json.load(open(os.path.join(res["scan_dir"], "_source.json"), encoding="utf-8"))
+
+    assert record["created_at"] and record["updated_at"]
+    assert record["save_count"] == 2
+    assert len(record["saves"]) == 2, "one history entry per save"
+    assert all(e.get("at") for e in record["saves"])
+    assert os.listdir(save_dir) == ["Manual_Annotations"]
+
+
+def test_original_source_survives_re_editing_your_own_annotation(tmp_path):
+    """Session 1 edits the model prediction; session 2 reopens the saved
+    annotation and edits that. source_mask_path gets rewritten to the
+    annotation's own path, so without a write-once field the fact that this
+    started as a prediction would be lost."""
+    save_dir = str(tmp_path / "out")
+    ct = make_ct(str(tmp_path / "case" / "image.nii.gz"))
+    prediction = make_ct(str(tmp_path / "case" / "prediction.nii.gz"))
+
+    from_prediction = fake_volume(path=prediction, is_new_mask=False)
+    first = vs.save_mask(
+        from_prediction, ct_path=ct, base_dir=save_dir, annotation_type="non-contrast", mask_source="prediction"
+    )
+    rec = json.load(open(os.path.join(first["scan_dir"], "_source.json"), encoding="utf-8"))
+    assert rec["original_mask_path"] == prediction
+    assert rec["original_mask_source"] == "prediction"
+
+    # Next session: the app reloads the saved annotation and it is edited again.
+    from_annotation = fake_volume(path=first["path"], is_new_mask=False)
+    second = vs.save_mask(
+        from_annotation, ct_path=ct, base_dir=save_dir, annotation_type="non-contrast",
+        mask_source="annotation", resolution="overwrite",
+    )
+    rec = json.load(open(os.path.join(second["scan_dir"], "_source.json"), encoding="utf-8"))
+    assert rec["source_mask_path"] == first["path"], "the latest source is the annotation itself"
+    assert rec["original_mask_path"] == prediction, "but where it came from must survive"
+    assert [e["mask_source"] for e in rec["saves"]] == ["prediction", "annotation"]
+
+
+def test_a_legacy_dated_folder_is_found_and_left_alone(tmp_path):
+    """Work saved by the dated scheme must still be discoverable, and a new
+    save must not write into that old folder."""
+    save_dir = str(tmp_path / "out")
+    ct = make_ct(str(tmp_path / "case" / "image.nii.gz"))
+
+    legacy = os.path.join(save_dir, ap.legacy_dated_folder_name(), "image")
+    os.makedirs(legacy)
+    open(os.path.join(legacy, ap.ANNOTATION_FILENAME), "w").write("old")
+    ap.write_source_record(legacy, ct, None, "P1", "non-contrast")
+
+    target = ap.resolve_target(ct, None, save_dir)
+    assert target["conflict"] == "earlier", "the user must be told an older copy exists"
+    assert not ap.is_legacy_dir(target["scan_dir"]), "the save must go to the new undated layout"
+
+    saved = vs.save_mask(
+        fake_volume(), ct_path=ct, base_dir=save_dir, annotation_type="non-contrast", resolution="overwrite"
+    )
+    assert open(os.path.join(legacy, ap.ANNOTATION_FILENAME)).read() == "old", "legacy copy untouched"
+    assert ap.ANNOTATION_FOLDER_NAME in saved["path"]
+
+
+def test_legacy_annotation_is_still_discoverable_by_lookup(tmp_path):
+    import app as app_mod
+
+    save_dir = str(tmp_path / "out")
+    ct = make_ct(str(tmp_path / "case" / "image.nii.gz"))
+    legacy = os.path.join(save_dir, ap.legacy_dated_folder_name(), "image")
+    os.makedirs(legacy)
+    open(os.path.join(legacy, ap.ANNOTATION_FILENAME), "w").write("old")
+    ap.write_source_record(legacy, ct, None, "P1", "contrast")
+
+    found = app_mod.annotations_lookup(ct_path=ct, save_dir=save_dir)
+    assert found["found"] is True
+    assert found["annotation_path"] == os.path.join(legacy, ap.ANNOTATION_FILENAME)
+
+
+def test_pointing_the_save_folder_at_manual_annotations_does_not_nest(tmp_path):
+    """Picking the Manual_Annotations folder itself is the obvious thing to
+    do. Nesting another one inside would bury the annotations a level deeper
+    on every re-pick, and hide the ones already there."""
+    ct = make_ct(str(tmp_path / "case" / "image.nii.gz"))
+    outer = str(tmp_path / "out")
+
+    first = vs.save_mask(fake_volume(), ct_path=ct, base_dir=outer, annotation_type="non-contrast")
+    inner = os.path.join(outer, ap.ANNOTATION_FOLDER_NAME)
+    assert os.path.isdir(inner)
+
+    # Now the user points the save folder straight at Manual_Annotations.
+    target = ap.resolve_target(ct, None, inner)
+    assert target["conflict"] == "overwrite", "the existing annotation must still be seen"
+    assert target["annotation_path"] == first["path"], "and resolve to the very same file"
+    assert ap.ANNOTATION_FOLDER_NAME not in os.path.relpath(target["scan_dir"], inner)
+
+    again = vs.save_mask(
+        fake_volume(), ct_path=ct, base_dir=inner, annotation_type="non-contrast", resolution="overwrite"
+    )
+    assert again["path"] == first["path"]
+    assert not os.path.isdir(os.path.join(inner, ap.ANNOTATION_FOLDER_NAME)), "no nested folder"
+
+
+def test_nesting_check_ignores_case_and_trailing_separators(tmp_path):
+    outer = str(tmp_path / "out")
+    inner = os.path.join(outer, ap.ANNOTATION_FOLDER_NAME)
+    assert ap.annotation_dir(inner) == inner
+    assert ap.annotation_dir(inner + os.sep) == inner + os.sep or ap.annotation_dir(inner + os.sep).rstrip(os.sep) == inner
+    assert ap.annotation_dir(inner.upper()).rstrip(os.sep).lower() == inner.lower()
+    # A folder that merely starts with the name is NOT the folder itself.
+    other = os.path.join(outer, ap.ANNOTATION_FOLDER_NAME + "_old")
+    assert ap.annotation_dir(other) == os.path.join(other, ap.ANNOTATION_FOLDER_NAME)

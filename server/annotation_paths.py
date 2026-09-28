@@ -3,9 +3,17 @@ something.
 
 Every saved annotation lives in its own per-scan folder:
 
-    <root>/Manual_Annotations_<DD_Mon_YYYY>/<scan folder>/annotation.nii.gz
+    <root>/Manual_Annotations/<scan folder>/annotation.nii.gz
                                            /_source.json
                                            /contrast_seed.json
+
+There is deliberately no date in the folder name. Dated folders split one
+scan's work across several directories, so "where is this scan's annotation"
+had more than one answer and the newest was whichever you looked in last.
+The dates live in `_source.json` instead — `created_at`, `updated_at`, and a
+`saves` entry per save — which is both more precise (a timestamp per save,
+not per day) and in one place. Folders written by the earlier dated scheme
+are still found, so nothing saved before this is stranded.
 
 `<root>` is the user-configured save directory, or the CT's own directory
 when none is set. `<scan folder>` is the DICOM SeriesInstanceUID for a DICOM
@@ -41,12 +49,40 @@ from pathutil import clean_path
 ANNOTATION_FILENAME = "annotation.nii.gz"
 SOURCE_RECORD_NAME = "_source.json"
 SEED_SIDECAR_NAME = "contrast_seed.json"
-DATED_FOLDER_PREFIX = "Manual_Annotations_"
+ANNOTATION_FOLDER_NAME = "Manual_Annotations"
+# Folders written by the earlier one-per-day scheme. Read for discovery so
+# existing work is still found; never written to again.
+LEGACY_DATED_PREFIX = "Manual_Annotations_"
+# Keep the old name importable — contrast_threshold references it for the
+# pre-folder-scheme sidecar lookup.
+DATED_FOLDER_PREFIX = LEGACY_DATED_PREFIX
+# How many save entries to keep in _source.json before dropping the oldest.
+MAX_SAVE_HISTORY = 200
 
 
-def dated_folder_name(when: Optional[datetime.date] = None) -> str:
+def annotation_dir(root: str) -> str:
+    """`<root>/Manual_Annotations` — one folder, no date.
+
+    Unless `root` already IS that folder, in which case we are already where
+    we need to be. The save directory is a path the user types or browses to,
+    and pointing it straight at an existing Manual_Annotations folder is the
+    obvious thing to do — without this, every such pick would nest another
+    one inside (`.../Manual_Annotations/Manual_Annotations/...`), burying the
+    annotations a level deeper each time and hiding the ones already there.
+
+    Compared case-insensitively via normcase, since the user may well type a
+    different case from what is on disk.
+    """
+    root = clean_path(root or "")
+    if os.path.normcase(os.path.basename(os.path.normpath(root))) == os.path.normcase(ANNOTATION_FOLDER_NAME):
+        return root
+    return os.path.join(root, ANNOTATION_FOLDER_NAME)
+
+
+def legacy_dated_folder_name(when: Optional[datetime.date] = None) -> str:
+    """The old one-folder-per-day name. Only used to find existing work."""
     when = when or datetime.date.today()
-    return f"{DATED_FOLDER_PREFIX}{when.strftime('%d_%b_%Y')}"
+    return f"{LEGACY_DATED_PREFIX}{when.strftime('%d_%b_%Y')}"
 
 
 def scan_folder_name(ct_path: str, series_uid: Optional[str] = None) -> str:
@@ -144,14 +180,29 @@ def find_existing_scan_dirs(root: str, folder_name: str) -> list:
     if not root or not os.path.isdir(root):
         return []
     patterns = [folder_name, f"{folder_name}__*"]
+    # annotation_dir() rather than a literal join, so a save directory that
+    # already points at the Manual_Annotations folder is searched in place
+    # instead of one level too deep — where it would find nothing and treat
+    # every annotation already sitting there as new.
+    parents = [annotation_dir(root), os.path.join(root, f"{LEGACY_DATED_PREFIX}*")]
     matches = [
         d
+        for parent in parents
         for pattern in patterns
-        for d in glob.glob(os.path.join(root, f"{DATED_FOLDER_PREFIX}*", pattern))
+        for d in glob.glob(os.path.join(parent, pattern))
         if os.path.isdir(d)
     ]
+    # Deduplicate (the glob patterns can't overlap today, but a future
+    # pattern change shouldn't be able to return the same directory twice)
+    # and put the most recently written first.
+    matches = list(dict.fromkeys(matches))
     matches.sort(key=os.path.getmtime, reverse=True)
     return matches
+
+
+def is_legacy_dir(scan_dir: str) -> bool:
+    """True for a folder written by the old dated scheme."""
+    return os.path.basename(os.path.dirname(scan_dir)).startswith(LEGACY_DATED_PREFIX)
 
 
 def resolve_target(
@@ -167,10 +218,11 @@ def resolve_target(
     `conflict` describing what's already there:
 
       None          nothing exists yet — safe to write
-      "overwrite"   this same scan already has an annotation in TODAY's
-                    folder; writing replaces it
-      "earlier"     this same scan was saved on an earlier day; writing
-                    creates today's copy and leaves that one alone
+      "overwrite"   this same scan already has an annotation here; writing
+                    replaces it
+      "earlier"     this same scan's only annotation is in a folder written
+                    by the old dated scheme; writing creates the new-layout
+                    copy and leaves that one alone
       "collision"   a DIFFERENT scan already owns this folder name; writing
                     would destroy someone else's annotation
 
@@ -182,7 +234,7 @@ def resolve_target(
     ct_path = clean_path(ct_path or "")
     root = annotation_root(ct_path, base_dir)
     folder_name = scan_folder_name(ct_path, series_uid)
-    today_dir = os.path.join(root, dated_folder_name(), folder_name)
+    target_dir = os.path.join(annotation_dir(root), folder_name)
 
     existing = find_existing_scan_dirs(root, folder_name)
     conflict = None
@@ -195,7 +247,12 @@ def resolve_target(
     own = next((d for d in existing if _same_scan(read_source_record(d), ct_path, series_uid)), None)
     if own is not None:
         folder_name = os.path.basename(own)
-        today_dir = os.path.join(root, dated_folder_name(), folder_name)
+        # A folder from the old dated scheme is not written to again — the
+        # save lands in the undated layout, keeping the old copy intact.
+        if not is_legacy_dir(own):
+            target_dir = own
+        else:
+            target_dir = os.path.join(annotation_dir(root), folder_name)
         record = read_source_record(own)
         # A folder holding only a contrast seed (placed before any mask was
         # saved) is this scan's own folder with nothing at stake — reporting a
@@ -204,10 +261,10 @@ def resolve_target(
         if os.path.isfile(os.path.join(own, ANNOTATION_FILENAME)):
             existing_source = record
             existing_dir = own
-            # Replacing today's file is the only genuinely destructive case;
-            # an earlier day's copy is kept either way, but the user is still
+            # Replacing the file at the target is the genuinely destructive
+            # case; a legacy copy is kept either way, but the user is still
             # told it exists so "am I updating or branching?" is never a guess.
-            same_dir = _normalize_for_compare(own) == _normalize_for_compare(today_dir)
+            same_dir = _normalize_for_compare(own) == _normalize_for_compare(target_dir)
             conflict = "overwrite" if same_dir else "earlier"
     else:
         for candidate in existing:
@@ -224,9 +281,9 @@ def resolve_target(
             conflict = "collision"
             break
 
-    scan_dir = today_dir
+    scan_dir = target_dir
     if resolution == "new_copy":
-        scan_dir = _next_free_dir(os.path.join(root, dated_folder_name()), folder_name)
+        scan_dir = _next_free_dir(annotation_dir(root), folder_name)
         folder_name = os.path.basename(scan_dir)
         conflict = None
     elif resolution == "overwrite":
@@ -240,7 +297,7 @@ def resolve_target(
         "conflict": conflict,
         "existing_dir": existing_dir,
         "existing_source": existing_source,
-        "alternative_folder": os.path.basename(_next_free_dir(os.path.join(root, dated_folder_name()), folder_name))
+        "alternative_folder": os.path.basename(_next_free_dir(annotation_dir(root), folder_name))
         if conflict == "collision"
         else None,
     }
@@ -265,6 +322,8 @@ def write_source_record(
     annotation_type: Optional[str],
     source_mask_path: Optional[str] = None,
     bump_count: bool = True,
+    mask_source: Optional[str] = None,
+    stats: Optional[dict] = None,
 ) -> dict:
     """Create/update the folder's `_source.json`.
 
@@ -274,10 +333,26 @@ def write_source_record(
     filenames were previously the only record of it, which is how a mask
     loaded from disk got its type guessed from a substring match, and how
     re-saving kept appending another tag to an ever-growing name.
+
+    Two fields exist because the record is rewritten on every save and would
+    otherwise only ever describe the most recent one:
+
+    `original_mask_path` is write-once — the first thing this annotation was
+    derived from that wasn't the annotation itself. Without it, the second
+    session overwrites `source_mask_path` with the annotation's own path
+    (the app reloads your work, you edit it, you save) and the fact that it
+    started life as a model prediction is gone for good.
+
+    `saves` is one entry per save. It replaces what the old dated folders
+    used to convey by accident, more precisely: a timestamp per save rather
+    than a directory per day, and all of it in one place.
     """
     os.makedirs(scan_dir, exist_ok=True)
     existing = read_source_record(scan_dir) or {}
     now = datetime.datetime.now().isoformat(timespec="seconds")
+    source_mask_path = clean_path(source_mask_path) if source_mask_path else ""
+    own_annotation = os.path.join(scan_dir, ANNOTATION_FILENAME)
+
     record = {
         **existing,
         "ct_path": clean_path(ct_path or ""),
@@ -290,7 +365,25 @@ def write_source_record(
         "save_count": int(existing.get("save_count") or 0) + (1 if bump_count else 0),
     }
     if source_mask_path:
-        record["source_mask_path"] = clean_path(source_mask_path)
+        record["source_mask_path"] = source_mask_path
+        # Write-once, and never the annotation's own file: re-editing your own
+        # saved work must not erase where that work originally came from.
+        if not existing.get("original_mask_path") and _normalize_for_compare(
+            source_mask_path
+        ) != _normalize_for_compare(own_annotation):
+            record["original_mask_path"] = source_mask_path
+            record["original_mask_source"] = mask_source or ""
+
+    if bump_count:
+        entry = {"at": now, "mask_source": mask_source or "", "annotation_type": annotation_type or ""}
+        if source_mask_path:
+            entry["loaded_from"] = source_mask_path
+        if stats:
+            entry.update(stats)
+        history = list(existing.get("saves") or [])
+        history.append(entry)
+        record["saves"] = history[-MAX_SAVE_HISTORY:]
+
     atomic_write_json(os.path.join(scan_dir, SOURCE_RECORD_NAME), record)
     return record
 
@@ -366,7 +459,7 @@ def _legacy_sidecar_paths(ct_path: str, series_uid: Optional[str], base_dir: Opt
     if base_dir:
         paths.extend(
             sorted(
-                glob.glob(os.path.join(clean_path(base_dir), f"{DATED_FOLDER_PREFIX}*", filename)),
+                glob.glob(os.path.join(clean_path(base_dir), f"{LEGACY_DATED_PREFIX}*", filename)),
                 key=os.path.getmtime,
                 reverse=True,
             )

@@ -805,6 +805,7 @@ export default function Pane({
         saveDir: annotationSaveDir || null,
         annotationType: pane.contrastMode ? 'contrast' : 'non-contrast',
         patientId: currentRow?.patient_id || null,
+        maskSource: pane.maskSource,
         resolution: resolution || null,
       })
 

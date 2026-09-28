@@ -268,7 +268,7 @@ export default function CaseLoader({
             placeholder="(default) save next to the image"
             value={annotationSaveDir}
             onChange={(e) => onAnnotationSaveDirChange(e.target.value)}
-            title="Annotations (and, in contrast mode, seed sidecars) save into <this>/Manual_Annotations_<date>/ instead of next to the image"
+            title="Annotations (and, in contrast mode, seed sidecars) save into <this>/Manual_Annotations/<scan>/ instead of next to the image. Pointing this straight at an existing Manual_Annotations folder works too — it won't nest another one inside."
           />
           {electronAvailable && (
             <button

@@ -599,6 +599,9 @@ export async function saveMask(params: {
   saveDir?: string | null
   annotationType?: 'contrast' | 'non-contrast' | null
   patientId?: string | null
+  // Where the mask came from, so _source.json can record what this
+  // annotation was derived from rather than only what it currently is.
+  maskSource?: string | null
   resolution?: 'overwrite' | 'new_copy' | null
 }): Promise<SaveMaskSuccess | SaveMaskConflict> {
   const res = await fetch('/api/mask/save', {
@@ -611,6 +614,7 @@ export async function saveMask(params: {
       save_dir: params.saveDir || null,
       annotation_type: params.annotationType || null,
       patient_id: params.patientId || null,
+      mask_source: params.maskSource || null,
       resolution: params.resolution || null,
     }),
   })

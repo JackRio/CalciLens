@@ -641,6 +641,7 @@ def save_mask(
     annotation_type: Optional[str] = None,
     patient_id: Optional[str] = None,
     resolution: Optional[str] = None,
+    mask_source: Optional[str] = None,
 ) -> dict:
     """Write the current in-memory mask into this scan's own annotation
     folder, preserving the geometry it currently occupies (LPS-reoriented
@@ -674,6 +675,11 @@ def save_mask(
         patient_id=patient_id,
         annotation_type=annotation_type,
         source_mask_path=mask_vol.path or None,
+        mask_source=mask_source,
+        stats={
+            "labels": [int(v) for v in np.unique(mask_vol.array) if v != 0],
+            "labelled_voxels": int(np.count_nonzero(mask_vol.array)),
+        },
     )
     mask_vol.dirty = False
     return {

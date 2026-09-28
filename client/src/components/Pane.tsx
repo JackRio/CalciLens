@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { KeybindMap, LesionScoreResult, ManifestRow, PaneState, Plane, ScoreClass, VolumeInfo } from '../types'
+import type {
+  AnnotationLookup,
+  KeybindMap,
+  LesionScoreResult,
+  ManifestRow,
+  PaneState,
+  Plane,
+  ScoreClass,
+  VolumeInfo,
+} from '../types'
 import {
   WINDOW_PRESETS,
   DEFAULT_WINDOW_LEVEL,
@@ -183,7 +192,10 @@ export default function Pane({
   onToggleReviewMode: () => void
   annotationSaveDir: string
   onAnnotationSaveDirChange: (next: string) => void
-  onApplyContrastEvidence: (ctPath: string, ctInfo: VolumeInfo | null) => Promise<boolean>
+  onApplyContrastEvidence: (
+    ctPath: string,
+    ctInfo: VolumeInfo | null,
+  ) => Promise<{ isContrast: boolean; lookup: AnnotationLookup | null }>
   // The one path that loads a manifest row properly: prefers a saved
   // annotation over the original prediction, checks geometry, and applies
   // whatever is recorded about the scan being contrast-enhanced.
@@ -453,8 +465,10 @@ export default function Pane({
       onChange({
         ctPath: directory,
         ctInfo: info,
-        loading: false,
-        loadingMessage: null,
+        // Stays true until the saved annotation (if any) has been loaded
+        // below, so the pane never briefly looks like it has no annotation.
+        loading: true,
+        loadingMessage: 'Loading CT scan...',
         index: Math.floor(info.plane_lengths[pane.plane] / 2),
         // A mask (and anything computed against it) belongs to whatever CT
         // it was created/loaded for — carrying it over to a different scan
@@ -485,7 +499,39 @@ export default function Pane({
         annotationLookup: null,
         contrastNotice: null,
       })
-      await onApplyContrastEvidence(directory, info)
+      const { lookup } = await onApplyContrastEvidence(directory, info)
+
+      // Reload this scan's own saved annotation. Outside a manifest there is
+      // no annotation_path column to read, so without this a scan that had
+      // been annotated and saved came back with no segmentation at all —
+      // while its contrast seed, which goes through the same lookup, came
+      // back fine. Both are recorded in the same per-scan folder; both
+      // should return.
+      if (lookup?.annotationPath) {
+        onChange({ loadingMessage: 'Loading your annotation...' })
+        try {
+          const maskInfo = await loadVolume(lookup.annotationPath, true)
+          const mismatch = detectGeometryMismatch(info, maskInfo)
+          if (mismatch) {
+            onChange({ maskWarning: mismatch })
+          } else {
+            onChange({
+              maskPath: lookup.annotationPath,
+              maskInfo,
+              maskSource: 'annotation',
+              maskAnnotationType: lookup.annotationType,
+              maskBaselineVolumeId: maskInfo.volume_id,
+              maskBaselineVersion: pane.editVersion,
+              hasUnsavedMaskChanges: false,
+              lastSavedAt: lookup.savedAt,
+              showMask: true,
+            })
+          }
+        } catch (e) {
+          onChange({ maskWarning: `Could not load the saved annotation: ${e instanceof Error ? e.message : String(e)}` })
+        }
+      }
+      onChange({ loading: false, loadingMessage: null })
     } catch (e) {
       onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
     }

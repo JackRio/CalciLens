@@ -3,7 +3,7 @@ import './App.css'
 import Pane from './components/Pane'
 import KeybindSettings from './components/KeybindSettings'
 import ReviewTagsPicker from './components/ReviewTagsPicker'
-import type { ManifestRow, PaneState, VolumeInfo } from './types'
+import type { AnnotationLookup, ManifestRow, PaneState, VolumeInfo } from './types'
 import {
   CALCIFICATIONS_PRESET,
   DEFAULT_MANIFEST_CONFIG,
@@ -340,14 +340,24 @@ export default function App() {
       return
     }
 
-    const isContrastScan = await applyContrastEvidence(paneId, ctPathForMaskCheck, loadedCtInfo, row)
+    const { isContrast: isContrastScan, lookup } = await applyContrastEvidence(
+      paneId,
+      ctPathForMaskCheck,
+      loadedCtInfo,
+      row,
+    )
 
     // Prefer this app's own saved annotation over the original prediction.
     // Without this, a case that shipped with a mask always re-opened that
     // mask, and every previous session's work stayed invisible on disk —
     // and got overwritten by the next save.
-    const useAnnotation = row.annotation_exists && !!row.annotation_path
-    const maskToLoad = useAnnotation ? row.annotation_path : row.mask_path
+    // Precedence: what the manifest says, then what is actually on disk for
+    // this scan, then the original prediction. The middle one matters for a
+    // manifest with no annotation column configured, or one written before
+    // that column existed — otherwise the user's own work stays invisible.
+    const annotationPath = (row.annotation_exists && row.annotation_path) || lookup?.annotationPath || ''
+    const useAnnotation = !!annotationPath
+    const maskToLoad = useAnnotation ? annotationPath : row.mask_path
     const maskSource: PaneState['maskSource'] = useAnnotation ? 'annotation' : 'prediction'
     const maskIsPresent = useAnnotation || row.mask_exists
 
@@ -407,12 +417,19 @@ export default function App() {
   // checkbox happens to be ticked. That check used to run only when contrast
   // mode was already on, so opening a contrast scan without ticking the box
   // silently annotated it against the fixed 130 HU non-contrast threshold.
+  // Applies everything previous sessions recorded about a scan: whether it
+  // is contrast-enhanced, and where its saved annotation lives. Returns the
+  // lookup so callers can act on the annotation too — reloading the
+  // annotation used to be driven solely by the manifest's annotation_path
+  // column, so it simply didn't happen for a scan loaded outside a manifest
+  // (a DICOM directory, or stepping between series). The seed came back and
+  // the annotation silently did not.
   async function applyContrastEvidence(
     paneId: string,
     ctPath: string,
     ctInfo: PaneState['ctInfo'],
     row?: ManifestRow,
-  ): Promise<boolean> {
+  ): Promise<{ isContrast: boolean; lookup: AnnotationLookup | null }> {
     let lookup = null
     try {
       lookup = await lookupAnnotation(
@@ -439,7 +456,7 @@ export default function App() {
         editThresholdMin: DEFAULT_THRESHOLD_HU,
         editRegionGrowThreshold: DEFAULT_THRESHOLD_HU,
       })
-      return false
+      return { isContrast: false, lookup }
     }
     updatePane(paneId, {
       annotationLookup: lookup,
@@ -451,7 +468,7 @@ export default function App() {
         ? null
         : 'This is recorded as a contrast scan, but no seed/threshold has been placed for it yet. Place and finalize a seed before annotating.',
     })
-    return true
+    return { isContrast: true, lookup }
   }
 
   function clearPaneScan(paneId: string, errorMsg: string) {

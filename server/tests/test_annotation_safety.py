@@ -443,3 +443,71 @@ def test_a_diverted_scan_keeps_its_own_folder_on_later_saves(tmp_path):
     assert final["path"] == diverted["path"]
     dated = os.path.join(save_dir, ap.dated_folder_name())
     assert sorted(os.listdir(dated)) == ["image", "image__2"], "no __3 should ever appear"
+
+
+# --------------------------------------------------------------------------
+# Reloading a saved annotation must not depend on a manifest
+# --------------------------------------------------------------------------
+
+
+def test_lookup_reports_the_saved_annotation_without_a_manifest(tmp_path):
+    """Reloading an annotation used to be driven solely by the manifest's
+    annotation_path column, so a scan loaded outside a manifest (a DICOM
+    directory, or stepping between series) came back with no segmentation —
+    while its contrast seed, which goes through this same lookup, came back
+    fine. The frontend now loads `annotation_path` from here, so this
+    endpoint reporting it is what makes that work."""
+    import app as app_mod
+    import contrast_threshold as ct_mod
+
+    save_dir = str(tmp_path / "out")
+    ct = make_ct(str(tmp_path / "case" / "image.nii.gz"))
+
+    saved = vs.save_mask(fake_volume(), ct_path=ct, base_dir=save_dir, annotation_type="contrast")
+    ct_mod.save_sidecar(ct, {"threshold_hu": 250.0}, base_dir=save_dir)
+
+    found = app_mod.annotations_lookup(ct_path=ct, save_dir=save_dir)
+    assert found["found"] is True
+    assert found["annotation_path"] == saved["path"], "the saved annotation must be discoverable"
+    assert found["has_seed"] is True, "the seed and the annotation must both come back, not just the seed"
+    assert found["source_record"]["annotation_type"] == "contrast"
+
+
+def test_lookup_is_keyed_by_series_uid_for_a_dicom_directory(tmp_path):
+    """Two series in one DICOM folder must not see each other's annotation."""
+    import app as app_mod
+
+    save_dir = str(tmp_path / "out")
+    series_dir = str(tmp_path / "1.2.840.PARENT")
+    os.makedirs(series_dir)
+
+    a = vs.save_mask(
+        fake_volume(), ct_path=series_dir, series_uid="1.3.6.SERIES_A",
+        base_dir=save_dir, annotation_type="contrast",
+    )
+    vs.save_mask(
+        fake_volume(), ct_path=series_dir, series_uid="1.3.6.SERIES_B",
+        base_dir=save_dir, annotation_type="non-contrast",
+    )
+
+    found_a = app_mod.annotations_lookup(ct_path=series_dir, series_uid="1.3.6.SERIES_A", save_dir=save_dir)
+    found_b = app_mod.annotations_lookup(ct_path=series_dir, series_uid="1.3.6.SERIES_B", save_dir=save_dir)
+    assert found_a["annotation_path"] == a["path"]
+    assert found_b["annotation_path"] != a["path"]
+    assert found_a["source_record"]["annotation_type"] == "contrast"
+    assert found_b["source_record"]["annotation_type"] == "non-contrast"
+
+
+def test_lookup_finds_an_annotation_via_the_recorded_path_hint(tmp_path):
+    """The save directory may have been changed or cleared since the
+    annotation was saved; the manifest's recorded path still points at it."""
+    import app as app_mod
+
+    save_dir = str(tmp_path / "out")
+    ct = make_ct(str(tmp_path / "case" / "image.nii.gz"))
+    saved = vs.save_mask(fake_volume(), ct_path=ct, base_dir=save_dir, annotation_type="non-contrast")
+
+    # No save_dir passed at all — only the recorded path.
+    found = app_mod.annotations_lookup(ct_path=ct, annotation_path=saved["path"])
+    assert found["found"] is True
+    assert found["annotation_path"] == saved["path"]

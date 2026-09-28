@@ -163,7 +163,13 @@ errors that `vite build` alone can surface less clearly.
     manifest load, which silently took a different route from every subsequent case.
   - **`applyContrastEvidence`** runs on *every* CT load regardless of whether contrast mode is on,
     and decides from recorded evidence (a saved seed, a previous annotation's own type, or the
-    manifest's contrast column) — not from the checkbox. That check used to be gated behind
+    manifest's contrast column) — not from the checkbox. It **returns the lookup**, and both
+    callers use it to reload the scan's saved annotation as well as its seed: `loadRowIntoPane`
+    falls back to it when the manifest row has no `annotation_path`, and `Pane.loadCtEntry` relies
+    on it entirely. Reloading an annotation was once driven *solely* by the manifest column while
+    the seed went through the lookup — two different mechanisms for the same job — so a scan loaded
+    outside a manifest (a DICOM directory, or stepping between series) came back with its seed
+    restored and **no segmentation at all**. Keep both on the one mechanism. That check used to be gated behind
     `pane.contrastMode`, so a contrast scan opened without ticking the box was silently annotated
     against the fixed 130 HU threshold. It also clears per-scan contrast state so a threshold can
     never carry into the next case.
@@ -289,8 +295,11 @@ errors that `vite build` alone can surface less clearly.
   split view (it's a global App-level listener, not per-pane-scoped).
 - **Mask editing**: brush + region-grow tools, overwrite modes (any/label/threshold), undo via
   `editVersion` counter, save/reset, never synced between split-view panes.
-- **Annotation saving**: one folder per scan under `Manual_Annotations_<date>/` (see
-  `annotation_paths.py`), a prompt rather than a silent overwrite in all three conflict cases
+- **Annotation saving/reloading**: one folder per scan under `Manual_Annotations_<date>/` (see
+  `annotation_paths.py`), reloaded automatically whenever that scan is opened again — through the
+  manifest's `annotation_path` column when there is one, and otherwise straight from
+  `/api/annotations/lookup`, so it works for a plain DICOM-directory load and for series
+  Previous/Next too; a prompt rather than a silent overwrite in all three conflict cases
   (same scan today / same scan an earlier day / a different scan with the same name), the saved
   path recorded in the manifest's own `annotation_path` column, and a toolbar tag saying whether
   you are looking at **your annotation**, the **original prediction**, or a **new, unsaved** mask —

@@ -48,6 +48,20 @@ import type { SaveMaskConflict } from '../api'
 import { getCachedCac, setCachedCac } from '../lesionCache'
 import { useContrastSettings } from '../useContrastSettings'
 import InfoPanel from './InfoPanel'
+import { BUILTIN_PRESET_ID, builtinColors, useLabelPresets } from '../labelPresets'
+import { edgeLabels, flipCode, useDisplayOrientation } from '../displayOrientation'
+import DisplayOrientationBox from './DisplayOrientationBox'
+import EmptyStateSketch from './EmptyStateSketch'
+import SettingsPullHandle from './SettingsPullHandle'
+import MultiPlaneViewer, {
+  IDENTITY_VIEW,
+  isZoomed,
+  middleCursor,
+  planeIndexOf,
+  withPlaneIndex,
+  type MprCursor,
+  type MprView,
+} from './MultiPlaneViewer'
 import LabelColorEditor from './LabelColorEditor'
 import CaseLoader from './CaseLoader'
 import AlphaSpinner from './AlphaSpinner'
@@ -56,6 +70,8 @@ import ReasonPicker from './ReasonPicker'
 import ScorePanel from './ScorePanel'
 import LesionScoreBox from './LesionScoreBox'
 import ContrastSeedBox from './ContrastSeedBox'
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
 
 const PLANES: Plane[] = ['axial', 'sagittal', 'coronal']
 
@@ -178,6 +194,7 @@ export default function Pane({
   onAnnotationSaveDirChange,
   onApplyContrastEvidence,
   onLoadRow,
+  viewOnly = false,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -200,8 +217,11 @@ export default function Pane({
   // annotation over the original prediction, checks geometry, and applies
   // whatever is recorded about the scan being contrast-enhanced.
   onLoadRow: (row: ManifestRow) => void
+  // View mode: no editing, commenting, tagging, scoring or saving UI.
+  viewOnly?: boolean
 }) {
-  const [settingsOpen, setSettingsOpen] = useState(true)
+  // Closed on first load: the empty viewer explains how to load a scan and offers a pull-handle for this panel.
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [copyingToOtherPane, setCopyingToOtherPane] = useState(false)
   const [probe, setProbe] = useState<{ hu: number | null; label: number | null; row: number; col: number } | null>(
     null,
@@ -570,7 +590,7 @@ export default function Pane({
     if (next < 0 || next >= pane.dicomSeriesList.length) return
     const entry = pane.dicomSeriesList[next]
     onChange({ dicomSeriesIndex: next })
-    loadCtEntry(entry.directory, entry.seriesUid)
+    loadCtEntry(entry.directory, entry.seriesUid || undefined)
   }
 
   async function doLoadMask(path: string) {
@@ -1586,13 +1606,90 @@ export default function Pane({
     setScoreConfirmPending(null)
   }
 
+  // Each plane remembers where it was for the scan on screen, and a plane
+  // that has not been visited yet opens at its middle slice (rather than
+  // inheriting the previous plane's index, which meant something else).
+  const planeMemory = useRef<{ vol: string; idx: Partial<Record<Plane, number>> }>({ vol: '', idx: {} })
+
+  // ---- Show all: the three views, linked through one point ----
+  const orient = useDisplayOrientation()
+  const flip = viewOnly ? flipCode(orient) : ''
+  const [mprState, setMprState] = useState<(MprCursor & { vol: string }) | null>(null)
+  const [mprActive, setMprActive] = useState<Plane>('axial')
+  const mprCursor: MprCursor | null = pane.ctInfo
+    ? mprState && mprState.vol === pane.ctInfo.volume_id
+      ? mprState
+      : middleCursor(pane.ctInfo.plane_lengths)
+    : null
+  // Authoritative live cursor, updated synchronously so a burst of wheel
+  // events compounds (state alone would give every event the same start).
+  const mprLive = useRef<MprCursor | null>(null)
+  mprLive.current = mprCursor
+
+  function setMprCursor(c: MprCursor) {
+    if (!pane.ctInfo) return
+    mprLive.current = c
+    setMprState({ ...c, vol: pane.ctInfo.volume_id })
+  }
+
+  function stepMpr(plane: Plane, delta: 1 | -1) {
+    if (!pane.ctInfo || !mprLive.current) return
+    const len = pane.ctInfo.plane_lengths
+    setMprCursor(withPlaneIndex(mprLive.current, plane, planeIndexOf(mprLive.current, plane) + delta, len))
+  }
+  // Zoom/pan of each of the three views, tied to the scan on screen.
+  const IDENTITY_VIEWS: Record<Plane, MprView> = {
+    axial: IDENTITY_VIEW,
+    sagittal: IDENTITY_VIEW,
+    coronal: IDENTITY_VIEW,
+  }
+  const [mprViewState, setMprViewState] = useState<{ vol: string; views: Record<Plane, MprView> } | null>(null)
+  const mprViews =
+    pane.ctInfo && mprViewState && mprViewState.vol === pane.ctInfo.volume_id ? mprViewState.views : IDENTITY_VIEWS
+  const mprZoomed = Object.values(mprViews).some(isZoomed)
+
+  function updateMprView(plane: Plane, update: (cur: MprView) => MprView) {
+    const vol = pane.ctInfo?.volume_id
+    if (!vol) return
+    setMprViewState((prev) => {
+      const base = prev && prev.vol === vol ? prev.views : IDENTITY_VIEWS
+      return { vol, views: { ...base, [plane]: update(base[plane]) } }
+    })
+  }
+
+  const stepMprRef = useRef(stepMpr)
+  stepMprRef.current = stepMpr
+  const mprActiveRef = useRef(mprActive)
+  mprActiveRef.current = mprActive
+
+  function enterShowAll() {
+    if (!pane.ctInfo || !mprCursor) return
+    setMprCursor(withPlaneIndex(mprCursor, pane.plane, pane.index, pane.ctInfo.plane_lengths))
+    setMprActive(pane.plane)
+    onChange({ showAll: true })
+  }
+
+  // Leaving Show all lands on `plane` at the slice the shared point has there.
+  function exitShowAll(plane: Plane) {
+    if (!pane.ctInfo || !mprCursor) return onChange({ showAll: false, plane })
+    onChange({ showAll: false, plane, index: planeIndexOf(mprCursor, plane) })
+  }
+
   function setPlane(plane: Plane) {
     if (!pane.ctInfo) {
       onChange({ plane })
       return
     }
+    if (pane.showAll) return exitShowAll(plane)
+    const mem = planeMemory.current
+    if (mem.vol !== pane.ctInfo.volume_id) {
+      mem.vol = pane.ctInfo.volume_id
+      mem.idx = {}
+    }
+    mem.idx[pane.plane] = pane.index
     const len = pane.ctInfo.plane_lengths[plane]
-    onChange({ plane, index: Math.min(pane.index, len - 1) })
+    const target = mem.idx[plane] ?? Math.floor(len / 2)
+    onChange({ plane, index: clamp(target, 0, len - 1) })
   }
 
   // Wheel events can arrive in a rapid burst (a trackpad flick easily fires
@@ -1639,6 +1736,8 @@ export default function Pane({
       // stopPropagation() guards get a chance to run — so re-check
       // isOverUIBox here rather than relying on propagation order.
       if (isOverUIBox(e.target)) return
+      // Show all: each view handles its own wheel (see MultiPlaneViewer).
+      if (pane.showAll) return
       e.preventDefault()
       if (e.shiftKey && circleClickActiveRef.current) {
         // Shift+scroll resizes the circle-seed radius instead of scrubbing
@@ -1664,7 +1763,7 @@ export default function Pane({
         onChange({ index: next })
       }
     },
-    [pane.ctInfo, pane.plane, onChange],
+    [pane.ctInfo, pane.plane, pane.showAll, onChange],
   )
 
   useEffect(() => {
@@ -1673,6 +1772,21 @@ export default function Pane({
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
   }, [onWheel])
+
+  // Presets are shared by every pane, so a pane sitting on one has to follow
+  // edits made to it from the other pane, and fall back to the built-in when
+  // it is deleted there.
+  const labelPresets = useLabelPresets()
+  useEffect(() => {
+    if (pane.labelPresetId === BUILTIN_PRESET_ID) return
+    const preset = labelPresets.find((p) => p.id === pane.labelPresetId)
+    if (!preset) {
+      onChange({ labelPresetId: BUILTIN_PRESET_ID, maskColors: builtinColors() })
+    } else if (JSON.stringify(preset.colors) !== JSON.stringify(pane.maskColors)) {
+      onChange({ maskColors: preset.colors.map((c) => ({ ...c })) })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labelPresets, pane.labelPresetId, pane.maskColors])
 
   // Configurable keyboard shortcuts (see KeybindSettings), active only for
   // whichever pane was last clicked into (isActive — App.tsx tracks this
@@ -1688,6 +1802,10 @@ export default function Pane({
 
       if (pane.ctInfo && keybinds.prevSlice.some((c) => comboMatches(e, c))) {
         e.preventDefault()
+        if (pane.showAll) {
+          stepMprRef.current(mprActiveRef.current, -1)
+          return
+        }
         const len = pane.ctInfo.plane_lengths[pane.plane]
         const next = Math.max(0, Math.min(len - 1, liveRef.current.index - 1))
         liveRef.current.index = next
@@ -1696,6 +1814,10 @@ export default function Pane({
       }
       if (pane.ctInfo && keybinds.nextSlice.some((c) => comboMatches(e, c))) {
         e.preventDefault()
+        if (pane.showAll) {
+          stepMprRef.current(mprActiveRef.current, 1)
+          return
+        }
         const len = pane.ctInfo.plane_lengths[pane.plane]
         const next = Math.max(0, Math.min(len - 1, liveRef.current.index + 1))
         liveRef.current.index = next
@@ -1712,12 +1834,12 @@ export default function Pane({
         onChange({ thresholdEnabled: !pane.thresholdEnabled })
         return
       }
-      if (pane.manifestRows.length > 0 && keybinds.toggleReviewMode.some((c) => comboMatches(e, c))) {
+      if (!viewOnly && pane.manifestRows.length > 0 && keybinds.toggleReviewMode.some((c) => comboMatches(e, c))) {
         e.preventDefault()
         onToggleReviewMode()
         return
       }
-      if (keybinds.toggleScoreComputeMode.some((c) => comboMatches(e, c))) {
+      if (!viewOnly && keybinds.toggleScoreComputeMode.some((c) => comboMatches(e, c))) {
         e.preventDefault()
         const next = !pane.scoreComputeMode
         onChange(next ? { scoreComputeMode: true, editMode: false } : { scoreComputeMode: false })
@@ -1729,6 +1851,7 @@ export default function Pane({
   }, [
     isActive,
     keybinds,
+    pane.showAll,
     pane.ctInfo,
     pane.plane,
     pane.showMask,
@@ -1771,6 +1894,7 @@ export default function Pane({
   }
 
   function onMouseDown(e: React.MouseEvent) {
+    if (pane.showAll) return
     if (isOverUIBox(e.target)) return
     if (e.button === 1) {
       // Middle-click drag always pans, regardless of edit/score mode, since
@@ -1939,6 +2063,7 @@ export default function Pane({
   }, [shiftHeld, circleClickActive])
 
   function onMouseMove(e: React.MouseEvent) {
+    if (pane.showAll) return
     lastViewerMousePos.current = { clientX: e.clientX, clientY: e.clientY }
     // Self-heal against a missed mouseup (e.g. the button was released while
     // briefly outside the window, or a fast click dropped/coalesced the
@@ -2081,6 +2206,7 @@ export default function Pane({
       index: pane.index,
       row,
       col,
+      flip,
     })
       .then((res) => setProbe({ ...res, row, col }))
       .catch(() => {})
@@ -2112,6 +2238,7 @@ export default function Pane({
   }
 
   function resetView() {
+    setMprViewState(null)
     onChange({ zoom: 1, panX: 0, panY: 0, windowLevel: DEFAULT_WINDOW_LEVEL, windowWidth: DEFAULT_WINDOW_WIDTH })
   }
 
@@ -2145,8 +2272,19 @@ export default function Pane({
         thresholdColor: pane.thresholdColor,
         thresholdAlpha: pane.thresholdAlpha,
         editVersion: pane.editVersion,
+        flip,
       })
     : null
+
+  // Which scan is on screen: a DICOM series is identified by its
+  // SeriesInstanceUID (nothing is shown when the tags don't carry one), a
+  // single image by its file name, extension included (.nii.gz stays whole).
+  const scanIdentity: { tag: string; value: string } | null = (() => {
+    if (!pane.ctInfo) return null
+    if (pane.ctInfo.dicom_series_uid) return { tag: 'SUID', value: pane.ctInfo.dicom_series_uid }
+    const name = pane.ctPath.split(/[\\/]/).pop() ?? ''
+    return /\.(nii(\.gz)?|mha|mhd|nrrd|nhdr)$/i.test(name) ? { tag: 'Filename', value: name } : null
+  })()
 
   return (
     <div className={isActive ? 'pane pane-active' : 'pane'} onMouseDownCapture={onActivate}>
@@ -2155,13 +2293,22 @@ export default function Pane({
           {PLANES.map((p) => (
             <button
               key={p}
-              className={p === pane.plane ? 'active' : ''}
+              className={p === pane.plane && !pane.showAll ? 'active' : ''}
               onClick={() => setPlane(p)}
             >
               {p[0].toUpperCase() + p.slice(1)}
             </button>
           ))}
         </div>
+        {viewOnly && pane.ctInfo && (
+          <button
+            className={`show-all-btn${pane.showAll ? ' active' : ''}`}
+            onClick={() => (pane.showAll ? exitShowAll(mprActive) : enterShowAll())}
+            title={pane.showAll ? 'Back to a single view' : 'See axial, sagittal and coronal at once'}
+          >
+            {pane.showAll ? 'Single view' : 'Show all'}
+          </button>
+        )}
         {pane.manifestRows.length > 0 && (
           <div className="case-nav-tabs">
             <button
@@ -2206,6 +2353,7 @@ export default function Pane({
             >
               Next ▸
             </button>
+            {!viewOnly && (
             <button
               className={currentRow?.comment ? 'has-comment' : ''}
               onClick={openCommentModal}
@@ -2214,7 +2362,8 @@ export default function Pane({
             >
               {currentRow?.comment ? 'Read' : 'Comment'}
             </button>
-            {(pane.manifestConfig.reasonColumn || pane.manifestConfig.includeDefaultReasonTags) && (
+            )}
+            {!viewOnly && (pane.manifestConfig.reasonColumn || pane.manifestConfig.includeDefaultReasonTags) && (
               <div className="reason-picker-anchor">
                 <button
                   className={currentRow?.reason.length ? 'has-comment' : ''}
@@ -2235,7 +2384,7 @@ export default function Pane({
                 )}
               </div>
             )}
-            {onCopyToOtherPane && (
+            {!viewOnly && onCopyToOtherPane && (
               <button
                 onClick={handleCopyToOtherPane}
                 disabled={!currentRow || copyingToOtherPane}
@@ -2300,6 +2449,7 @@ export default function Pane({
           )}
           {pane.ctInfo &&
             (pane.zoom !== 1 ||
+              mprZoomed ||
               pane.panX !== 0 ||
               pane.panY !== 0 ||
               pane.windowLevel !== DEFAULT_WINDOW_LEVEL ||
@@ -2350,7 +2500,9 @@ export default function Pane({
           ref={viewerAreaRef}
           className="viewer-area"
           style={
-            pane.editMode && pane.editTool === 'brush'
+            pane.showAll
+              ? { cursor: 'crosshair' }
+              : pane.editMode && pane.editTool === 'brush'
               ? { cursor: 'none' }
               : pane.seedPlacementMode
                 ? { cursor: 'crosshair' }
@@ -2367,7 +2519,19 @@ export default function Pane({
           }}
           onContextMenu={(e) => e.preventDefault()}
         >
-          {imgSrc ? (
+          {pane.showAll && pane.ctInfo && mprCursor ? (
+            <MultiPlaneViewer
+              pane={pane}
+              cursor={mprCursor}
+              orient={orient}
+              activePlane={mprActive}
+              onCursor={setMprCursor}
+              onStep={stepMpr}
+              views={mprViews}
+              onView={updateMprView}
+              onActivePlane={setMprActive}
+            />
+          ) : imgSrc ? (
             <img
               ref={imgRef}
               src={imgSrc}
@@ -2397,7 +2561,7 @@ export default function Pane({
               {pane.loadingMessage || 'Loading...'}
             </div>
           ) : (
-            <div className="viewer-placeholder">Developed by a bored PhD student with vibes only</div>
+            <EmptyStateSketch viewOnly={viewOnly} showCallouts={!settingsOpen} />
           )}
           {/* Always mounted (just hidden) so cursorDivRef is available the
               moment a mouse move needs it — positioned and shown/hidden via
@@ -2409,6 +2573,22 @@ export default function Pane({
           <div ref={jumpMarkerRef} className="jump-marker" hidden />
           <div ref={seedSphereRef} className="seed-sphere-circle" hidden />
           <div ref={seedMarkerRef} className="seed-marker" hidden />
+          {!settingsOpen && !pane.ctInfo && !pane.loading && <SettingsPullHandle onOpen={() => setSettingsOpen(true)} />}
+          {viewOnly && orient.letters && imgSrc && !pane.showAll && (
+            <>
+              {(() => {
+                const l = edgeLabels(pane.plane, orient)
+                return (
+                  <>
+                    <span className="edge-letter edge-letter-left">{l.left}</span>
+                    <span className="edge-letter edge-letter-right">{l.right}</span>
+                    <span className="edge-letter edge-letter-top">{l.top}</span>
+                    <span className="edge-letter edge-letter-bottom">{l.bottom}</span>
+                  </>
+                )
+              })()}
+            </>
+          )}
           {pane.ctInfo && (
             <div className="viewer-left-controls">
               <div className="wl-box" ref={wlBoxRef} onWheel={stopWheel}>
@@ -2455,7 +2635,7 @@ export default function Pane({
                   </>
                 )}
               </div>
-              {pane.contrastMode && (
+              {!viewOnly && pane.contrastMode && (
                 <div ref={contrastBoxRef}>
                   <ContrastSeedBox
                     pane={pane}
@@ -2475,7 +2655,7 @@ export default function Pane({
           )}
           {pane.ctInfo && (
             <div className="viewer-top-right">
-              <div>
+              <div hidden={pane.showAll}>
                 <span>
                   {pane.plane} {pane.index + 1}/{planeLength}
                 </span>
@@ -2488,7 +2668,7 @@ export default function Pane({
                 )}
               </div>
               {currentRow && currentRow.patient_id && (
-                <div className="viewer-patient-id">Patient ID: {currentRow.patient_id}</div>
+                <div className="viewer-patient-id">Index/ID: {currentRow.patient_id}</div>
               )}
             </div>
           )}
@@ -2510,7 +2690,7 @@ export default function Pane({
                 onDragHandleDown={handleScorePanelDragStart}
               />
             )}
-          {pane.ctInfo && pane.contrastMode && pane.volumeScores && (
+          {!viewOnly && pane.ctInfo && pane.contrastMode && pane.volumeScores && (
             <ScorePanel
               ref={scorePanelRef}
               style={
@@ -2573,7 +2753,7 @@ export default function Pane({
               </div>
             </div>
           )}
-          {pane.ctInfo && (
+          {!viewOnly && pane.ctInfo && (
             <div
               ref={editBoxRef}
               className="viewer-bottom-right"
@@ -2609,7 +2789,7 @@ export default function Pane({
               )}
             </div>
           )}
-          {pane.ctInfo && pane.maskInfo && (
+          {!viewOnly && pane.ctInfo && pane.maskInfo && (
             <div
               ref={scoreComputeBoxRef}
               className="viewer-score-compute-box"
@@ -2631,9 +2811,14 @@ export default function Pane({
               />
             </div>
           )}
+          {pane.ctInfo && scanIdentity && (
+            <div className="viewer-scan-identity" title={scanIdentity.value}>
+              {scanIdentity.tag}: {scanIdentity.value}
+            </div>
+          )}
         </div>
 
-        {pane.ctInfo && (
+        {pane.ctInfo && !pane.showAll && (
           <input
             className="slice-slider"
             type="range"
@@ -2646,6 +2831,19 @@ export default function Pane({
 
         {settingsOpen && (
           <div className="pane-settings">
+            <div className="settings-close-row">
+              <button
+                type="button"
+                className="settings-close-circle"
+                onClick={() => setSettingsOpen(false)}
+                aria-label="Hide settings"
+                title="Hide settings"
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+                  <path d="M3 6 L8 11 L13 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            </div>
             <CaseLoader
               pane={pane}
               onChange={onChange}
@@ -2656,23 +2854,27 @@ export default function Pane({
               onRequestSelectRow={requestSelectRow}
               onLoadRow={onLoadRow}
               hasUnsavedMaskChanges={hasUnsavedMaskChanges}
+              viewOnly={viewOnly}
             />
 
-            <div className="settings-section">
-              <LabelColorEditor colors={pane.maskColors} onChange={(colors) => onChange({ maskColors: colors })} />
-            </div>
-
-            <div className="settings-section">
-              <div className="settings-title">HU threshold overlay color</div>
-              <label>
-                Color
+            <div className="settings-section label-colors-card">
+              <LabelColorEditor
+                colors={pane.maskColors}
+                presetId={pane.labelPresetId}
+                onChange={(colors, presetId) => onChange({ maskColors: colors, labelPresetId: presetId })}
+              />
+              <div className="threshold-color-row">
+                <span>HU threshold overlay</span>
                 <input
                   type="color"
                   value={pane.thresholdColor}
                   onChange={(e) => onChange({ thresholdColor: e.target.value })}
+                  title="Color of the HU threshold overlay"
                 />
-              </label>
+              </div>
             </div>
+
+            {viewOnly && <DisplayOrientationBox />}
 
             <div className="settings-section">
               <InfoPanel title="CT image" info={pane.ctInfo} />

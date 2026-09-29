@@ -5,7 +5,6 @@ import KeybindSettings from './components/KeybindSettings'
 import ReviewTagsPicker from './components/ReviewTagsPicker'
 import type { AnnotationLookup, ManifestRow, PaneState, VolumeInfo } from './types'
 import {
-  CALCIFICATIONS_PRESET,
   DEFAULT_MANIFEST_CONFIG,
   DEFAULT_THRESHOLD_COLOR,
   DEFAULT_THRESHOLD_HU,
@@ -19,11 +18,13 @@ import {
 } from './types'
 import { loadVolume, lookupAnnotation, resolveDicomLoad, saveManifestComment, saveManifestReason } from './api'
 import { useKeybinds } from './useKeybinds'
+import { initialLabelColors } from './labelPresets'
 import { useAnnotationSaveDir } from './useAnnotationSaveDir'
 
 let paneCounter = 0
 function makePane(): PaneState {
   paneCounter += 1
+  const startColors = initialLabelColors()
   return {
     id: `pane-${paneCounter}`,
     manifestConfig: { ...DEFAULT_MANIFEST_CONFIG },
@@ -35,6 +36,7 @@ function makePane(): PaneState {
     dicomSeriesIndex: null,
     batchLoadCollapsed: false,
     wlMinimized: true,
+    showAll: false,
     reasonOptions: [],
     statusOptions: [],
     hasAnnotationColumn: false,
@@ -56,7 +58,8 @@ function makePane(): PaneState {
     windowWidth: DEFAULT_WINDOW_WIDTH,
 
     showMask: true,
-    maskColors: CALCIFICATIONS_PRESET.map((c) => ({ ...c })),
+    maskColors: startColors.colors,
+    labelPresetId: startColors.presetId,
     maskAlpha: 1.0,
 
     thresholdEnabled: false,
@@ -139,7 +142,10 @@ const CASE_RESET: Partial<PaneState> = {
   contrastMeta: null,
 }
 
-export default function App() {
+export type AppMode = 'view'
+
+export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => void } = {}) {
+  const viewOnly = mode === 'view'
   const [panes, setPanes] = useState<PaneState[]>([makePane()])
   const [linked, setLinked] = useState(true)
   const [syncNavByPatientId, setSyncNavByPatientId] = useState(true)
@@ -355,7 +361,9 @@ export default function App() {
     // this scan, then the original prediction. The middle one matters for a
     // manifest with no annotation column configured, or one written before
     // that column existed — otherwise the user's own work stays invisible.
-    const annotationPath = (row.annotation_exists && row.annotation_path) || lookup?.annotationPath || ''
+    const annotationPath = viewOnly
+      ? ''
+      : (row.annotation_exists && row.annotation_path) || lookup?.annotationPath || ''
     const useAnnotation = !!annotationPath
     const maskToLoad = useAnnotation ? annotationPath : row.mask_path
     const maskSource: PaneState['maskSource'] = useAnnotation ? 'annotation' : 'prediction'
@@ -432,7 +440,9 @@ export default function App() {
   ): Promise<{ isContrast: boolean; lookup: AnnotationLookup | null }> {
     let lookup = null
     try {
-      lookup = await lookupAnnotation(
+      // View mode never goes looking for saved annotations (Manual_Annotations)
+      // and has no contrast handling, so nothing is loaded that wasn't asked for.
+      if (!viewOnly) lookup = await lookupAnnotation(
         ctPath,
         ctInfo?.dicom_series_uid ?? null,
         annotationSaveDir || null,
@@ -441,7 +451,7 @@ export default function App() {
     } catch {
       /* the lookup is advisory — a failure must not block loading a scan */
     }
-    const isContrast = row?.contrast === true || !!lookup?.hasSeed || lookup?.annotationType === 'contrast'
+    const isContrast = !viewOnly && (row?.contrast === true || !!lookup?.hasSeed || lookup?.annotationType === 'contrast')
 
     if (!isContrast) {
       // Nothing says this scan is contrast — make sure the previous case's
@@ -636,7 +646,12 @@ export default function App() {
   return (
     <div className="app">
       <div className="app-header">
-        <h1>CT / Segmentation Viewer</h1>
+        {onExit && (
+          <button onClick={onExit} title="Back to mode selection">
+            ← Modes
+          </button>
+        )}
+        <h1>{viewOnly ? 'View' : 'CT / Segmentation Viewer'}</h1>
         <div className="app-header-controls">
           {panes.length > 1 && (
             <label className="link-toggle" title="Sync scroll / plane / zoom across panes">
@@ -645,7 +660,7 @@ export default function App() {
             </label>
           )}
           {panes.length > 1 && (
-            <label className="link-toggle" title="When on, clicking Previous/Next in one pane also loads the matching Patient ID case in the other pane">
+            <label className="link-toggle" title="When on, clicking Previous/Next in one pane also loads the matching Index/ID case in the other pane">
               <input
                 type="checkbox"
                 checked={syncNavByPatientId}
@@ -654,6 +669,7 @@ export default function App() {
               Iteration
             </label>
           )}
+          {!viewOnly && (
           <button
             className={reviewModeOn ? 'active' : ''}
             onClick={toggleReviewMode}
@@ -665,6 +681,8 @@ export default function App() {
           >
             Review{reviewModeOn ? ' ●' : ''}
           </button>
+          )}
+          {!viewOnly && (
           <div className="reason-picker-anchor">
             <button
               onClick={() => setReviewTagsPickerOpen((v) => !v)}
@@ -683,6 +701,7 @@ export default function App() {
               />
             )}
           </div>
+          )}
           {panes.length > 1 && (
             <div
               className="review-parent-select"
@@ -705,7 +724,7 @@ export default function App() {
           <button onClick={() => setKeybindSettingsOpen(true)} title="Keyboard shortcut settings">
             ⌨ Shortcuts
           </button>
-          {panes.length < 2 ? (
+          {viewOnly ? null : panes.length < 2 ? (
             <button onClick={addSplit}>+ Split view</button>
           ) : (
             <span className="split-hint">Split view active</span>
@@ -731,11 +750,17 @@ export default function App() {
             onAnnotationSaveDirChange={setAnnotationSaveDir}
             onApplyContrastEvidence={(ctPath, ctInfo) => applyContrastEvidence(pane.id, ctPath, ctInfo)}
             onLoadRow={(row) => loadRowIntoPane(pane.id, row, pane.plane)}
+            viewOnly={viewOnly}
           />
         ))}
       </div>
       {keybindSettingsOpen && (
-        <KeybindSettings keybinds={keybinds} onChange={setKeybinds} onClose={() => setKeybindSettingsOpen(false)} />
+        <KeybindSettings
+          keybinds={keybinds}
+          onChange={setKeybinds}
+          onClose={() => setKeybindSettingsOpen(false)}
+          viewOnly={viewOnly}
+        />
       )}
       {blockedAction && (
         <div className="comment-modal-backdrop" onClick={() => setBlockedAction(null)}>

@@ -34,10 +34,19 @@ export async function loadVolume(path: string, isMask: boolean, force = false, s
 export async function listDicomSeries(path: string): Promise<DicomSeriesInfo[]> {
   const res = await fetch(`/api/volumes/list_dicom_series?path=${encodeURIComponent(path)}`)
   const data = await handleJson<{
-    series: { series_uid: string; directory: string; description: string; num_files: number }[]
+    series: {
+      kind: 'dicom' | 'file'
+      series_uid: string
+      directory: string
+      label: string
+      description: string
+      num_files: number
+    }[]
   }>(res)
   return data.series.map((s) => ({
+    kind: s.kind,
     seriesUid: s.series_uid,
+    label: s.label,
     directory: s.directory,
     description: s.description,
     numFiles: s.num_files,
@@ -63,7 +72,7 @@ export async function resolveDicomLoad(
   if (series.length === 0) {
     return { directory: path, seriesUid: undefined, seriesList: [] }
   }
-  return { directory: series[0].directory, seriesUid: series[0].seriesUid, seriesList: series }
+  return { directory: series[0].directory, seriesUid: series[0].seriesUid || undefined, seriesList: series }
 }
 
 export function renderUrl(params: {
@@ -81,6 +90,7 @@ export function renderUrl(params: {
   thresholdColor?: string
   thresholdAlpha?: number
   editVersion?: number
+  flip?: string // display-only mirroring, see displayOrientation.ts
 }): string {
   const q = new URLSearchParams()
   q.set('ct_id', params.ctId)
@@ -101,6 +111,7 @@ export function renderUrl(params: {
   if (params.thresholdColor) q.set('threshold_color', params.thresholdColor)
   if (params.thresholdAlpha !== undefined) q.set('threshold_alpha', String(params.thresholdAlpha))
   if (params.editVersion !== undefined) q.set('v', String(params.editVersion))
+  if (params.flip) q.set('flip', params.flip)
   return `/api/render?${q.toString()}`
 }
 
@@ -111,6 +122,7 @@ export async function probeVoxel(params: {
   index: number
   row: number
   col: number
+  flip?: string
 }): Promise<{ hu: number | null; label: number | null }> {
   const q = new URLSearchParams()
   q.set('ct_id', params.ctId)
@@ -119,6 +131,7 @@ export async function probeVoxel(params: {
   q.set('index', String(params.index))
   q.set('row', String(params.row))
   q.set('col', String(params.col))
+  if (params.flip) q.set('flip', params.flip)
   const res = await fetch(`/api/probe?${q.toString()}`)
   return handleJson(res)
 }
@@ -143,6 +156,7 @@ export async function getManifestPairs(params: {
   statusColumn: string
   annotationColumn: string
   contrastColumn: string
+  readOnly?: boolean
 }): Promise<ManifestPairsResult> {
   const res = await fetch('/api/manifest_pairs', {
     method: 'POST',
@@ -158,6 +172,7 @@ export async function getManifestPairs(params: {
       status_column: params.statusColumn || null,
       annotation_column: params.annotationColumn || null,
       contrast_column: params.contrastColumn || null,
+      read_only: params.readOnly ?? false,
     }),
   })
   const data = await handleJson<{

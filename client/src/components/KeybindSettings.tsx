@@ -12,6 +12,9 @@ const ACTION_ORDER: KeybindActionId[] = [
   'toggleScoreComputeMode',
 ]
 
+// Edit/review-only actions that mean nothing in View mode.
+const VIEW_HIDDEN: KeybindActionId[] = ['toggleReviewMode', 'toggleScoreComputeMode']
+
 // Fixed mouse gestures — not rebindable key actions, so they don't belong in
 // ACTION_ORDER/KEYBIND_LABELS, but they're still worth documenting here since
 // this is the one place users look for "how do I do X".
@@ -26,10 +29,12 @@ export default function KeybindSettings({
   keybinds,
   onChange,
   onClose,
+  viewOnly = false,
 }: {
   keybinds: KeybindMap
   onChange: (next: KeybindMap) => void
   onClose: () => void
+  viewOnly?: boolean
 }) {
   const [capturing, setCapturing] = useState<KeybindActionId | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -88,7 +93,7 @@ export default function KeybindSettings({
           (optionally holding Ctrl/Alt/Shift).
         </div>
 
-        {ACTION_ORDER.map((action) => (
+        {ACTION_ORDER.filter((a) => !viewOnly || !VIEW_HIDDEN.includes(a)).map((action) => (
           <div className="keybind-row" key={action}>
             <span className="keybind-row-label">{KEYBIND_LABELS[action]}</span>
             <div className="keybind-chips">
@@ -123,7 +128,7 @@ export default function KeybindSettings({
         <div className="keybind-hint" style={{ marginTop: 10 }}>
           Mouse controls (fixed, not remappable):
         </div>
-        {MOUSE_CONTROLS.map((c) => (
+        {MOUSE_CONTROLS.map((c) => (viewOnly ? { ...c, combo: c.combo.replace(' (or left-click + drag outside Annotation Mode)', ' (or left-click + drag)') } : c)).map((c) => (
           <div className="keybind-row" key={c.label + c.combo}>
             <span className="keybind-row-label">{c.label}</span>
             <span className="keybind-chip">{c.combo}</span>

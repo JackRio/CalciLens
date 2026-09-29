@@ -25,6 +25,8 @@ from volume_store import (
     save_mask,
     assert_same_geometry,
     _find_all_dicom_series,
+    _find_image_files,
+    parse_display_flips,
     _series_description,
     DEFAULT_LABEL_COLORS,
     DEFAULT_THRESHOLD_COLOR,
@@ -95,12 +97,16 @@ def load_volume(req: LoadRequest):
 
 @app.get("/api/volumes/list_dicom_series")
 def list_dicom_series(path: str):
-    """Enumerate every DICOM series found under `path` (root itself or any
-    subdirectory), so the frontend can offer a Previous/Next series
-    navigator when a folder holds more than one. A non-directory path (a
-    plain NIFTI/MHA file) or a directory with no readable series returns an
-    empty list rather than an error — callers treat that as "just load it
-    plainly", so this never blocks a normal single-file load."""
+    """Enumerate every scan found under `path` (root itself or any
+    subdirectory): each DICOM series, and each single image file
+    (NIfTI/MHA/MHD/NRRD). The frontend uses this for its Previous/Next
+    navigator when a folder holds more than one. A non-directory path or a
+    directory with nothing loadable returns an empty list rather than an
+    error — callers treat that as "just load it plainly", so this never
+    blocks a normal single-file load.
+
+    `kind` is "dicom" (directory + series_uid identify it) or "file"
+    (directory is the file's own path and series_uid is empty)."""
     path = os.path.abspath(clean_path(path))
     if not os.path.isdir(path):
         return {"series": []}
@@ -112,11 +118,23 @@ def list_dicom_series(path: str):
     for dirpath, series_id in pairs:
         file_names = sitk.ImageSeriesReader.GetGDCMSeriesFileNames(dirpath, series_id)
         result.append({
+            "kind": "dicom",
             "series_uid": series_id,
             "directory": dirpath,
+            "label": os.path.relpath(dirpath, path) if dirpath != path else os.path.basename(path),
             "description": _series_description(dirpath, series_id, file_names),
             "num_files": len(file_names),
         })
+    for file_path in _find_image_files(path):
+        result.append({
+            "kind": "file",
+            "series_uid": "",
+            "directory": file_path,
+            "label": os.path.relpath(file_path, path),
+            "description": "",
+            "num_files": 1,
+        })
+    result.sort(key=lambda r: (r["directory"].lower(), r["series_uid"]))
     return {"series": result}
 
 
@@ -154,6 +172,7 @@ def render(
     threshold_value: float = DEFAULT_THRESHOLD_HU,
     threshold_color: str = DEFAULT_THRESHOLD_COLOR,
     threshold_alpha: float = 0.5,
+    flip: str = "",
 ):
     try:
         ct_vol = store.get(ct_id)
@@ -189,6 +208,7 @@ def render(
             threshold_value=threshold_value,
             threshold_color=threshold_color,
             threshold_alpha=threshold_alpha,
+            flips=parse_display_flips(flip),
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"render failed: {e}")
@@ -197,7 +217,7 @@ def render(
 
 
 @app.get("/api/probe")
-def probe(ct_id: str, plane: str, index: int, row: int, col: int, mask_id: Optional[str] = None):
+def probe(ct_id: str, plane: str, index: int, row: int, col: int, mask_id: Optional[str] = None, flip: str = ""):
     try:
         ct_vol = store.get(ct_id)
     except KeyError:
@@ -208,7 +228,7 @@ def probe(ct_id: str, plane: str, index: int, row: int, col: int, mask_id: Optio
             mask_vol = store.get(mask_id)
         except KeyError:
             pass
-    return probe_values(ct_vol, mask_vol, plane, index, row, col)
+    return probe_values(ct_vol, mask_vol, plane, index, row, col, parse_display_flips(flip))
 
 
 # ---- Mask editing ----
@@ -630,6 +650,7 @@ class ManifestPairsRequest(BaseModel):
     status_column: Optional[str] = folder_scan.DEFAULT_STATUS_COLUMN
     annotation_column: Optional[str] = folder_scan.DEFAULT_ANNOTATION_COLUMN
     contrast_column: Optional[str] = folder_scan.DEFAULT_CONTRAST_COLUMN
+    read_only: bool = False
 
 
 @app.post("/api/manifest_pairs")
@@ -646,6 +667,7 @@ def manifest_pairs(req: ManifestPairsRequest):
             status_column=req.status_column,
             annotation_column=req.annotation_column,
             contrast_column=req.contrast_column,
+            read_only=req.read_only,
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")

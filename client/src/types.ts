@@ -24,8 +24,12 @@ export interface VolumeInfo {
 // api.ts's listDicomSeries) — used to drive the series Previous/Next
 // navigator when a folder holds more than one.
 export interface DicomSeriesInfo {
+  // 'file' entries are single images (NIfTI/MHA/...): `directory` is then the
+  // file path and seriesUid is empty.
+  kind: 'dicom' | 'file'
   seriesUid: string
   directory: string
+  label: string
   description: string
   numFiles: number
 }
@@ -38,13 +42,15 @@ export interface LabelColor {
 
 // CAC is the aggregate of LAD/LCx/RCA (not one of the 6 segmentation
 // labels), so it gets a fixed neutral color instead of a slot in the
-// palette; the other 6 classes map onto the 6 label colors positionally.
+// palette; the other 6 classes map onto the label colors of labels 1-6.
 export const CAC_COLOR = '#FFFFFF'
 
 export function colorForScoreClass(cls: ScoreClass, maskColors: LabelColor[]): string {
   if (cls === 'CAC') return CAC_COLOR
-  const idx = SCORE_CLASS_BY_LABEL.indexOf(cls)
-  return maskColors[idx]?.color || '#6c6d7a'
+  // By label number, not list position: labels can be renumbered, removed or
+  // reordered in the editor, and position would then colour the wrong class.
+  const label = SCORE_CLASS_BY_LABEL.indexOf(cls) + 1
+  return maskColors.find((c) => c.label === label)?.color || '#6c6d7a'
 }
 
 // Best-effort guess at which threshold basis a mask *loaded from disk* was
@@ -141,13 +147,15 @@ export function detectMaskLooksLikeCt(maskInfo: VolumeInfo, ctPath: string, mask
   )
 }
 
+// Names follow SCORE_CLASS_BY_LABEL: coronary arteries (LAD, LCx, RCA), thoracic
+// aorta (TAC), aortic valve (AV), mitral valve (MV).
 export const CALCIFICATIONS_PRESET: LabelColor[] = [
-  { label: 1, color: '#FF0000', name: 'Calcification 1' },
-  { label: 2, color: '#00FF00', name: 'Calcification 2' },
-  { label: 3, color: '#0000FF', name: 'Calcification 3' },
-  { label: 4, color: '#FFFF00', name: 'Calcification 4' },
-  { label: 5, color: '#00FFFF', name: 'Calcification 5' },
-  { label: 6, color: '#FF00FF', name: 'Calcification 6' },
+  { label: 1, color: '#FF0000', name: 'LAD' },
+  { label: 2, color: '#00FF00', name: 'LCx' },
+  { label: 3, color: '#0000FF', name: 'RCA' },
+  { label: 4, color: '#FFFF00', name: 'TAC' },
+  { label: 5, color: '#00FFFF', name: 'AV' },
+  { label: 6, color: '#FF00FF', name: 'MV' },
 ]
 
 export const DEFAULT_THRESHOLD_COLOR = '#FF8000'
@@ -295,6 +303,8 @@ export interface PaneState {
   dicomSeriesIndex: number | null
   batchLoadCollapsed: boolean
   wlMinimized: boolean
+  // View mode: show axial, sagittal and coronal together, linked by one point.
+  showAll: boolean
   reasonOptions: string[] // base + discovered-in-sheet + session-added tags
   statusOptions: string[] // built-in statuses merged with whatever the sheet already uses
   hasAnnotationColumn: boolean
@@ -318,6 +328,8 @@ export interface PaneState {
 
   showMask: boolean
   maskColors: LabelColor[]
+  // Which label-colour preset maskColors currently belongs to (see labelPresets.ts).
+  labelPresetId: string
   maskAlpha: number
 
   thresholdEnabled: boolean

@@ -54,7 +54,7 @@ export default function LesionScoreBox({
     </button>
   )
 
-  const colorForLabel = (label: number) => pane.maskColors[label - 1]?.color || '#6c6d7a'
+  const colorForLabel = (label: number) => pane.maskColors.find((c) => c.label === label)?.color || '#6c6d7a'
   const isVolumeMetric = pane.contrastMode
 
   return (

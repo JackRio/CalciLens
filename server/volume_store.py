@@ -69,6 +69,25 @@ def _find_all_dicom_series(root: str) -> list:
     return pairs
 
 
+# Single-file formats worth offering when scanning a folder. .raw/.zraw are
+# the data half of an .mhd/.nhdr pair and must not be listed on their own.
+IMAGE_FILE_SUFFIXES = (".nii.gz", ".nii", ".mha", ".mhd", ".nrrd", ".nhdr")
+
+
+def _find_image_files(root: str) -> list:
+    """Every readable single-file image (NIfTI/MHA/MHD/NRRD) anywhere under
+    root, sorted by path. Only the extension is checked here — actually
+    opening each file to validate it would make scanning a big tree slow, and
+    a bad file reports its own error when it is loaded."""
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        for name in sorted(filenames):
+            if name.lower().endswith(IMAGE_FILE_SUFFIXES):
+                found.append(os.path.join(dirpath, name))
+    return found
+
+
 def _series_description(dirpath: str, series_id: str, file_names) -> str:
     """Best-effort SeriesDescription (DICOM tag 0008,103e) for one series, to
     show as a hover hint in the series picker. Never raises — an empty
@@ -334,22 +353,56 @@ class VolumeStore:
         return vol
 
 
-def get_plane_slice(vol: LoadedVolume, plane: str, index: int) -> np.ndarray:
+# Display-only orientation flips, named by patient axis. The volume is always
+# held as LPS; these mirror what is *shown* (radiological <-> neurological and
+# the like) without touching the data. Only the read-only render/probe paths
+# accept them: editing endpoints convert display coordinates back to voxels
+# without knowing about flips, so they must never be given a flipped view.
+def parse_display_flips(flip: Optional[str]) -> tuple:
+    """"l" = mirror left-right, "a" = mirror anterior-posterior, "s" = mirror
+    superior-inferior. Any combination; unknown letters are ignored."""
+    f = (flip or "").lower()
+    return ("l" in f, "a" in f, "s" in f)
+
+
+def _plane_flip_axes(plane: str, flips: tuple) -> tuple:
+    """(flip_horizontal, flip_vertical) for one plane. Axial shows L-R across
+    and A-P down, coronal L-R across and S-I down, sagittal A-P across and
+    S-I down."""
+    lr, ap, si = flips
+    if plane == "axial":
+        return lr, ap
+    if plane == "coronal":
+        return lr, si
+    if plane == "sagittal":
+        return ap, si
+    raise ValueError(f"unknown plane {plane}")
+
+
+def get_plane_slice(vol: LoadedVolume, plane: str, index: int, flips: tuple = (False, False, False)) -> np.ndarray:
     """Return a 2D array for the requested plane/index, oriented for display:
     row 0 = top of image, col 0 = left of image, following radiological
     convention (patient's right on screen-left) and superior-at-top for
-    sagittal/coronal.
+    sagittal/coronal. `flips` (see parse_display_flips) mirrors that on
+    request.
     """
     arr = vol.array
     nz, ny, nx = arr.shape
     index = max(0, min(index, vol.plane_length(plane) - 1))
     if plane == "axial":
-        return arr[index, :, :]
-    if plane == "sagittal":
-        return np.flipud(arr[:, :, index])
-    if plane == "coronal":
-        return np.flipud(arr[:, index, :])
-    raise ValueError(f"unknown plane {plane}")
+        out = arr[index, :, :]
+    elif plane == "sagittal":
+        out = np.flipud(arr[:, :, index])
+    elif plane == "coronal":
+        out = np.flipud(arr[:, index, :])
+    else:
+        raise ValueError(f"unknown plane {plane}")
+    flip_h, flip_v = _plane_flip_axes(plane, flips)
+    if flip_h:
+        out = np.fliplr(out)
+    if flip_v:
+        out = np.flipud(out)
+    return out
 
 
 def get_plane_pixel_spacing(vol: LoadedVolume, plane: str) -> tuple:
@@ -732,11 +785,12 @@ def render_composited_png(
     threshold_value: float = DEFAULT_THRESHOLD_HU,
     threshold_color: str = DEFAULT_THRESHOLD_COLOR,
     threshold_alpha: float = 0.5,
+    flips: tuple = (False, False, False),
 ) -> bytes:
     if ct_vol is None:
         raise ValueError("ct_vol is required")
 
-    ct_slice = get_plane_slice(ct_vol, plane, index)
+    ct_slice = get_plane_slice(ct_vol, plane, index, flips)
     gray = window_to_uint8(ct_slice, window_level, window_width)
 
     scale_h, scale_w = get_plane_display_scale(ct_vol, plane)
@@ -764,7 +818,7 @@ def render_composited_png(
             rgb[thr_mask] = rgb[thr_mask] * (1 - a) + color * a
 
     if show_mask and mask_vol is not None:
-        mask_slice = get_plane_slice(mask_vol, plane, index)
+        mask_slice = get_plane_slice(mask_vol, plane, index, flips)
         if needs_resize:
             mask_slice = np.array(Image.fromarray(mask_slice).resize((new_w, new_h), Image.NEAREST))
         colors = mask_colors or DEFAULT_LABEL_COLORS
@@ -802,6 +856,7 @@ def probe_values(
     index: int,
     row: int,
     col: int,
+    flips: tuple = (False, False, False),
 ) -> dict:
     """row/col are in *display* pixel space (i.e. as shown in the browser,
     after the physical-spacing rescale applied in render_composited_png) and
@@ -812,11 +867,11 @@ def probe_values(
         scale_h, scale_w = get_plane_display_scale(ct_vol, plane)
         raw_row = int(row / scale_h)
         raw_col = int(col / scale_w)
-        s = get_plane_slice(ct_vol, plane, index)
+        s = get_plane_slice(ct_vol, plane, index, flips)
         if 0 <= raw_row < s.shape[0] and 0 <= raw_col < s.shape[1]:
             result["hu"] = float(s[raw_row, raw_col])
         if mask_vol is not None:
-            ms = get_plane_slice(mask_vol, plane, index)
+            ms = get_plane_slice(mask_vol, plane, index, flips)
             if 0 <= raw_row < ms.shape[0] and 0 <= raw_col < ms.shape[1]:
                 result["label"] = int(ms[raw_row, raw_col])
     return result

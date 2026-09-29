@@ -388,7 +388,11 @@ def list_manifest_pairs(
     status_column=DEFAULT_STATUS_COLUMN,
     annotation_column=DEFAULT_ANNOTATION_COLUMN,
     contrast_column=DEFAULT_CONTRAST_COLUMN,
+    read_only: bool = False,
 ) -> dict:
+    """`read_only` skips creating the tracking columns, so viewing a manifest
+    never modifies the user's file. Every lookup below already tolerates a
+    missing column."""
     manifest_path = clean_path(manifest_path)
     if not os.path.isfile(manifest_path):
         raise FileNotFoundError(manifest_path)
@@ -403,7 +407,10 @@ def list_manifest_pairs(
     if patient_id_column and patient_id_column not in df.columns:
         raise ValueError(f"Column '{patient_id_column}' not found. Available columns: {list(df.columns)}")
 
-    df = _ensure_tracking_columns(manifest_path, df, reason_column, status_column, annotation_column, contrast_column)
+    if not read_only:
+        df = _ensure_tracking_columns(
+            manifest_path, df, reason_column, status_column, annotation_column, contrast_column
+        )
     reason_options = _collect_reason_tags(df, reason_column, include_default_reason_tags)
     status_options = _collect_status_options(df, status_column)
     score_classes = _score_columns_present(df)

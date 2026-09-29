@@ -11,6 +11,7 @@ function ColumnPicker({
   title,
   value,
   placeholder,
+  defaultValue,
   columns,
   onChange,
 }: {
@@ -18,6 +19,7 @@ function ColumnPicker({
   title: string
   value: string
   placeholder: string
+  defaultValue: string
   columns: string[]
   onChange: (next: string) => void
 }) {
@@ -34,7 +36,13 @@ function ColumnPicker({
           ))}
         </select>
       ) : (
-        <input type="text" placeholder={placeholder} value={value} onChange={(e) => onChange(e.target.value)} />
+        <input
+          type="text"
+          className={value === defaultValue ? 'column-default' : ''}
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
       )}
     </label>
   )
@@ -55,6 +63,7 @@ export default function CaseLoader({
   onRequestSelectRow,
   onLoadRow,
   hasUnsavedMaskChanges,
+  viewOnly = false,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -68,11 +77,18 @@ export default function CaseLoader({
   onRequestSelectRow: (rowIndex: number) => void
   onLoadRow: (row: ManifestRow) => void
   hasUnsavedMaskChanges: boolean
+  viewOnly?: boolean
 }) {
   const electronAvailable = isElectron()
 
   const cfg = pane.manifestConfig
   const availableColumns = pane.manifestColumns
+
+  // A column-name field still holding the app's built-in default reads as grey
+  // suggestion text; it turns normal once it has been edited.
+  function untouchedDefault(key: 'imageColumn' | 'maskColumn' | 'patientIdColumn' | 'reasonColumn') {
+    return cfg[key] === DEFAULT_MANIFEST_CONFIG[key] ? 'column-default' : ''
+  }
 
   function updateConfig(partial: Partial<typeof cfg>) {
     onChange({ manifestConfig: { ...cfg, ...partial } })
@@ -180,6 +196,7 @@ export default function CaseLoader({
           statusColumn: cfg.statusColumn,
           annotationColumn: cfg.annotationColumn,
           contrastColumn: cfg.contrastColumn,
+          readOnly: viewOnly,
         })
       onChange({
         manifestRows: rows,
@@ -238,10 +255,10 @@ export default function CaseLoader({
             value={pane.ctPath}
             onChange={(e) => onChange({ ctPath: e.target.value })}
           />
-          {electronAvailable && <button onClick={handleBrowseCtFile}>Browse file...</button>}
-          {electronAvailable && (
-            <button onClick={handleBrowseCtFolder} title="Pick a folder of DICOM slices">
-              Browse DICOM dir...
+          <button onClick={handleBrowseCtFile} disabled={!electronAvailable} title={electronAvailable ? undefined : 'Only available in the desktop app'}>Browse file...</button>
+          {(
+            <button onClick={handleBrowseCtFolder} disabled={!electronAvailable} title={electronAvailable ? 'Pick a folder of DICOM slices' : 'Only available in the desktop app'}>
+              Browse directory...
             </button>
           )}
           <button onClick={handleLoadCtSingle}>Load CT</button>
@@ -256,10 +273,11 @@ export default function CaseLoader({
             value={pane.maskPath}
             onChange={(e) => onChange({ maskPath: e.target.value })}
           />
-          {electronAvailable && <button onClick={handleBrowseMaskFile}>Browse file...</button>}
+          <button onClick={handleBrowseMaskFile} disabled={!electronAvailable} title={electronAvailable ? undefined : 'Only available in the desktop app'}>Browse file...</button>
           <button onClick={handleLoadMaskSingle}>Load mask</button>
         </div>
       </label>
+      {!viewOnly && (
       <label>
         Save folder
         <div className="inline-row">
@@ -283,6 +301,7 @@ export default function CaseLoader({
           {annotationSaveDir && <button onClick={() => onAnnotationSaveDirChange('')}>Clear</button>}
         </div>
       </label>
+      )}
 
       <div className="settings-title batch-load-header" style={{ marginTop: 10 }}>
         <button
@@ -306,7 +325,7 @@ export default function CaseLoader({
                 value={cfg.manifestPath}
                 onChange={(e) => updateConfig({ manifestPath: e.target.value })}
               />
-              {electronAvailable && <button onClick={handleBrowseManifest}>Browse...</button>}
+              <button onClick={handleBrowseManifest} disabled={!electronAvailable} title={electronAvailable ? undefined : 'Only available in the desktop app'}>Browse...</button>
               <button
                 className="add-label-btn"
                 onClick={handleLoadManifest}
@@ -331,6 +350,7 @@ export default function CaseLoader({
               ) : (
                 <input
                   type="text"
+                  className={untouchedDefault('imageColumn')}
                   value={cfg.imageColumn}
                   onChange={(e) => updateConfig({ imageColumn: e.target.value })}
                 />
@@ -350,13 +370,14 @@ export default function CaseLoader({
               ) : (
                 <input
                   type="text"
+                  className={untouchedDefault('maskColumn')}
                   value={cfg.maskColumn}
                   onChange={(e) => updateConfig({ maskColumn: e.target.value })}
                 />
               )}
             </label>
             <label>
-              Patient ID column
+              ID column
               {availableColumns.length > 0 ? (
                 <select
                   value={cfg.patientIdColumn}
@@ -372,12 +393,14 @@ export default function CaseLoader({
               ) : (
                 <input
                   type="text"
-                  placeholder="e.g. PatientId"
+                  className={untouchedDefault('patientIdColumn')}
+                  placeholder="e.g. Index/ID"
                   value={cfg.patientIdColumn}
                   onChange={(e) => updateConfig({ patientIdColumn: e.target.value })}
                 />
               )}
             </label>
+            {!viewOnly && (
             <label>
               <span className="reason-column-label">
                 Reason column
@@ -405,20 +428,25 @@ export default function CaseLoader({
               ) : (
                 <input
                   type="text"
+                  className={untouchedDefault('reasonColumn')}
                   placeholder="e.g. Reason"
                   value={cfg.reasonColumn}
                   onChange={(e) => updateConfig({ reasonColumn: e.target.value })}
                 />
               )}
             </label>
+            )}
             {/* Status is configurable for the same reason Reason is: it used
                 to be a hardcoded name whose contents the app overwrote on
                 load, wiping any pre-existing Status column a lab already
                 used for something of their own. */}
+            {!viewOnly && (
+              <>
             <ColumnPicker
               label="Status column"
               title="Column holding each case's annotation status. Existing values are kept and offered alongside the built-in ones."
               value={cfg.statusColumn}
+              defaultValue={DEFAULT_MANIFEST_CONFIG.statusColumn}
               placeholder="e.g. Status"
               columns={availableColumns}
               onChange={(v) => updateConfig({ statusColumn: v })}
@@ -427,6 +455,7 @@ export default function CaseLoader({
               label="Annotation column"
               title="Where this app records the path of each saved annotation. Kept separate from the mask column so the original prediction's path is never lost."
               value={cfg.annotationColumn}
+              defaultValue={DEFAULT_MANIFEST_CONFIG.annotationColumn}
               placeholder="e.g. annotation_path"
               columns={availableColumns}
               onChange={(v) => updateConfig({ annotationColumn: v })}
@@ -435,10 +464,13 @@ export default function CaseLoader({
               label="Contrast column"
               title="Records whether a case is a contrast-enhanced scan, so the app knows before anyone starts annotating instead of relying on the Contrast checkbox being remembered."
               value={cfg.contrastColumn}
+              defaultValue={DEFAULT_MANIFEST_CONFIG.contrastColumn}
               placeholder="e.g. Contrast"
               columns={availableColumns}
               onChange={(v) => updateConfig({ contrastColumn: v })}
             />
+              </>
+            )}
           </div>
 
           {cfg.imageColumn && cfg.maskColumn && cfg.imageColumn === cfg.maskColumn && (

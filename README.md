@@ -1,115 +1,88 @@
-# CT / Segmentation Viewer
+<h1 align="center">CalciLens</h1>
+<p align="center"><em>see the calcium. score the calcium.</em></p>
 
-A desktop app for viewing CT scans (NIFTI, MHA/MHD, DICOM series) with
-segmentation mask overlays, HU thresholding, split-view comparison, and
-synchronized scrolling.
+<p align="center">
+  A desktop app for looking at CT scans and annotating calcifications, quickly and safely.
+</p>
 
-## Architecture
+<p align="center">
+  <img src="docs/screenshots/launcher.jpg" alt="CalciLens launcher" width="640">
+</p>
 
-- **server/** — Python FastAPI backend. Uses SimpleITK to read NIFTI, MHA/MHD
-  and DICOM series uniformly, reorients every volume to LPS on load so
-  axial/sagittal/coronal slicing is consistent, and renders composited PNG
-  slices (grayscale CT + threshold overlay + colored mask overlay) on demand.
-- **client/** — React + TypeScript (Vite) frontend. Plain REST calls to the
-  backend; each slice is just an `<img>` pointed at `/api/render?...`.
-- **electron/** — Electron main process + preload script. Spawns the Python
-  backend, opens a native window pointed at it, and exposes a native
-  file/folder picker (`window.electronAPI.pickPath`) to the frontend.
+## What you can do
 
-No GPU/WebGL viewer library is used — slices are rendered server-side with
-SimpleITK/NumPy/Pillow, which trivially handles all three formats and correct
-world-space metadata (spacing/origin/direction) without needing per-format JS
-loaders.
+Pick a mode on the start screen. Each one shows only the tools it needs.
 
-## Running it
+| Mode | For |
+| --- | --- |
+| **View** (single screen or split view) | Looking at scans and masks. Nothing can be changed or saved. |
+| **Review** | Going through cases, leaving comments and reason tags. *(coming soon)* |
+| **Annotate: Non-contrast** | Painting calcium labels with a fixed 130 HU threshold. |
+| **Annotate: Contrast** | The same, but with a threshold worked out for each scan from a seed in the aorta. |
 
-**First time setup:**
+**Works with** NIfTI (`.nii`, `.nii.gz`), MHA/MHD, and DICOM series (pick the folder). Load one scan at a time, or point the app at a CSV/Excel sheet listing many cases and step through them with Previous / Next.
+
+## Highlights
+
+- **Split view** with two scans side by side, kept in sync if you want.
+- **Show all**: axial, sagittal and coronal at once, linked to the same point.
+- **Brush and region-grow** tools, digits `0-9` to switch label, Ctrl+click for tiny lesions.
+- **Contrast scans get their own threshold.** Click the middle of the ascending aorta, press Finalize, and the app derives a threshold for that scan. Painting stays off until you do.
+- **Safe saving.** You choose an output folder each session (never next to the scan). Each scan gets its own folder, nothing is overwritten without asking, and writes are atomic, so a crash can't leave a half-written file.
+- **Picks up where you left off.** Choose the output folder and any saved annotation and seed for the open scan load automatically.
+- **Orientation flips** (radiological / neurological, per axis) that change the display only, never the data.
+- **Window/level presets**, a HU threshold overlay, editable label colours and mask opacity.
+
+<p align="center">
+  <img src="docs/screenshots/contrast-seed.jpg" alt="Placing the aortic seed" width="48%">
+  <img src="docs/screenshots/contrast-painted.jpg" alt="A painted lesion with volume scores" width="48%">
+</p>
+
+## Getting started
+
+### Windows app
+
+Unzip the release and run `CT Viewer.exe`. Nothing else to install.
+
+The app is not code-signed, so Windows SmartScreen may warn on first launch (choose **More info**, then **Run anyway**), and the firewall may ask about the app's local server. It only talks to your own computer.
+
+### From source
+
+You need Python 3.10+ and Node.js.
 
 ```bash
-# Backend
-cd server
-python -m venv ../.venv
-../.venv/Scripts/activate   # or source ../.venv/bin/activate on macOS/Linux
-pip install -r requirements.txt
-cd ..
-
-# Frontend + Electron shell
-cd client && npm install && cd ..
+# one-time setup
+python -m venv .venv
+.venv/Scripts/activate            # macOS/Linux: source .venv/bin/activate
+pip install -r server/requirements.txt
 npm install
-```
+cd client && npm install && cd ..
 
-**Run as a desktop app** (builds the frontend, then launches the Electron
-window, which spawns the Python backend automatically):
-
-```bash
+# run
 npm run app
 ```
 
-If you haven't changed the frontend since the last build, `npm start` skips
-the rebuild step.
+`npm start` skips the rebuild if the frontend hasn't changed.
 
-**Frontend-only dev loop** (hot reload, browser instead of Electron — useful
-when iterating on UI without the native file picker):
+## How annotations are saved
 
-```bash
-cd server && ../.venv/Scripts/activate && uvicorn app:app --port 8000   # terminal 1
-cd client && npm run dev                                                 # terminal 2
+```
+<your output folder>/
+  Manual_Annotations/
+    <scan>/
+      annotation.nii.gz     your labels
+      _source.json          where it started from, when it was saved
+      contrast_seed.json    the seed and threshold (contrast scans only)
 ```
 
-Open the URL Vite prints (http://localhost:5173); it proxies `/api/*` to the
-backend on port 8000. `window.electronAPI` is unavailable here, so the
-"Browse..." buttons are hidden and you type paths directly instead.
+Open the same scan again and its annotation loads. Contrast and non-contrast work on the same scan are kept apart, and the app warns you if you open one on the wrong screen.
 
-## Features
+## For developers
 
-- **Formats**: NIFTI (.nii/.nii.gz), MHA/MHD, and DICOM series (point at the
-  folder containing the slice files).
-- **Split view**: up to 2 panes side by side, each with its own CT/mask, plane,
-  window/level, colors, threshold and zoom.
-- **Sync scroll**: toggle at the top links slice index, plane and zoom across
-  both panes — turn it off to browse independently.
-- **Planes**: axial (default), sagittal, coronal, switchable per pane.
-- **Segmentation colors**: editable label→color table, defaults to the
-  "Calcifications" preset (1 Red, 2 Green, 3 Blue, 4 Yellow, 5 Cyan, 6 Magenta).
-- **HU threshold overlay**: highlight voxels ≥ a value (default 130 HU) in
-  Orange — chosen because it's the one hue not already used by the six preset
-  label colors (which cover pure red/green/blue/yellow/cyan/magenta), so it
-  stays visually distinct from any mask label while still reading as "warm/
-  significant" against grayscale CT.
-- **Alpha blending**: mask opacity and threshold-overlay opacity are each a
-  small numeric spinner in the viewer's bottom-left corner (0–1, default 1.0)
-  — type a value and click away to commit it, or use the up/down arrows.
-- **Batch loading from a CSV/Excel manifest**: point a pane at a spreadsheet
-  with one row per case; tell it which column holds the image path and which
-  holds the mask path (an optional third column supplies a display label),
-  click "Load manifest", then pick a case from the dropdown to load its
-  image+mask pair directly — no folder-naming convention required.
-- **Image info panel** (ITK-SNAP style): dimensions, spacing, origin, direction
-  matrix, data type, value range, and detected mask label values, shown for
-  both the CT and the mask.
-- **Voxel probe**: hovering the image shows the row/col, HU value, and mask
-  label under the cursor.
-- **Window/level**: manual entry plus presets (Soft tissue, Lung, Bone, Brain,
-  Calcium/Agatston).
-- **Zoom/pan**: ctrl+scroll to zoom, click-drag to pan (per pane).
-- **Native file/folder picker**: "Browse..." buttons next to every path field
-  open a real Windows file dialog (via Electron) instead of requiring you to
-  type or paste paths.
+- `client/`: React + TypeScript (Vite) frontend
+- `server/`: Python FastAPI backend (SimpleITK, NumPy, Pillow, pandas, openpyxl)
+- `electron/`: desktop shell that starts the backend and opens the window
 
-## Notes / things not yet implemented
+Slices are rendered on the backend and shown as plain images. There is no hot reload: run `npm run build` in `client/` after frontend changes and restart the app after backend changes. Tests: `python -m pytest server/tests`. Architecture notes and the reasoning behind design decisions are in [CLAUDE.md](CLAUDE.md).
 
-- Orientation is normalized to LPS and displayed with a fixed radiological
-  convention; this is correct for standard clinical CT (near-identity
-  direction cosines) but has not been validated against heavily oblique
-  acquisitions.
-- World-space (mm) cursor coordinates aren't shown yet, only voxel row/col/
-  slice — could be added if useful.
-- No 3-pane simultaneous MPR (axial+sagittal+coronal at once) — each pane
-  shows one plane at a time, switchable via tabs, matching what was asked for.
-- A packaged installer (`npm run dist`, via `electron-builder`) is available and
-  bundles the Python venv into the app package — see `package.json`'s `build`
-  config. It's unsigned, so Windows SmartScreen will flag it on first run; if a
-  recipient's org blocks the SmartScreen override entirely, running from source
-  (this section) is the fallback — just don't copy the `.venv` folder itself
-  across machines, it's tied to the Python interpreter it was created with, so
-  run `pip install -r server/requirements.txt` fresh in a new venv instead.
+To package the app: `npm run dist` builds an installer. Don't copy the `.venv` folder between machines; create a fresh one.

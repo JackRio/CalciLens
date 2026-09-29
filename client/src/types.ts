@@ -28,7 +28,7 @@ export interface VolumeInfo {
 // api.ts's listDicomSeries) — used to drive the series Previous/Next
 // navigator when a folder holds more than one.
 // Which screen the user picked on the launcher.
-export type AppMode = 'view' | 'annotate-noncontrast'
+export type AppMode = 'view' | 'annotate-noncontrast' | 'annotate-contrast'
 
 export interface DicomSeriesInfo {
   // 'file' entries are single images (NIfTI/MHA/...): `directory` is then the
@@ -143,14 +143,28 @@ export function detectAlignmentMismatch(ctInfo: VolumeInfo, maskInfo: VolumeInfo
 // different threshold.
 export function detectAnnotationTypeMismatch(
   maskAnnotationType: 'contrast' | 'non-contrast' | null,
-  contrastModeOn: boolean,
+  contrastScreen: boolean,
 ): string | null {
   if (!maskAnnotationType) return null
-  const expected = contrastModeOn ? 'contrast' : 'non-contrast'
+  const expected = contrastScreen ? 'contrast' : 'non-contrast'
   if (maskAnnotationType === expected) return null
   return maskAnnotationType === 'contrast'
-    ? 'This mask was annotated as a contrast scan, but contrast mode is off — its labels were drawn against a per-scan threshold, not the fixed 130 HU.'
-    : 'This mask was annotated without contrast mode, but contrast mode is on — its labels were drawn against the fixed 130 HU, not the threshold derived for this scan.'
+    ? NONCONTRAST_SCREEN_BLOCK
+    : NONCONTRAST_ANNOTATION_ON_CONTRAST_SCREEN
+}
+
+export const NONCONTRAST_SCREEN_BLOCK =
+  "This scan is recorded as contrast. Its labels use a per-scan threshold, not this screen's fixed 130 HU — open it from Modes ▸ Annotate ▸ Contrast."
+export const NONCONTRAST_ANNOTATION_ON_CONTRAST_SCREEN =
+  'This scan was annotated as non-contrast (fixed 130 HU). For that, use Modes ▸ Annotate ▸ Non-contrast; here the threshold comes from a seed.'
+export const CONTRAST_NEEDS_SEED =
+  'Place a seed first: turn on Set AO seed, click near the left ostium / centre of the ascending aorta, then Finalize. Painting stays off until then.'
+
+// What earlier sessions recorded about a scan says it is contrast-enhanced: a
+// saved seed, or an annotation saved as contrast. (The scan-level counterpart
+// of detectAnnotationTypeMismatch, which only sees a loaded mask.)
+export function scanRecordedAsContrast(lookup: AnnotationLookup | null | undefined): boolean {
+  return !!lookup && (lookup.hasSeed || lookup.annotationType === 'contrast')
 }
 
 export function detectMaskLooksLikeCt(maskInfo: VolumeInfo, ctPath: string, maskPath: string): string | null {
@@ -414,7 +428,9 @@ export interface PaneState {
   // can hold a different case. See ContrastSeedBox.tsx.
   contrastMode: boolean
   seedPlacementMode: boolean
-  pendingSeed: { plane: Plane; index: number; row: number; col: number } | null
+  // `flip` is the display orientation the click was made under (see displayOrientation.ts's
+  // flipCode) — row/col only mean something together with it.
+  pendingSeed: { plane: Plane; index: number; row: number; col: number; flip: string } | null
   contrastThreshold: number | null
   contrastThresholdLocked: boolean
   contrastMeta: {

@@ -1100,14 +1100,6 @@ button .loading-spinner {
   gap: 5px;
 }
 
-.contrast-toggle-row {
-  padding-bottom: 6px;
-  margin-bottom: 6px;
-  border-bottom: 1px dashed #3c3e4d;
-  font-size: 12px;
-  color: #9c9dab;
-}
-
 .edit-field {
   display: flex;
   align-items: center;
@@ -1666,9 +1658,13 @@ button .loading-spinner {
 /* Contrast notices are a different kind of warning from a mask problem:
    they say the app cannot safely threshold this scan yet. */
 .pane-warning-contrast {
-  background: #142f3a;
-  color: #7fd0f5;
-  border-bottom-color: #1f4a5c;
+  background: #3a2a0c;
+  color: #ffd27a;
+  border-bottom: 2px solid #e0a63a;
+  font-size: 14px;
+  font-weight: 600;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 /* Says which file the visible mask came from, so "is this my work or the
@@ -2409,4 +2405,60 @@ button .loading-spinner {
 .comment-modal .nav-modal-status-row button {
   padding: 9px 8px;
   font-size: 13px;
+}
+
+/* ---- Split view: one drawing across both empty windows ---- */
+.panes-container {
+  position: relative;
+}
+
+.shared-sketch {
+  position: absolute;
+  top: 44px; /* below the windows' toolbars */
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.panes-container.shared-sketch-on .pane {
+  position: relative;
+  z-index: 1;
+}
+
+/* Let the shared drawing show through the empty viewers. */
+.panes-container.shared-sketch-on .viewer-area {
+  background: transparent;
+}
+
+/* ---- Header: the way back to the mode screen ---- */
+.app-header .back-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px 4px 10px;
+  background: #1f2029;
+  border: 1px solid #34364a;
+  border-radius: 999px;
+  color: #d7d8de;
+  font-size: 14px;
+  font-weight: 600;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.app-header .back-btn:hover {
+  background: #242733;
+  border-color: var(--sketch-neon);
+  color: #fff;
+}
+
+.back-btn-arrow {
+  color: var(--sketch-neon);
+  font-size: 22px;
+  line-height: 1;
+  margin-top: -3px;
+}
+
+.app-title-icon {
+  margin-right: 8px;
 }

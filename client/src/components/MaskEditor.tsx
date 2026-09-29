@@ -7,22 +7,16 @@ export default function MaskEditor({
   onCreateMask,
   onSave,
   onDragHandleDown,
-  onToggleContrast,
   thresholdLocked,
   seedRadiusMm,
-  showContrast = true,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
   onCreateMask: () => void
   onSave: () => void
   onDragHandleDown: (e: React.MouseEvent) => void
-  // Owned by Pane: switching this can unload an edited mask, so it has to be
-  // able to ask before discarding unsaved work.
-  onToggleContrast: (checked: boolean) => void
   thresholdLocked?: boolean
   seedRadiusMm: number
-  showContrast?: boolean
 }) {
   if (!pane.ctInfo) return null
 
@@ -48,20 +42,9 @@ export default function MaskEditor({
     </button>
   )
 
-  const contrastToggle = (
-    <label
-      className="edit-header-label contrast-toggle-row"
-      title="Contrast CT: derive a per-scan calcium threshold from a seed point instead of the fixed 130 HU"
-    >
-      <input type="checkbox" checked={pane.contrastMode} onChange={(e) => onToggleContrast(e.target.checked)} />
-      Contrast CT
-    </label>
-  )
-
   if (!pane.maskInfo) {
     return (
       <div className="overlay-box edit-box" onWheel={(e) => e.stopPropagation()}>
-        {showContrast && contrastToggle}
         <div className="overlay-toggle edit-header">
           <span>{title}</span>
           <div className="edit-header-buttons">
@@ -96,7 +79,6 @@ export default function MaskEditor({
 
   return (
     <div className="overlay-box edit-box" onWheel={(e) => e.stopPropagation()}>
-      {showContrast && contrastToggle}
       <div className="overlay-toggle edit-header">
         <label className="edit-header-label">
           <input

@@ -4,50 +4,45 @@
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  gap: 28px;
-  padding: 14vh 24px 24px;
+  gap: 26px;
+  padding: 5vh 24px 24px;
+  overflow-y: auto;
   background: #14151a;
 }
 
+.launcher-brand-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* Bahnschrift ships with Windows 10/11; the rest are fallbacks. */
 .launcher-brand {
   margin: 0;
-  font-size: 22px;
+  font-family: 'Bahnschrift', 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+  font-size: 46px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  color: #f0f0f2;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: #eceef4;
 }
 
-.launcher-tabs {
-  display: flex;
-  gap: 4px;
-  padding: 4px;
-  background: #1a1b21;
-  border: 1px solid #2f3140;
-  border-radius: 10px;
+.launcher-brand span {
+  color: var(--sketch-neon);
 }
 
-.launcher-tabs button {
-  padding: 8px 22px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: #9c9dab;
-}
-
-.launcher-tabs button.active {
-  background: #3a3d4f;
-  color: #f0f0f2;
+.launcher-tagline {
+  margin-top: 6px;
+  font-family: 'Segoe Print', 'Ink Free', 'Bradley Hand', 'Comic Sans MS', cursive;
+  font-size: 14px;
+  color: #6f7285;
 }
 
 .launcher-grid {
   display: grid;
   grid-template-columns: repeat(3, 300px);
   gap: 24px;
-  align-items: start;
-}
-
-.launcher-grid-one {
-  grid-template-columns: 300px;
+  align-items: stretch;
 }
 
 .launcher-card {
@@ -66,6 +61,7 @@
 }
 
 .launcher-card-main {
+  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -112,4 +108,111 @@
 .launcher-sub button:hover {
   border-color: #5a6cff;
   color: #fff;
+}
+
+/* A card with its own buttons is a label, not a button. */
+.launcher-card-label {
+  cursor: default;
+}
+
+/* The drawing for whichever option is hovered. Fixed size so the page never
+   jumps when the drawing changes. */
+.launcher-stage {
+  flex: none;
+  /* as large as the window allows, but never so tall that it needs scrolling */
+  width: clamp(640px, calc((100vh - 470px) * 2.368), 1180px);
+  max-width: 94vw;
+  aspect-ratio: 900 / 380;
+}
+
+.launcher-stage-svg {
+  width: 100%;
+  height: 100%;
+  animation: launcher-stage-in 0.25s ease;
+}
+
+@keyframes launcher-stage-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .launcher-stage-svg { animation: none; }
+}
+
+/* ---- Hover drawings that build up ----
+   One svg per block (View, Annotate). `data-state` says how far it has been
+   refined; parts appear only in the states they list, and the viewer / slice
+   slide aside (or split in two) to make room. */
+.lp-part {
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  pointer-events: none;
+}
+
+.launcher-stage-svg[data-state='base'] .lp-s-base,
+.launcher-stage-svg[data-state='single'] .lp-s-single,
+.launcher-stage-svg[data-state='split'] .lp-s-split,
+.launcher-stage-svg[data-state='contrast'] .lp-s-contrast,
+.launcher-stage-svg[data-state='noncontrast'] .lp-s-noncontrast {
+  opacity: 1;
+  transition: opacity 0.5s ease;
+}
+
+/* Details wait for the movement to finish before they fade in. */
+.launcher-stage-svg[data-state='single'] .lp-s-single.lp-late,
+.launcher-stage-svg[data-state='split'] .lp-s-split.lp-late,
+.launcher-stage-svg[data-state='contrast'] .lp-s-contrast.lp-late,
+.launcher-stage-svg[data-state='noncontrast'] .lp-s-noncontrast.lp-late {
+  transition-delay: 0.45s;
+}
+
+.lp-view-a,
+.lp-view-b,
+.lp-ann-slice {
+  transition: transform 0.7s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.5s ease;
+}
+
+/* View: one viewer in the middle... */
+.lp-view-a {
+  transform: translate(280px, 60px);
+}
+
+.lp-view-b {
+  transform: translate(280px, 60px);
+  opacity: 0;
+}
+
+/* ...moves aside for the notes (Single screen)... */
+.launcher-stage-svg[data-state='single'] .lp-view-a {
+  transform: translate(60px, 60px);
+}
+
+/* ...or splits into two (Split view): the copy slides out to the right. */
+.launcher-stage-svg[data-state='split'] .lp-view-a {
+  transform: translate(40px, 60px);
+}
+
+.launcher-stage-svg[data-state='split'] .lp-view-b {
+  transform: translate(520px, 60px);
+  opacity: 1;
+}
+
+/* Annotate: the slice sits in the middle, then moves aside for the notes. */
+.lp-ann-slice {
+  transform: translate(280px, 60px);
+}
+
+.launcher-stage-svg[data-state='contrast'] .lp-ann-slice,
+.launcher-stage-svg[data-state='noncontrast'] .lp-ann-slice {
+  transform: translate(60px, 60px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lp-part,
+  .lp-view-a,
+  .lp-view-b,
+  .lp-ann-slice {
+    transition: none;
+  }
 }

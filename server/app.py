@@ -429,6 +429,7 @@ class LesionVolumeRequest(BaseModel):
     col: float
     hu_threshold: float
     search_radius_mm: Optional[float] = None
+    flip: str = ""
 
 
 @app.post("/api/mask/lesion_volume")
@@ -443,7 +444,8 @@ def mask_lesion_volume(req: LesionVolumeRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     result = find_lesion_component(
-        mask_vol, ct_vol, req.plane, req.index, req.row, req.col, req.hu_threshold, search_radius_mm=req.search_radius_mm
+        mask_vol, ct_vol, req.plane, req.index, req.row, req.col, req.hu_threshold,
+        search_radius_mm=req.search_radius_mm, flips=parse_display_flips(req.flip),
     )
     if result is None:
         return {"found": False, "label": None, "voxel_count": 0, "volume_mm3": 0.0}
@@ -495,6 +497,7 @@ class ContrastThresholdRequest(BaseModel):
     mask_path: Optional[str] = None
     patient_id: Optional[str] = None
     save_dir: Optional[str] = None
+    flip: str = ""
 
 
 @app.post("/api/contrast/compute_threshold")
@@ -505,7 +508,8 @@ def contrast_compute_threshold(req: ContrastThresholdRequest):
         raise HTTPException(status_code=404, detail="volume not loaded")
     try:
         stats = compute_sphere_stats(
-            ct_vol, req.plane, req.index, req.row, req.col, req.target_volume_mm3, req.k_multiplier
+            ct_vol, req.plane, req.index, req.row, req.col, req.target_volume_mm3, req.k_multiplier,
+            flips=parse_display_flips(req.flip),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

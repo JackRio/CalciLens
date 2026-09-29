@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import Pane from './components/Pane'
+import EmptyStateSketch from './components/EmptyStateSketch'
+import { AppLogo } from './components/LauncherPreviews'
 import KeybindSettings from './components/KeybindSettings'
 import ReviewTagsPicker from './components/ReviewTagsPicker'
 import type { AnnotationLookup, AppMode, ManifestRow, PaneState, VolumeInfo } from './types'
@@ -14,6 +16,10 @@ import {
   detectGeometryMismatch,
   detectAlignmentMismatch,
   detectAnnotationTypeMismatch,
+  scanRecordedAsContrast,
+  NONCONTRAST_SCREEN_BLOCK,
+  NONCONTRAST_ANNOTATION_ON_CONTRAST_SCREEN,
+  CONTRAST_NEEDS_SEED,
   comboMatches,
 } from './types'
 import { loadVolume, lookupAnnotation, resolveDicomLoad, saveManifestComment, saveManifestReason } from './api'
@@ -22,9 +28,18 @@ import { capsFor, manifestDefaultsFor } from './modeConfig'
 import { initialLabelColors } from './labelPresets'
 import { useAnnotationSaveDir } from './useAnnotationSaveDir'
 
+// Same icons as the launcher cards, so a screen keeps its face after you enter it.
+const MODE_ICONS: Record<string, string> = {
+  view: '👁',
+  'annotate-noncontrast': '✏️',
+  'annotate-contrast': '✏️',
+  full: '',
+}
+
 const MODE_TITLES: Record<string, string> = {
   view: 'View',
   'annotate-noncontrast': 'Annotate · Non-contrast',
+  'annotate-contrast': 'Annotate · Contrast',
   full: 'CT / Segmentation Viewer',
 }
 
@@ -101,7 +116,9 @@ function makePane(mode?: AppMode): PaneState {
     scoreComputeBoxPos: null,
     lesionResults: [],
 
-    contrastMode: false,
+    // Fixed by the screen, never a switch: the Contrast screen derives its
+    // threshold from a seed, every other screen uses the fixed 130 HU.
+    contrastMode: capsFor(mode).contrast,
     seedPlacementMode: false,
     pendingSeed: null,
     contrastThreshold: null,
@@ -151,9 +168,15 @@ const CASE_RESET: Partial<PaneState> = {
 
 export type { AppMode }
 
-export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => void } = {}) {
+export default function App({
+  mode,
+  initialPaneCount = 1,
+  onExit,
+}: { mode?: AppMode; initialPaneCount?: 1 | 2; onExit?: () => void } = {}) {
   const caps = capsFor(mode)
-  const [panes, setPanes] = useState<PaneState[]>([makePane(mode)])
+  const [panes, setPanes] = useState<PaneState[]>(() =>
+    Array.from({ length: initialPaneCount }, () => makePane(mode)),
+  )
   const [linked, setLinked] = useState(true)
   const [syncNavByPatientId, setSyncNavByPatientId] = useState(true)
   const [activePaneId, setActivePaneId] = useState<string | null>(panes[0]?.id ?? null)
@@ -460,19 +483,18 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
     updatePane(paneId, { loading: false, loadingMessage: null })
   }
 
-  // Decide whether this scan is contrast-enhanced from what is actually
-  // recorded — a saved seed, a previous annotation's own record of its type,
-  // or the manifest's contrast column — instead of from whether the Contrast
-  // checkbox happens to be ticked. That check used to run only when contrast
-  // mode was already on, so opening a contrast scan without ticking the box
-  // silently annotated it against the fixed 130 HU non-contrast threshold.
-  // Applies everything previous sessions recorded about a scan: whether it
-  // is contrast-enhanced, and where its saved annotation lives. Returns the
-  // lookup so callers can act on the annotation too — reloading the
-  // annotation used to be driven solely by the manifest's annotation_path
-  // column, so it simply didn't happen for a scan loaded outside a manifest
-  // (a DICOM directory, or stepping between series). The seed came back and
-  // the annotation silently did not.
+  // Looks up what earlier sessions recorded about a scan (its saved annotation
+  // and seed) and turns that into this screen's warnings. Returns the lookup so
+  // callers can reload the saved annotation too — that used to be driven solely
+  // by the manifest's annotation_path column, so it simply didn't happen for a
+  // scan loaded outside a manifest (a DICOM directory, or stepping between
+  // series).
+  //
+  // Whether a scan is contrast is a property of the SCREEN now, not something
+  // guessed from evidence or a checkbox: the Contrast screen always derives a
+  // per-scan threshold, every other screen uses 130 HU. What the evidence is
+  // still used for is the cross-check — a scan the other screen recorded work
+  // on says so here, loudly, instead of being annotated against the wrong basis.
   async function applyContrastEvidence(
     paneId: string,
     ctPath: string,
@@ -481,8 +503,7 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
   ): Promise<{ isContrast: boolean; lookup: AnnotationLookup | null }> {
     let lookup = null
     try {
-      // View mode never goes looking for saved annotations (Manual_Annotations)
-      // and has no contrast handling, so nothing is loaded that wasn't asked for.
+      // View mode never goes looking for saved annotations (Manual_Annotations).
       if (caps.annotationLookup) lookup = await lookupAnnotation(
         ctPath,
         ctInfo?.dicom_series_uid ?? null,
@@ -492,32 +513,27 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
     } catch {
       /* the lookup is advisory — a failure must not block loading a scan */
     }
-    const isContrast = caps.contrast && (row?.contrast === true || !!lookup?.hasSeed || lookup?.annotationType === 'contrast')
 
-    if (!isContrast) {
-      // Nothing says this scan is contrast — make sure the previous case's
-      // contrast threshold isn't still in force. Carrying a per-scan
-      // threshold into a different scan is silently wrong every time.
+    if (!caps.contrast) {
       updatePane(paneId, {
         annotationLookup: lookup,
         contrastMode: false,
-        contrastNotice: null,
-        thresholdValue: DEFAULT_THRESHOLD_HU,
-        thresholdEnabled: false,
-        editThresholdMin: DEFAULT_THRESHOLD_HU,
-        editRegionGrowThreshold: DEFAULT_THRESHOLD_HU,
+        contrastNotice: caps.edit && scanRecordedAsContrast(lookup) ? NONCONTRAST_SCREEN_BLOCK : null,
       })
       return { isContrast: false, lookup }
     }
+
+    // Contrast screen. Thresholds are NOT reset here: the CT-load path already
+    // cleared them, and Pane's own seed effect (which runs concurrently) may
+    // have just restored a saved one.
     updatePane(paneId, {
       annotationLookup: lookup,
       contrastMode: true,
-      // If there is a seed, Pane's own effect loads and re-verifies it and
-      // clears this. If there isn't, this is the warning that stops someone
-      // annotating a contrast scan against 130 HU.
-      contrastNotice: lookup?.hasSeed
-        ? null
-        : 'This is recorded as a contrast scan, but no seed/threshold has been placed for it yet. Place and finalize a seed before annotating.',
+      contrastNotice: lookup?.annotationType === 'non-contrast'
+        ? NONCONTRAST_ANNOTATION_ON_CONTRAST_SCREEN
+        : lookup?.hasSeed
+          ? null
+          : CONTRAST_NEEDS_SEED,
     })
     return { isContrast: true, lookup }
   }
@@ -684,6 +700,9 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
     setPanes((prev) => (prev.length <= 1 ? prev : prev.filter((p) => p.id !== id)))
   }
 
+  // Both windows empty: one drawing spans them instead of a copy in each.
+  const sharedSketch = panes.length === 2 && panes.every((p) => !p.ctInfo && !p.loading)
+
   return (
     <div className="app">
       <div className="app-header">
@@ -696,12 +715,18 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
                 onExit,
               )
             }
+            className="back-btn"
             title="Back to mode selection"
           >
-            ← Modes
+            <span className="back-btn-arrow">‹</span>
+            <AppLogo size={22} />
+            <span>Modes</span>
           </button>
         )}
-        <h1>{MODE_TITLES[mode ?? 'full'] ?? 'CT / Segmentation Viewer'}</h1>
+        <h1>
+          <span className="app-title-icon">{MODE_ICONS[mode ?? 'full']}</span>
+          {mode === 'view' && initialPaneCount === 2 ? 'View · Split view' : (MODE_TITLES[mode ?? 'full'] ?? 'CT / Segmentation Viewer')}
+        </h1>
         <div className="app-header-controls">
           {panes.length > 1 && (
             <label className="link-toggle" title="Sync scroll / plane / zoom across panes">
@@ -752,7 +777,7 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
             )}
           </div>
           )}
-          {panes.length > 1 && (
+          {caps.reviewMode && panes.length > 1 && (
             <div
               className="review-parent-select"
               title="Which pane's Reason tags drive Review mode's Previous/Next skipping"
@@ -781,10 +806,18 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
           )}
         </div>
       </div>
-      <div className={`panes-container panes-${panes.length}`}>
-        {panes.map((pane) => (
+      <div className={`panes-container panes-${panes.length}${sharedSketch ? ' shared-sketch-on' : ''}`}>
+        {/* Two empty windows do the same thing, so they get ONE drawing across both. */}
+        {sharedSketch && (
+          <div className="shared-sketch">
+            <EmptyStateSketch mode={mode ?? 'view'} showCallouts withShortcutsNote split />
+          </div>
+        )}
+        {panes.map((pane, paneIndex) => (
           <Pane
             key={pane.id}
+            sharedSketch={sharedSketch}
+            primary={paneIndex === 0}
             pane={pane}
             onChange={(partial) => updatePane(pane.id, partial)}
             onClose={() => closePane(pane.id)}

@@ -6,7 +6,8 @@ import type { AppMode } from './types.ts'
 import Launcher from './components/Launcher.tsx'
 
 function Root() {
-  const [mode, setMode] = useState<AppMode | null>(null)
+  const [choice, setChoice] = useState<{ mode: AppMode; panes: 1 | 2 } | null>(null)
+  const mode = choice?.mode ?? null
   // On the mode-selection screen there is nothing to lose, so closing the
   // window is answered at once (a screen with work open answers for itself).
   useEffect(() => {
@@ -20,8 +21,8 @@ function Root() {
   }, [mode])
   // The full, unrestricted app is still reachable at /#app while the other modes are built.
   if (window.location.hash === '#app') return <App />
-  if (!mode) return <Launcher onSelect={setMode} />
-  return <App mode={mode} onExit={() => setMode(null)} />
+  if (!choice) return <Launcher onSelect={(m, panes = 1) => setChoice({ mode: m, panes })} />
+  return <App mode={choice.mode} initialPaneCount={choice.panes} onExit={() => setChoice(null)} />
 }
 
 createRoot(document.getElementById('root')!).render(

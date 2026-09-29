@@ -35,10 +35,10 @@ is only a list of project references. Backend tests: `.venv/Scripts/python.exe -
 
 ## Screens (modes) — the launcher and `modeConfig.ts`
 
-The app opens on a launcher (`Launcher.tsx`: Single screen / Split view tabs; View, Review, and Annotate ▸
-Contrast / Non-contrast cards). `main.tsx` holds the chosen `AppMode` (`types.ts`) and renders
-`<App mode onExit>`; the original unrestricted app is still at `/#app`. Currently wired: **`view`** and
-**`annotate-noncontrast`**.
+The app opens on a launcher (`Launcher.tsx`: three cards — View ▸ Single screen / Split view, Review, and
+Annotate ▸ Contrast / Non-contrast; no tabs). `main.tsx` holds the chosen `AppMode` (`types.ts`) plus the pane
+count (1, or 2 for View ▸ Split view) and renders `<App mode initialPaneCount onExit>`; the original unrestricted app is still at `/#app`. Currently wired: **`view`**,
+**`annotate-noncontrast`** and **`annotate-contrast`**.
 
 - **`modeConfig.ts` is the single source of what a screen shows.** `capsFor(mode)` returns a `ModeCaps`
   (`edit`, `comment`, `reason`, `reviewMode`, `split`, `contrast`, `orientation`, `showAll`,
@@ -49,8 +49,37 @@ Contrast / Non-contrast cards). `main.tsx` holds the chosen `AppMode` (`types.ts
 - **View**: read-only. Manifest loads with `read_only` (no columns added to the user's file). Never looks up
   `Manual_Annotations` or contrast evidence.
 - **Annotate non-contrast**: `caps.edit`; no Review/Tags/Split/Contrast/Reason; Status + Annotation columns.
+  Fixed 130 HU. It never writes the manifest Contrast column (blank column = never read or written).
+- **Annotate contrast** (`annotate-contrast`, `caps.contrast`): same as non-contrast plus its own seed flow and
+  the Contrast column. **There is no Contrast checkbox anywhere**: the threshold is per scan (from a seed),
+  never a fixed 130 HU, so contrast is a property of the SCREEN. `PaneState.contrastMode` is fixed at
+  `makePane` from `caps.contrast` (`/#app`, the full app, has `contrast: false` and behaves as non-contrast).
+  Flow: place seed (`Set AO seed`, click near the left ostium / centre of the ascending aorta → crosshair +
+  live sphere-VOI circle) → **Finalize** (mean + k·std over a voxel-count-grown VOI) → threshold / HU fields
+  read-only until **Re-seed**. Painting, region-grow and the digit keys are refused until a seed is finalized
+  (`annotationBlockedReason`; the amber `.pane-warning-contrast` banner says so). Scoring is a physical
+  **volume (mm³)**, never Agatston (the manifest Agatston panel is hidden here).
+  - **Show all is view-only here too**: the seed box and seed placement are hidden/off, Score Compute is off.
+  - **Every contrast call carries the display `flip`** (`/api/contrast/compute_threshold`,
+    `/api/mask/lesion_volume`; `compute_sphere_stats(..., flips)`), like paint/region-grow/lesion_score. A
+    saved seed records the `flip` its click was made under and is replayed under it (`loadSavedSeed`), so it
+    lands on the same voxel whatever the display is now; `PaneState.pendingSeed.flip` does the same for the
+    marker and sphere, which `projectVoxelToPlaneDisplay(..., flip)` re-projects when the orientation changes.
+  - **Output folder is asked up front**: as soon as the first CT of the session is up with no folder chosen
+    (and no manifest `annotation_path` hint) the "No output path" prompt opens with `then: 'lookup'`; after the
+    folder is chosen `reloadScanRecords` re-runs the lookup and loads the seed and saved annotation. Nothing is
+    remembered across sessions. Cancelling is fine — **Finalize** asks again (`then: 'seed'`) and continues.
+    `saveFolderPrompt.then` is `'save' | 'seed' | 'lookup'`.
+  - **`save_sidecar` never prompts and never crosses scans**: re-seeding replaces the scan's own seed; if a
+    *different* scan owns the folder name it is diverted to `<name>__N`, never written into the other scan's
+    folder. It raises `SaveDirRequired` (HTTP 400) with no folder / the image's own folder.
+  - **Cross-checks** (`scanRecordedAsContrast`, `NONCONTRAST_SCREEN_BLOCK`, `detectAnnotationTypeMismatch`):
+    the non-contrast screen shows a banner and refuses painting when the lookup says the scan has a seed or a
+    contrast-typed annotation, and re-checks right before a save (the folder is only known then); the contrast
+    screen warns when the recorded type is non-contrast. The manifest Contrast flag is written only by the
+    contrast screen, on Finalize.
 - **Empty state** (`EmptyStateSketch.tsx`): a hand-drawn how-to per mode (`ViewArt`,
-  `AnnotateNonContrastArt`), swirly `Callouts` portalled to `document.body` and positioned from the real
+  `AnnotateNonContrastArt`, `AnnotateContrastArt` — four cards, lines kept ≤ ~23 chars so the wide handwriting font fits), swirly `Callouts` portalled to `document.body` and positioned from the real
   toolbar/Shortcuts buttons, plus `SettingsPullHandle`. Settings start closed; the close circle is
   `.settings-close-circle`. `--sketch-neon` (App.css) is the colour for anything that should catch the eye.
 - **Show all** (`MultiPlaneViewer.tsx`): axial/sagittal/coronal linked through ONE voxel `(x,y,z)` (a voxel
@@ -190,9 +219,9 @@ Contrast / Non-contrast cards). `main.tsx` holds the chosen `AppMode` (`types.ts
     prediction; **`saves`** is one entry per save (timestamp, what it was loaded from, `mask_source`,
     labels, voxel count), capped at `MAX_SAVE_HISTORY`. Together they replace what the dated folders
     used to convey by accident.
-- **`contrast_threshold.py`** (contrast-viewer branch only) — per-scan calcium-detection threshold
+- **`contrast_threshold.py`** — per-scan calcium-detection threshold
   for contrast CT, in place of the fixed 130 HU used for non-contrast. `compute_sphere_stats()`
-  takes a seed click (converted to a 3D index via `volume_store._seed_index_3d`, reused as-is) and
+  takes a seed click (converted to a 3D index via `volume_store._seed_index_3d`, with the click's display `flips`) and
   **grows a VOI outward from it by voxel count, not a fixed radius**: it computes
   `target_voxel_count = round(target_volume_mm3 / voxel_volume)`, ranks every candidate voxel in a
   generously-sized search box by physical distance from the seed, and takes exactly that many
@@ -268,8 +297,8 @@ Contrast / Non-contrast cards). `main.tsx` holds the chosen `AppMode` (`types.ts
     open, or the two stack on top of each other.
   - `annotationBlockedReason()` refuses painting/region-grow on a contrast scan with no finalized
     threshold, instead of quietly drawing labels against 130 HU.
-  - The Contrast CT toggle's logic lives here (`requestContrastToggle`/`applyContrastToggle`), not
-    in `MaskEditor` — it can unload an edited mask, so it has to be able to ask first. Per-pane keyboard shortcuts (toggle mask,
+  - Seed finalize / Re-seed / saved-seed reload (`finalizeSeed`, `reSeed`, `loadSavedSeed`) live here; there is
+    no contrast toggle. Per-pane keyboard shortcuts (toggle mask,
   toggle threshold, prev/next slice, toggle review mode) live here; **global** shortcuts that
   should apply regardless of which pane is active (reload-from-disk, in split view) live in
   `App.tsx`'s own `window.addEventListener` instead.
@@ -280,10 +309,10 @@ Contrast / Non-contrast cards). `main.tsx` holds the chosen `AppMode` (`types.ts
   **`MaskEditor.tsx`**, **`KeybindSettings.tsx`**, **`InfoPanel.tsx`**, **`LabelColorEditor.tsx`**,
   **`LabelSelect.tsx`**, **`AlphaSpinner.tsx`** — smaller focused pieces, names are self-describing.
 - **`useKeybinds.ts`** — persists `KeybindMap` to `localStorage`.
-- **`useContrastSettings.ts`** (contrast-viewer branch only) — same localStorage-hook pattern as
+- **`useContrastSettings.ts`** — same localStorage-hook pattern as
   `useKeybinds.ts`, persists the contrast threshold's target VOI volume (mm³) and k-multiplier
   defaults (used to seed `ContrastSeedBox`'s inputs, still overridable per placement).
-- **`components/ContrastSeedBox.tsx`** (contrast-viewer branch only) — seed placement + computed
+- **`components/ContrastSeedBox.tsx`** — seed placement + computed
   threshold display, lives in `.viewer-left-controls` alongside the W/L box. See feature inventory
   below.
 
@@ -384,31 +413,12 @@ Contrast / Non-contrast cards). `main.tsx` holds the chosen `AppMode` (`types.ts
   never land on a model prediction: the destination is derived from the CT, and predictions live
   wherever the lab put them. `_source.json` keeps the lineage (`original_mask_path` write-once,
   plus a `saves` history), so "what was this derived from" survives re-editing your own work.
-- **Contrast CT mode** (contrast-viewer branch only, per-pane toggle **inside the Annotation
-  floating window** — `MaskEditor.tsx`'s `contrastToggle`, not the pane toolbar — `pane.contrastMode`):
-  non-contrast's fixed 130 HU threshold doesn't apply to contrast scans, so this derives one per scan
-  instead. Toggle **"Set AO seed"**, click near the left ostium/center of ascending aorta (cursor
-  becomes a crosshair while this mode is active) — this only records a candidate (`pane.pendingSeed`)
-  and shows a crosshair marker (`.seed-marker`) plus a **live sphere-VOI preview circle**
-  (`.seed-sphere-circle`, radius computed client-side straight from the target-volume setting via
-  `sphereRadiusMmFromVolume` — no backend round-trip needed for the preview) so you can see the
-  coverage before committing; it does **not** compute anything yet, since the user may need several
-  tries to find the right spot. Click **Finalize Seed** to actually sample the sphere VOI and derive
-  `threshold = mean + k*std` (`server/contrast_threshold.py`); the result is saved to a JSON sidecar
-  next to the CT and mirrored into `pane.thresholdValue`/`editThresholdMin`/
-  `editRegionGrowThreshold` (+ `thresholdEnabled: true`) all at once, then those three fields become
-  **read-only** ("fixed for the session") until **Re-seed** is clicked. Loading a CT while contrast
-  mode is on auto-checks for a saved sidecar and, if found, recomputes fresh from the current volume
-  to both apply and verify it (a mismatch beyond a small tolerance shows a warning banner rather than
-  silently trusting the saved number); if no sidecar exists for the new scan, the threshold fields
-  reset to the plain 130 HU default rather than carrying over whatever the previous case left locked.
-  **Contrast-ness is detected, not remembered by the user**: every CT load checks for a saved seed,
-  a previous annotation's recorded type, and the manifest's `Contrast` column, and turns contrast
-  mode on itself. If a scan is known to be contrast but has no seed yet, a banner says so and
-  painting/region-grow are refused until one is finalized. Finalizing a seed writes the manifest
-  flag too, so the next session knows before loading.
-  Score Compute mode computes a physical **volume (mm³)** instead of an Agatston score for contrast
-  panes (no manifest-baseline/confirm-total step per lesion click, since there's no
+- **Contrast screen** (see "Screens (modes)" for the flow, flips, folder and cross-check rules): the seed
+  and its threshold live in `contrast_seed.json` inside the scan's annotation folder; loading a CT looks for
+  one, recomputes fresh from the current volume to apply and verify it (a mismatch beyond a small tolerance
+  shows a warning rather than trusting the saved number), and otherwise leaves the threshold unset until a
+  seed is finalized. Finalizing also writes the manifest Contrast flag when that column is enabled.
+  Score Compute mode computes a physical **volume (mm³)** instead of an Agatston score on the contrast screen (no manifest-baseline/confirm-total step per lesion click, since there's no
   `<CLASS>_Agatston`-style baseline for a volume metric — always computed fresh); its box also gets a
   **▶ play button** (`computeAllVolumeScores` in `Pane.tsx`) that recomputes the total volume for
   every class (CAC/TAC/AV/MV) across the whole scan at once and opens the Score panel to show them.

@@ -32,6 +32,7 @@ def compute_sphere_stats(
     col: float,
     target_volume_mm3: float = DEFAULT_TARGET_VOLUME_MM3,
     k_multiplier: float = DEFAULT_K_MULTIPLIER,
+    flips: tuple = (False, False, False),
 ) -> dict:
     """Grow a VOI outward from the seed click, voxel by voxel in order of physical
     distance, until it holds exactly `round(target_volume_mm3 / voxel_volume)`
@@ -47,7 +48,7 @@ def compute_sphere_stats(
     NOT the same axis order as the array, so per-axis physical distance for array
     index (z, y, x) relative to seed (z0, y0, x0) is (z-z0)*sz, (y-y0)*sy, (x-x0)*sx.
     """
-    z0, y0, x0 = _seed_index_3d(ct_vol, plane, index, row, col)
+    z0, y0, x0 = _seed_index_3d(ct_vol, plane, index, row, col, flips)
     nz, ny, nx = ct_vol.array.shape
     if not (0 <= z0 < nz and 0 <= y0 < ny and 0 <= x0 < nx):
         raise ValueError("Seed point is outside the volume")
@@ -111,6 +112,9 @@ def compute_sphere_stats(
         "index": int(index),
         "row": float(row),
         "col": float(col),
+        # The row/col above are display coordinates under THIS orientation; a
+        # later session may display the scan differently, so it is recorded.
+        "flip": ("l" if flips[0] else "") + ("a" if flips[1] else "") + ("s" if flips[2] else ""),
     }
 
 
@@ -156,7 +160,13 @@ def save_sidecar(
     a name match.
     """
     ct_path = clean_path(ct_path)
-    target = annotation_paths.resolve_target(ct_path, series_uid, base_dir, resolution="overwrite")
+    # Re-seeding replaces this scan's own seed, so an existing annotation ("overwrite"
+    # / "earlier") is never a reason to ask. A folder owned by a DIFFERENT scan is:
+    # writing there would put this seed (and this scan's provenance) into someone
+    # else's annotation folder, so divert to a free "<name>__N" folder instead.
+    target = annotation_paths.resolve_target(ct_path, series_uid, base_dir)
+    if target["conflict"] == "collision":
+        target = annotation_paths.resolve_target(ct_path, series_uid, base_dir, resolution="new_copy")
     scan_dir = target["scan_dir"]
     # Stamp provenance so a later annotation save can recognize this folder
     # as belonging to this scan (and not mistake it for someone else's).

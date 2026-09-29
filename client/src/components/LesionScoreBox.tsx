@@ -98,7 +98,9 @@ export default function LesionScoreBox({
           {pane.scoreComputeMode && (
             <div className="edit-hint">
               {isVolumeMetric
-                ? 'Click a mask voxel to isolate its 3D lesion and compute its physical volume.'
+                ? pane.contrastThreshold === null
+                  ? 'Finalize a seed first — the volume is measured above the threshold it gives.'
+                  : 'Click a mask voxel to isolate its 3D lesion and compute its physical volume.'
                 : 'Click a mask voxel to isolate its 3D lesion and compute its Agatston score.'}
               <br />
               {`Hold Shift + click to seed from a circle for tiny lesions (Shift+scroll to resize, ${seedRadiusMm.toFixed(1)} mm).`}

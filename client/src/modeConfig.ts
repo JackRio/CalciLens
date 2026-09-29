@@ -11,7 +11,7 @@ export interface ModeCaps {
   reason: boolean // Reason picker (and its manifest column)
   reviewMode: boolean // Review toggle, Tags, and the Review shortcut
   split: boolean // Split view and the Copy button
-  contrast: boolean // Contrast toggle, seed box, contrast detection
+  contrast: boolean // the Contrast screen: seed box, per-scan threshold, volume scoring
   orientation: boolean // display orientation setting and edge letters
   showAll: boolean // the three-views-at-once button
   annotationLookup: boolean // reload this scan's saved annotation on load
@@ -52,24 +52,35 @@ const ANNOTATE_NONCONTRAST: ModeCaps = {
   columns: { reason: false, status: true, annotation: true, contrast: false },
 }
 
-// The original, unrestricted app (reachable at /#app).
+// Contrast has its own flow: the calcium threshold is derived per scan from a
+// seed (never a fixed 130 HU), so "contrast" is a property of the screen and
+// there is no checkbox. Same as non-contrast plus that, and the Contrast column.
+const ANNOTATE_CONTRAST: ModeCaps = {
+  ...ANNOTATE_NONCONTRAST,
+  contrast: true,
+  columns: { reason: false, status: true, annotation: true, contrast: true },
+}
+
+// The original, unrestricted app (reachable at /#app). It has no contrast
+// handling of its own any more: it behaves as non-contrast.
 const FULL: ModeCaps = {
   edit: true,
   comment: true,
   reason: true,
   reviewMode: true,
   split: true,
-  contrast: true,
+  contrast: false,
   orientation: false,
   showAll: false,
   annotationLookup: true,
   readOnlyManifest: false,
-  columns: { reason: true, status: true, annotation: true, contrast: true },
+  columns: { reason: true, status: true, annotation: true, contrast: false },
 }
 
 export function capsFor(mode?: AppMode): ModeCaps {
   if (mode === 'view') return VIEW
   if (mode === 'annotate-noncontrast') return ANNOTATE_NONCONTRAST
+  if (mode === 'annotate-contrast') return ANNOTATE_CONTRAST
   return FULL
 }
 

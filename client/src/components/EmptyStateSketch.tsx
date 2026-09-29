@@ -51,12 +51,13 @@ function Swirl({ from, to }: { from: [number, number]; to: [number, number] }) {
 // Arrows from the empty viewer up to the controls they talk about. Those
 // controls live outside the viewer, so this is a click-through layer over the
 // whole window, positioned from where the buttons really are.
-function Callouts({ geo }: { geo: Geo }) {
+function Callouts({ geo, withShortcutsNote }: { geo: Geo; withShortcutsNote: boolean }) {
   // Neon-ish so they stand out from the grey drawing (colour defined in App.css).
   const stroke = 'var(--sketch-neon)'
   const text = '#8f93a6'
   const font = "'Segoe Print','Ink Free','Bradley Hand','Comic Sans MS',cursive"
-  const { rootTop, rootRight, tabs, shortcuts, s } = geo
+  const { rootTop, rootRight, tabs, s } = geo
+  const shortcuts = withShortcutsNote ? geo.shortcuts : null
   const fontSize = 18 * s
 
   return createPortal(
@@ -106,7 +107,17 @@ function Callouts({ geo }: { geo: Geo }) {
 }
 
 // ---- View mode: how to load a scan and move around it ----
-function ViewArt({ line, text, viewOnly }: { line: string; text: string; viewOnly: boolean }) {
+function ViewArt({
+  line,
+  text,
+  viewOnly,
+  split = false,
+}: {
+  line: string
+  text: string
+  viewOnly: boolean
+  split?: boolean
+}) {
   return (
     <>
         <defs>
@@ -201,7 +212,11 @@ function ViewArt({ line, text, viewOnly }: { line: string; text: string; viewOnl
           <text x="552" y="326" fontSize="16" fontWeight="700">Once it’s open</text>
           <text x="552" y="349" fontSize="14">Wheel: slices · Ctrl+wheel: zoom</text>
           <text x="552" y="370" fontSize="14">
-            {viewOnly ? 'Right-drag: window/level · Show all: 3 views' : 'Right-drag: window/level · Shift+drag: pan'}
+            {split
+              ? 'Interaction / Iteration keep both in sync'
+              : viewOnly
+                ? 'Right-drag: window/level · Show all: 3 views'
+                : 'Right-drag: window/level · Shift+drag: pan'}
           </text>
         </g>
 
@@ -311,7 +326,142 @@ function AnnotateNonContrastArt({ line, text }: { line: string; text: string }) 
   )
 }
 
-export default function EmptyStateSketch({ mode, showCallouts }: { mode: AppMode; showCallouts: boolean }) {
+// Contrast screen: same hand-drawn style as the non-contrast one, but four
+// cards (the seed step is the whole point of this screen). The handwriting font
+// is wide, so every line is kept short enough for a ~200px card.
+function AnnotateContrastArt({ line, text }: { line: string; text: string }) {
+  return (
+    <>
+      <defs>
+        <filter id="sketch-wobble" x="-5%" y="-5%" width="110%" height="110%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.025" numOctaves="2" seed="7" result="n" />
+          <feDisplacementMap in="SourceGraphic" in2="n" scale="3.2" />
+        </filter>
+        <marker id="sketch-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M1 1 L9 5 L1 9" fill="none" stroke={line} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </marker>
+      </defs>
+
+      <g filter="url(#sketch-wobble)" fill="none" stroke={line} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        {/* four step cards */}
+        <rect x="40" y="30" width="170" height="250" rx="16" strokeDasharray="7 6" />
+        <rect x="232" y="30" width="262" height="250" rx="16" strokeDasharray="7 6" />
+        <rect x="516" y="30" width="200" height="250" rx="16" strokeDasharray="7 6" />
+        <rect x="738" y="30" width="180" height="250" rx="16" strokeDasharray="7 6" />
+        <path d="M212 155 C 217 149, 225 161, 230 155" markerEnd="url(#sketch-arrow)" />
+        <path d="M496 155 C 501 149, 509 161, 514 155" markerEnd="url(#sketch-arrow)" />
+        <path d="M718 155 C 723 149, 731 161, 736 155" markerEnd="url(#sketch-arrow)" />
+        <circle cx="66" cy="58" r="14" />
+        <circle cx="258" cy="58" r="14" />
+        <circle cx="542" cy="58" r="14" />
+        <circle cx="764" cy="58" r="14" />
+
+        {/* 1. a CT slice */}
+        <ellipse cx="125" cy="118" rx="46" ry="36" />
+        <ellipse cx="125" cy="118" rx="36" ry="27" opacity="0.5" />
+        <circle cx="119" cy="112" r="11" />
+        <circle cx="140" cy="128" r="5" />
+
+        {/* 2. the seed: a crosshair in the aorta with its dashed sphere-VOI circle */}
+        <ellipse cx="363" cy="116" rx="52" ry="38" />
+        <ellipse cx="363" cy="116" rx="41" ry="28" opacity="0.5" />
+        <circle cx="356" cy="110" r="11" />
+        <circle cx="356" cy="110" r="22" strokeDasharray="3 4" />
+        <path d="M356 98 L356 122 M344 110 L368 110" />
+
+        {/* 3. the slice with a dashed mask, and a "+ new mask" */}
+        <ellipse cx="608" cy="118" rx="44" ry="35" />
+        <ellipse cx="608" cy="118" rx="34" ry="26" opacity="0.5" />
+        <circle cx="602" cy="112" r="10" strokeDasharray="3 4" />
+        <circle cx="621" cy="127" r="5" strokeDasharray="3 4" />
+        <circle cx="688" cy="86" r="14" />
+        <path d="M688 78 L688 94 M680 86 L696 86" />
+
+        {/* 4. a brush painting a blob, and label chips */}
+        <g transform="translate(828 114) scale(0.78) translate(-790 -132)">
+          <path d="M842 82 L862 96 L820 138 L802 122 Z" />
+          <path d="M802 122 L820 138 C 806 152, 788 152, 780 142 C 786 134, 794 128, 802 122 Z" />
+          <path d="M748 172 C 738 152, 760 140, 780 150 C 796 158, 790 178, 770 182 C 756 184, 750 180, 748 172 Z" strokeDasharray="3 4" />
+          <circle cx="716" cy="100" r="8" />
+          <circle cx="742" cy="100" r="8" />
+          <circle cx="768" cy="100" r="8" />
+        </g>
+
+        {/* second row */}
+        <rect x="40" y="292" width="435" height="106" rx="14" strokeDasharray="7 6" />
+        <rect x="485" y="292" width="435" height="106" rx="14" strokeDasharray="7 6" />
+
+        {/* a floppy disk, for saving */}
+        <path d="M64 326 L64 368 L106 368 L106 334 L98 326 Z" />
+        <path d="M72 326 L72 338 L96 338 L96 326" opacity="0.6" />
+        <rect x="74" y="351" width="22" height="17" opacity="0.6" />
+
+        {/* a mouse, for the controls */}
+        <rect x="508" y="322" width="30" height="44" rx="14" />
+        <path d="M523 322 L523 338 M508 338 L538 338" opacity="0.6" />
+      </g>
+
+      <g fill={text} fontFamily={HAND} textAnchor="middle">
+        <text x="66" y="63" fontSize="16">1</text>
+        <text x="258" y="63" fontSize="16">2</text>
+        <text x="542" y="63" fontSize="16">3</text>
+        <text x="764" y="63" fontSize="16">4</text>
+
+        <text x="144" y="62" fontSize="16" fontWeight="700">Load the CT</text>
+        <text x="374" y="62" fontSize="17" fontWeight="700">Set the seed</text>
+        <text x="634" y="62" fontSize="16" fontWeight="700">Load the mask</text>
+        <text x="842" y="62" fontSize="17" fontWeight="700">Paint it</text>
+
+        <text x="125" y="188" fontSize="16">Load CT</text>
+        <text x="125" y="210" fontSize="13">or a whole manifest</text>
+
+        <text x="363" y="180" fontSize="13">Click the middle of the aorta</text>
+        <text x="363" y="199" fontSize="13">on the axial slice where the</text>
+        <text x="363" y="218" fontSize="13">left ostium originates.</text>
+        <text x="363" y="240" fontSize="13">The seed grows into a 200 mm³</text>
+        <text x="363" y="259" fontSize="13" fontWeight="700">sphere. Then press Finalize.</text>
+
+        <text x="616" y="180" fontSize="13">Load a prediction,</text>
+        <text x="616" y="199" fontSize="13">load your annotation,</text>
+        <text x="616" y="218" fontSize="13">or start with</text>
+        <text x="616" y="237" fontSize="13">“+ New mask to edit”</text>
+
+        <text x="828" y="180" fontSize="13">Pick a label, then</text>
+        <text x="828" y="199" fontSize="13">Brush or Region-Grow.</text>
+        <text x="828" y="222" fontSize="13">The threshold comes</text>
+        <text x="828" y="241" fontSize="13">from the seed.</text>
+
+        <g textAnchor="start">
+          <text x="132" y="322" fontSize="16" fontWeight="700">Save is safe</text>
+          <text x="132" y="346" fontSize="14">Goes to Manual_Annotations/&lt;scan&gt;/</text>
+          <text x="132" y="367" fontSize="14">Your prediction is never overwritten</text>
+          <text x="132" y="388" fontSize="14">The seed is kept with it</text>
+
+          <text x="552" y="322" fontSize="16" fontWeight="700">Handy</text>
+          <text x="552" y="346" fontSize="14">Left-drag: paint · Ctrl+drag: erase</text>
+          <text x="552" y="367" fontSize="14">0–9: label · Ctrl+click: tiny lesions</text>
+          <text x="552" y="388" fontSize="14">Score: click a lesion (volume, mm³)</text>
+        </g>
+
+        <text x="480" y="420" fontSize="14" opacity="0.85">Working on non-contrast scan? Wrong window, dear user.</text>
+        <text x="480" y="440" fontSize="13" opacity="0.75">Go back to Modes ▸ Annotate ▸ Non-contrast</text>
+      </g>
+    </>
+  )
+}
+
+export default function EmptyStateSketch({
+  mode,
+  showCallouts,
+  withShortcutsNote = true,
+  split = false,
+}: {
+  mode: AppMode
+  showCallouts: boolean
+  withShortcutsNote?: boolean
+  // One drawing shared by both windows of a split view (wording adjusted).
+  split?: boolean
+}) {
   const rootRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const [geo, setGeo] = useState<Geo | null>(null)
@@ -331,7 +481,8 @@ export default function EmptyStateSketch({ mode, showCallouts }: { mode: AppMode
       const scale = Math.min(sr.width / VIEWBOX_W, sr.height / VIEWBOX_H)
       const drawnH = VIEWBOX_H * scale
       const drawnTop = sr.top + (sr.height - drawnH) / 2
-      const pane = root.closest('.pane')
+      // A drawing shared by two windows sits outside both, so point at the first one's tabs.
+      const pane = root.closest('.pane') ?? root.closest('.panes-container')?.querySelector('.pane') ?? null
       setGeo({
         rootTop: rr.top,
         rootRight: rr.right,
@@ -358,9 +509,15 @@ export default function EmptyStateSketch({ mode, showCallouts }: { mode: AppMode
   const text = '#666978'
   return (
     <div className={`empty-sketch${showCallouts ? ' empty-sketch-notes' : ''}`} aria-hidden ref={rootRef}>
-      {geo && roomAbove >= 90 && <Callouts geo={geo} />}
+      {geo && roomAbove >= 90 && <Callouts geo={geo} withShortcutsNote={withShortcutsNote} />}
       <svg ref={svgRef} viewBox="28 18 904 428" preserveAspectRatio="xMidYMid meet">
-        {mode === 'annotate-noncontrast' ? <AnnotateNonContrastArt line={line} text={text} /> : <ViewArt line={line} text={text} viewOnly={mode === 'view'} />}
+        {mode === 'annotate-contrast' ? (
+          <AnnotateContrastArt line={line} text={text} />
+        ) : mode === 'annotate-noncontrast' ? (
+          <AnnotateNonContrastArt line={line} text={text} />
+        ) : (
+          <ViewArt line={line} text={text} viewOnly={mode === 'view'} split={split} />
+        )}
       </svg>
     </div>
   )

@@ -20,10 +20,14 @@ import {
   detectMaskLooksLikeCt,
   detectGeometryMismatch,
   detectAlignmentMismatch,
+  detectAnnotationTypeMismatch,
+  scanRecordedAsContrast,
+  NONCONTRAST_SCREEN_BLOCK,
   comboMatches,
 } from '../types'
 import {
   loadVolume,
+  lookupAnnotation,
   resolveDicomLoad,
   probeVoxel,
   renderUrl,
@@ -125,16 +129,38 @@ function planeIndexSpacingMm(spacingLps: [number, number, number], plane: Plane)
   return sz // axial
 }
 
+// Display-only mirrors (displayOrientation.ts) as one boolean per screen
+// direction of a plane, from the `flip` letters the backend also takes.
+function planeFlipsFromCode(plane: Plane, flip: string): { h: boolean; v: boolean } {
+  const lr = flip.includes('l')
+  const ap = flip.includes('a')
+  const si = flip.includes('s')
+  if (plane === 'axial') return { h: lr, v: ap }
+  if (plane === 'coronal') return { h: lr, v: si }
+  return { h: ap, v: si }
+}
+
+// The un-rescaled slice shape (rows, cols) each plane is drawn from.
+function planeViewShape(planeLengths: Record<Plane, number>, plane: Plane): [number, number] {
+  const nz = planeLengths.axial
+  const ny = planeLengths.coronal
+  const nx = planeLengths.sagittal
+  if (plane === 'axial') return [ny, nx]
+  if (plane === 'sagittal') return [nz, ny]
+  return [nz, nx]
+}
+
 // Mirrors the server's _seed_index_3d exactly (volume_store.py): converts a
 // display-space click (as sent by getDisplayCoords — post display-rescale
 // pixel space) on one specific plane into the full 3D (z, y, x) array index.
 // Needed client-side so the sphere-VOI preview can be projected onto
 // whichever plane is *currently* being viewed, not just the plane the seed
-// happened to be placed on.
+// happened to be placed on. `seed.flip` is the orientation the click was made
+// under; it is undone first, exactly as the server does.
 function seedDisplayToVoxel(
   planeLengths: Record<Plane, number>,
   spacingLps: [number, number, number],
-  seed: { plane: Plane; index: number; row: number; col: number },
+  seed: { plane: Plane; index: number; row: number; col: number; flip: string },
 ): [number, number, number] {
   const [sx, sy, sz] = spacingLps
   const target = Math.min(sx, sy, sz) || 1
@@ -143,6 +169,10 @@ function seedDisplayToVoxel(
     seed.plane === 'axial' ? [sy / target, sx / target] : seed.plane === 'sagittal' ? [sz / target, sy / target] : [sz / target, sx / target]
   let viewRow = seed.row / scaleH
   let viewCol = seed.col / scaleW
+  const [rows, cols] = planeViewShape(planeLengths, seed.plane)
+  const f = planeFlipsFromCode(seed.plane, seed.flip)
+  if (f.h) viewCol = cols - 1 - viewCol
+  if (f.v) viewRow = rows - 1 - viewRow
   if (seed.plane !== 'axial') viewRow = nz - 1 - viewRow // sagittal/coronal display is flipud'd
   viewRow = Math.round(viewRow)
   viewCol = Math.round(viewCol)
@@ -153,22 +183,39 @@ function seedDisplayToVoxel(
 }
 
 // Inverse of the above for a fixed 3D voxel: its display-space (row, col) on
-// a *given* plane, independent of which slice index that plane is currently
-// showing (in-plane position doesn't depend on the out-of-plane index).
+// a *given* plane under the CURRENT orientation `flip`, independent of which
+// slice index that plane is currently showing.
 function projectVoxelToPlaneDisplay(
   planeLengths: Record<Plane, number>,
   spacingLps: [number, number, number],
   voxel: [number, number, number],
   plane: Plane,
+  flip: string,
 ): { row: number; col: number } {
   const [sx, sy, sz] = spacingLps
   const [z0, y0, x0] = voxel
   const target = Math.min(sx, sy, sz) || 1
   const nz = planeLengths.axial
-  if (plane === 'axial') return { row: (y0 * sy) / target, col: (x0 * sx) / target }
-  const adjustedRow = nz - 1 - z0
-  if (plane === 'sagittal') return { row: (adjustedRow * sz) / target, col: (y0 * sy) / target }
-  return { row: (adjustedRow * sz) / target, col: (x0 * sx) / target } // coronal
+  let viewRow: number
+  let viewCol: number
+  let scaleH: number
+  let scaleW: number
+  if (plane === 'axial') {
+    viewRow = y0
+    viewCol = x0
+    scaleH = sy / target
+    scaleW = sx / target
+  } else {
+    viewRow = nz - 1 - z0
+    viewCol = plane === 'sagittal' ? y0 : x0
+    scaleH = sz / target
+    scaleW = (plane === 'sagittal' ? sy : sx) / target
+  }
+  const [rows, cols] = planeViewShape(planeLengths, plane)
+  const f = planeFlipsFromCode(plane, flip)
+  if (f.v) viewRow = rows - 1 - viewRow
+  if (f.h) viewCol = cols - 1 - viewCol
+  return { row: viewRow * scaleH, col: viewCol * scaleW }
 }
 
 // The seed voxel's own index along a *given* plane's out-of-plane axis (same
@@ -214,6 +261,8 @@ export default function Pane({
   onLoadRow,
   caps,
   mode,
+  primary = true,
+  sharedSketch = false,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -240,9 +289,16 @@ export default function Pane({
   caps: ModeCaps
   // Which launcher screen this pane belongs to (drives the empty-state guide).
   mode?: AppMode
+  // In split view only the first pane draws the note that points at Shortcuts.
+  primary?: boolean
+  // Both windows are empty and one drawing (drawn by App) spans them, so this pane draws none.
+  sharedSketch?: boolean
 }) {
   // Closed on first load: the empty viewer explains how to load a scan and offers a pull-handle for this panel.
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // Display orientation (mirrors) — also what every click sent to the backend was made under.
+  const orient = useDisplayOrientation()
+  const flip = caps.orientation ? flipCode(orient) : ''
   const [copyingToOtherPane, setCopyingToOtherPane] = useState(false)
   const [probe, setProbe] = useState<{ hu: number | null; label: number | null; row: number; col: number } | null>(
     null,
@@ -280,12 +336,18 @@ export default function Pane({
   const [saveConflict, setSaveConflict] = useState<SaveMaskConflict | null>(null)
   // Asked on the first save (or when the chosen folder is unusable): where
   // annotations should go. There is no default, and never the image's folder.
-  const [saveFolderPrompt, setSaveFolderPrompt] = useState<{ resolution?: 'overwrite' | 'new_copy' } | null>(null)
+  // `then` is what to continue with once a folder is chosen: 'save' the mask,
+  // 'seed' finalize the pending seed, or 'lookup' (asked up front) re-read what
+  // earlier sessions recorded for this scan in that folder.
+  const [saveFolderPrompt, setSaveFolderPrompt] = useState<{
+    resolution?: 'overwrite' | 'new_copy'
+    then: 'save' | 'seed' | 'lookup'
+  } | null>(null)
+  const askedFolderUpFront = useRef(false)
+  const lookupAfterFolder = useRef(false)
+  const seedLoadToken = useRef(0)
   const [saveFolderDraft, setSaveFolderDraft] = useState('')
   const [saveFolderError, setSaveFolderError] = useState<string | null>(null)
-  // Turning the Contrast toggle off/on can unload an edited mask; this holds
-  // that intent until the user confirms they're willing to lose the edits.
-  const [contrastUnloadPending, setContrastUnloadPending] = useState<boolean | null>(null)
   const [renderError, setRenderError] = useState<string | null>(null)
   const [contrastSaving, setContrastSaving] = useState(false)
   const [contrastError, setContrastError] = useState<string | null>(null)
@@ -428,23 +490,22 @@ export default function Pane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.maskInfo?.volume_id])
 
-  // Contrast mode: whenever the loaded CT changes while contrast mode is on,
-  // check for a previously-saved seed/threshold sidecar next to it and, if
-  // found, recompute fresh from the current volume to both apply and verify
-  // it (rather than trusting the saved threshold_hu blindly) — "we also
-  // verify if the threshold matches the previous save as well."
-  useEffect(() => {
-    if (!pane.contrastMode || !pane.ctInfo || !pane.ctPath) return
-    let cancelled = false
+  // Contrast screen: whenever the loaded CT changes, look for a previously-saved
+  // seed/threshold for it and, if found, recompute fresh from the current volume
+  // to both apply and verify it (rather than trusting the saved threshold_hu
+  // blindly). The saved click is replayed under the orientation it was made in
+  // (`saved.flip`), so it lands on the same voxel whatever the display is now.
+  // `resetIfMissing` is for a CT change (nothing from the previous case may
+  // carry over); re-checking after a folder is chosen must not wipe a seed the
+  // user has placed in the meantime.
+  async function loadSavedSeed(dir: string, resetIfMissing: boolean) {
+    if (!caps.contrast || !pane.ctInfo || !pane.ctPath) return
+    const token = ++seedLoadToken.current
     const ctInfo = pane.ctInfo
-    const ctPath = pane.ctPath
-    ;(async () => {
-      const saved = await loadContrastThreshold(ctPath, annotationSaveDir, ctInfo.dicom_series_uid).catch(() => null)
-      if (cancelled) return
-      if (!saved) {
-        // No seed saved for this scan yet — don't carry over whatever
-        // threshold the previously-viewed case left behind, reset to the
-        // same 130 HU default a fresh non-contrast pane starts with.
+    const saved = await loadContrastThreshold(pane.ctPath, dir, ctInfo.dicom_series_uid).catch(() => null)
+    if (token !== seedLoadToken.current) return
+    if (!saved) {
+      if (resetIfMissing) {
         onChange({
           contrastThreshold: null,
           contrastThresholdLocked: false,
@@ -456,50 +517,117 @@ export default function Pane({
           editRegionGrowThreshold: DEFAULT_THRESHOLD_HU,
           volumeScores: null,
         })
-        return
       }
-      try {
-        const recomputed = await computeContrastThreshold({
-          ctId: ctInfo.volume_id,
-          plane: saved.plane,
-          index: saved.index,
-          row: saved.row,
-          col: saved.col,
-          targetVolumeMm3: saved.targetVolumeMm3,
-          kMultiplier: saved.kMultiplier,
-          save: false,
-        })
-        if (cancelled) return
-        const mismatch = Math.abs(recomputed.thresholdHu - saved.thresholdHu) > 0.5
-        onChange({
-          contrastThreshold: recomputed.thresholdHu,
-          contrastThresholdLocked: true,
-          thresholdValue: recomputed.thresholdHu,
-          thresholdEnabled: true,
-          editThresholdMin: recomputed.thresholdHu,
-          editRegionGrowThreshold: recomputed.thresholdHu,
-          pendingSeed: { plane: saved.plane, index: saved.index, row: saved.row, col: saved.col },
-          contrastMeta: {
-            meanHu: recomputed.meanHu,
-            stdHu: recomputed.stdHu,
-            voxelCount: recomputed.voxelCount,
-            actualVolumeMm3: recomputed.actualVolumeMm3,
-            targetVolumeMm3: recomputed.targetVolumeMm3,
-            kMultiplier: recomputed.kMultiplier,
-            radiusMm: recomputed.radiusMm,
-            savedAt: saved.savedAt || '',
-            mismatch,
-          },
-        })
-      } catch (e) {
-        if (!cancelled) setContrastError(e instanceof Error ? e.message : String(e))
-      }
-    })()
+      return
+    }
+    try {
+      const recomputed = await computeContrastThreshold({
+        ctId: ctInfo.volume_id,
+        plane: saved.plane,
+        index: saved.index,
+        row: saved.row,
+        col: saved.col,
+        targetVolumeMm3: saved.targetVolumeMm3,
+        kMultiplier: saved.kMultiplier,
+        save: false,
+        flip: saved.flip,
+      })
+      if (token !== seedLoadToken.current) return
+      const mismatch = Math.abs(recomputed.thresholdHu - saved.thresholdHu) > 0.5
+      onChange({
+        contrastThreshold: recomputed.thresholdHu,
+        contrastThresholdLocked: true,
+        thresholdValue: recomputed.thresholdHu,
+        thresholdEnabled: true,
+        editThresholdMin: recomputed.thresholdHu,
+        editRegionGrowThreshold: recomputed.thresholdHu,
+        pendingSeed: { plane: saved.plane, index: saved.index, row: saved.row, col: saved.col, flip: saved.flip },
+        contrastNotice: null,
+        contrastMeta: {
+          meanHu: recomputed.meanHu,
+          stdHu: recomputed.stdHu,
+          voxelCount: recomputed.voxelCount,
+          actualVolumeMm3: recomputed.actualVolumeMm3,
+          targetVolumeMm3: recomputed.targetVolumeMm3,
+          kMultiplier: recomputed.kMultiplier,
+          radiusMm: recomputed.radiusMm,
+          savedAt: saved.savedAt || '',
+          mismatch,
+        },
+      })
+    } catch (e) {
+      if (token === seedLoadToken.current) setContrastError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  useEffect(() => {
+    if (!caps.contrast || !pane.ctInfo || !pane.ctPath) return
+    loadSavedSeed(annotationSaveDir, true)
     return () => {
-      cancelled = true
+      seedLoadToken.current += 1
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.contrastMode, pane.ctInfo?.volume_id])
+  }, [caps.contrast, pane.ctInfo?.volume_id])
+
+  // The Contrast screen asks for the output folder as soon as the first CT is
+  // up (an earlier seed can only be found in the folder it was saved to). A
+  // manifest annotation path already says where this scan's record is, so that
+  // case doesn't ask. Cancelling is fine; Finalize asks again.
+  useEffect(() => {
+    if (!caps.contrast || !pane.ctInfo || pane.loading || annotationSaveDir) return
+    if (askedFolderUpFront.current || currentRow?.annotation_path) return
+    askedFolderUpFront.current = true
+    openSaveFolderPrompt('missing', undefined, 'lookup')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caps.contrast, pane.ctInfo?.volume_id, pane.loading, annotationSaveDir])
+
+  // After the up-front folder is chosen: re-read what is recorded there.
+  useEffect(() => {
+    if (!lookupAfterFolder.current || !annotationSaveDir) return
+    lookupAfterFolder.current = false
+    reloadScanRecords()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [annotationSaveDir])
+
+  async function reloadScanRecords() {
+    if (!pane.ctInfo) return
+    const info = pane.ctInfo
+    const hadMask = !!pane.maskInfo
+    const { lookup } = await onApplyContrastEvidence(pane.ctPath, info)
+    await loadSavedSeed(annotationSaveDir, false)
+    if (lookup?.annotationPath && !hadMask) await loadSavedAnnotation(info, lookup)
+  }
+
+  // Loads a scan's own saved annotation over the top of it (see loadCtEntry).
+  async function loadSavedAnnotation(info: VolumeInfo, lookup: AnnotationLookup) {
+    if (!lookup.annotationPath) return
+    onChange({ loadingMessage: 'Loading your annotation...' })
+    try {
+      const maskInfo = await loadVolume(lookup.annotationPath, true)
+      const mismatch = detectGeometryMismatch(info, maskInfo)
+      if (mismatch) {
+        onChange({ maskWarning: mismatch })
+      } else {
+        onChange({
+          maskPath: lookup.annotationPath,
+          maskInfo,
+          maskSource: 'annotation',
+          maskAnnotationType: lookup.annotationType,
+          maskBaselineVolumeId: maskInfo.volume_id,
+          maskBaselineVersion: pane.editVersion,
+          hasUnsavedMaskChanges: false,
+          lastSavedAt: lookup.savedAt,
+          maskWarning:
+            detectAlignmentMismatch(info, maskInfo) || detectAnnotationTypeMismatch(lookup.annotationType, caps.contrast),
+          showMask: true,
+        })
+      }
+    } catch (e) {
+      onChange({ maskWarning: `Could not load the saved annotation: ${e instanceof Error ? e.message : String(e)}` })
+    } finally {
+      onChange({ loadingMessage: null })
+    }
+  }
 
   // Loads one resolved CT directory+series. Shared by the initial CT load
   // (below) and by series-stepping (stepSeries), so both go through the
@@ -553,31 +681,7 @@ export default function Pane({
       // while its contrast seed, which goes through the same lookup, came
       // back fine. Both are recorded in the same per-scan folder; both
       // should return.
-      if (lookup?.annotationPath) {
-        onChange({ loadingMessage: 'Loading your annotation...' })
-        try {
-          const maskInfo = await loadVolume(lookup.annotationPath, true)
-          const mismatch = detectGeometryMismatch(info, maskInfo)
-          if (mismatch) {
-            onChange({ maskWarning: mismatch })
-          } else {
-            onChange({
-              maskPath: lookup.annotationPath,
-              maskInfo,
-              maskSource: 'annotation',
-              maskAnnotationType: lookup.annotationType,
-              maskBaselineVolumeId: maskInfo.volume_id,
-              maskBaselineVersion: pane.editVersion,
-              hasUnsavedMaskChanges: false,
-              lastSavedAt: lookup.savedAt,
-              maskWarning: detectAlignmentMismatch(info, maskInfo),
-              showMask: true,
-            })
-          }
-        } catch (e) {
-          onChange({ maskWarning: `Could not load the saved annotation: ${e instanceof Error ? e.message : String(e)}` })
-        }
-      }
+      if (lookup?.annotationPath) await loadSavedAnnotation(info, lookup)
       onChange({ loading: false, loadingMessage: null })
     } catch (e) {
       onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
@@ -649,104 +753,19 @@ export default function Pane({
     }
   }
 
-  // The Contrast toggle can unload the loaded mask when its annotation type
-  // no longer matches. That used to happen with no warning at all, taking any
-  // unsaved edits with it.
-  function requestContrastToggle(checked: boolean) {
-    const willUnload = !!pane.maskInfo && !!pane.maskAnnotationType &&
-      pane.maskAnnotationType !== (checked ? 'contrast' : 'non-contrast')
-    if (willUnload && hasUnsavedMaskChanges) {
-      setContrastUnloadPending(checked)
-      return
-    }
-    applyContrastToggle(checked)
-  }
-
-  function applyContrastToggle(checked: boolean) {
-    setContrastUnloadPending(null)
-    // Record the answer so the next session doesn't have to rely on anyone
-    // remembering to tick this box again — that is exactly how a contrast
-    // scan ended up annotated against the fixed 130 HU threshold.
-    if (currentRow && pane.manifestConfig.manifestPath && pane.manifestConfig.contrastColumn) {
-      saveManifestContrast(
-        pane.manifestConfig.manifestPath,
-        currentRow.index,
-        pane.manifestConfig.contrastColumn,
-        checked,
-      )
-        .then(() => {
-          onChange({
-            manifestRows: pane.manifestRows.map((r) =>
-              r.index === currentRow.index ? { ...r, contrast: checked } : r,
-            ),
-          })
-        })
-        .catch((e) => onChange({ manifestError: e instanceof Error ? e.message : String(e) }))
-    }
-    // A mask painted under the other threshold basis isn't meaningful here —
-    // contrast annotations are gated by a per-scan computed threshold, non-
-    // contrast by the fixed 130 HU, so a label boundary drawn under one
-    // doesn't mean the same thing under the other. Only unload on a
-    // *confirmed* mismatch; an unknown type (e.g. a mask from outside this
-    // app) is left alone rather than guessed at and discarded.
-    const mismatched = !!pane.maskInfo && !!pane.maskAnnotationType &&
-      pane.maskAnnotationType !== (checked ? 'contrast' : 'non-contrast')
-    const unload: Partial<PaneState> = mismatched
-      ? {
-          maskPath: '',
-          maskInfo: null,
-          maskAnnotationType: null,
-          maskSource: null,
-          hasUnsavedMaskChanges: false,
-          maskBaselineVolumeId: null,
-          maskBaselineVersion: 0,
-          editMode: false,
-          lesionResults: [],
-          volumeScores: null,
-          agatstonScores: null,
-          editMessage: `Unloaded the mask - it was annotated ${pane.maskAnnotationType === 'contrast' ? 'with' : 'without'} contrast mode, which no longer matches.`,
-        }
-      : {}
-
-    if (checked) {
-      onChange({
-        contrastMode: true,
-        editMode: mismatched ? false : pane.editMode,
-        scoreComputeMode: false,
-        contrastNotice: pane.contrastThreshold
-          ? null
-          : 'Contrast mode is on but no threshold has been derived for this scan yet. Place and finalize a seed before annotating.',
-        ...unload,
-      })
-    } else {
-      // Leaving contrast mode clears the seed/sphere and the computed
-      // threshold — it shouldn't keep driving the render overlay / paint /
-      // region-grow HU fields once contrast mode is off.
-      onChange({
-        contrastMode: false,
-        seedPlacementMode: false,
-        pendingSeed: null,
-        contrastThreshold: null,
-        contrastThresholdLocked: false,
-        contrastMeta: null,
-        volumeScores: null,
-        thresholdValue: DEFAULT_THRESHOLD_HU,
-        thresholdEnabled: false,
-        editThresholdMin: DEFAULT_THRESHOLD_HU,
-        editRegionGrowThreshold: DEFAULT_THRESHOLD_HU,
-        contrastNotice: null,
-        ...unload,
-      })
-    }
-  }
-
   function toggleSeedPlacement() {
     const next = !pane.seedPlacementMode
     onChange(next ? { seedPlacementMode: true, editMode: false, scoreComputeMode: false } : { seedPlacementMode: false })
   }
 
-  async function finalizeSeed() {
+  async function finalizeSeed(dirOverride?: string) {
     if (!pane.ctInfo || !pane.pendingSeed) return
+    const dir = dirOverride ?? annotationSaveDir
+    if (!dir) {
+      // No folder yet (or the up-front prompt was cancelled): ask, then carry on.
+      openSaveFolderPrompt('missing', undefined, 'seed')
+      return
+    }
     setContrastSaving(true)
     setContrastError(null)
     try {
@@ -762,7 +781,8 @@ export default function Pane({
         ctPath: pane.ctPath,
         maskPath: pane.maskPath || null,
         patientId: currentRow?.patient_id || null,
-        saveDir: annotationSaveDir || null,
+        saveDir: dir,
+        flip: pane.pendingSeed.flip,
       })
       onChange({
         contrastThreshold: result.thresholdHu,
@@ -798,7 +818,9 @@ export default function Pane({
         })
       }
     } catch (e) {
-      setContrastError(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg === SAME_FOLDER_MESSAGE) openSaveFolderPrompt('same_as_image', undefined, 'seed')
+      else setContrastError(msg)
     } finally {
       setContrastSaving(false)
     }
@@ -854,10 +876,14 @@ export default function Pane({
     return d === ct || (parent !== '' && d === parent)
   }
 
-  function openSaveFolderPrompt(reason: 'missing' | 'same_as_image', resolution?: 'overwrite' | 'new_copy') {
+  function openSaveFolderPrompt(
+    reason: 'missing' | 'same_as_image',
+    resolution?: 'overwrite' | 'new_copy',
+    then: 'save' | 'seed' | 'lookup' = 'save',
+  ) {
     setSaveFolderDraft(reason === 'missing' ? annotationSaveDir : '')
     setSaveFolderError(reason === 'same_as_image' ? SAME_FOLDER_MESSAGE : null)
-    setSaveFolderPrompt({ resolution })
+    setSaveFolderPrompt({ resolution, then })
   }
 
   async function confirmSaveFolder() {
@@ -871,10 +897,13 @@ export default function Pane({
       return
     }
     const pending = saveFolderPrompt?.resolution
+    const then = saveFolderPrompt?.then ?? 'save'
+    if (then === 'lookup') lookupAfterFolder.current = true
     onAnnotationSaveDirChange(dir)
     setSaveFolderPrompt(null)
     // Pass the folder along: the prop above only updates on the next render.
-    await doSaveMask(pending, dir)
+    if (then === 'seed') await finalizeSeed(dir)
+    else if (then === 'save') await doSaveMask(pending, dir)
   }
 
   async function browseSaveFolder() {
@@ -891,6 +920,20 @@ export default function Pane({
     if (!saveDir) {
       openSaveFolderPrompt('missing', resolution)
       return
+    }
+    // Non-contrast screen: the folder is only known now, so this is the first
+    // moment the scan's record can be checked. A scan the Contrast screen has
+    // worked on must not quietly get a fixed-130-HU annotation next to its seed.
+    if (!caps.contrast) {
+      try {
+        const lk = await lookupAnnotation(pane.ctPath, pane.ctInfo?.dicom_series_uid ?? null, saveDir, currentRow?.annotation_path || null)
+        if (scanRecordedAsContrast(lk)) {
+          onChange({ annotationLookup: lk, contrastNotice: NONCONTRAST_SCREEN_BLOCK, editMessage: NONCONTRAST_SCREEN_BLOCK })
+          return
+        }
+      } catch {
+        /* advisory: a failed lookup must not stop a save */
+      }
     }
     onChange({ editBusy: true, editMessage: null })
     try {
@@ -1184,6 +1227,11 @@ export default function Pane({
     if (pane.contrastMode && pane.contrastThreshold === null) {
       return 'No contrast threshold yet — place and finalize a seed before annotating this scan.'
     }
+    // The other way round: this screen's fixed 130 HU is wrong for a scan that
+    // is recorded as contrast, and the record is what the lookup found.
+    if (!caps.contrast && scanRecordedAsContrast(pane.annotationLookup)) {
+      return NONCONTRAST_SCREEN_BLOCK
+    }
     return null
   }
 
@@ -1334,15 +1382,21 @@ export default function Pane({
     const scaleX = imgRect.width / (img.naturalWidth || 1)
     const scaleY = imgRect.height / (img.naturalHeight || 1)
 
+    const voxel = seedDisplayToVoxel(pane.ctInfo.plane_lengths, pane.ctInfo.spacing_lps, seed)
     el.hidden = !(seed.plane === pane.plane && seed.index === pane.index)
     if (!el.hidden) {
-      const mx = imgRect.left - containerRect.left + seed.col * scaleX
-      const my = imgRect.top - containerRect.top + seed.row * scaleY
+      // The exact click when the orientation is unchanged; otherwise where that
+      // voxel is drawn now (a flipped display must not leave the marker behind).
+      const at =
+        seed.flip === flip
+          ? { row: seed.row, col: seed.col }
+          : projectVoxelToPlaneDisplay(pane.ctInfo.plane_lengths, pane.ctInfo.spacing_lps, voxel, pane.plane, flip)
+      const mx = imgRect.left - containerRect.left + at.col * scaleX
+      const my = imgRect.top - containerRect.top + at.row * scaleY
       el.style.transform = `translate(${mx}px, ${my}px)`
     }
 
     if (sphereEl) {
-      const voxel = seedDisplayToVoxel(pane.ctInfo.plane_lengths, pane.ctInfo.spacing_lps, seed)
       const radiusMm = pane.contrastMeta?.radiusMm ?? sphereRadiusMmFromVolume(contrastSettings.targetVolumeMm3)
       const stepMm = planeIndexSpacingMm(pane.ctInfo.spacing_lps, pane.plane)
       const distMm = Math.abs(pane.index - seedIndexAlongPlane(voxel, pane.plane)) * stepMm
@@ -1357,7 +1411,7 @@ export default function Pane({
         // volume_store.py).
         const radiusNaturalPx = sliceRadiusMm / finestSpacing
         const diameterScreenPx = 2 * radiusNaturalPx * scaleX
-        const proj = projectVoxelToPlaneDisplay(pane.ctInfo.plane_lengths, pane.ctInfo.spacing_lps, voxel, pane.plane)
+        const proj = projectVoxelToPlaneDisplay(pane.ctInfo.plane_lengths, pane.ctInfo.spacing_lps, voxel, pane.plane, flip)
         const cx = imgRect.left - containerRect.left + proj.col * scaleX
         const cy = imgRect.top - containerRect.top + proj.row * scaleY
         sphereEl.hidden = false
@@ -1380,6 +1434,7 @@ export default function Pane({
     pane.panY,
     pane.contrastMeta,
     contrastSettings.targetVolumeMm3,
+    flip,
   ])
 
   // The effect above only re-runs on viewer *state* changes, not on the
@@ -1556,6 +1611,7 @@ export default function Pane({
         col,
         huThreshold: pane.contrastThreshold,
         searchRadiusMm,
+        flip,
       })
       onChange({ loading: false, loadingMessage: null })
       if (!res.found || res.label === null) {
@@ -1715,8 +1771,6 @@ export default function Pane({
   const planeMemory = useRef<{ vol: string; idx: Partial<Record<Plane, number>> }>({ vol: '', idx: {} })
 
   // ---- Show all: the three views, linked through one point ----
-  const orient = useDisplayOrientation()
-  const flip = caps.orientation ? flipCode(orient) : ''
   const [mprState, setMprState] = useState<(MprCursor & { vol: string }) | null>(null)
   const [mprActive, setMprActive] = useState<Plane>('axial')
   const mprCursor: MprCursor | null = pane.ctInfo
@@ -1769,7 +1823,8 @@ export default function Pane({
     if (!pane.ctInfo || !mprCursor) return
     setMprCursor(withPlaneIndex(mprCursor, pane.plane, pane.index, pane.ctInfo.plane_lengths))
     setMprActive(pane.plane)
-    onChange({ showAll: true })
+    // Show all is view-only: leave seed placement and score compute behind.
+    onChange({ showAll: true, seedPlacementMode: false, scoreComputeMode: false })
   }
 
   // Leaving Show all lands on `plane` at the slice the shared point has there.
@@ -1949,6 +2004,12 @@ export default function Pane({
         const digit = /^(?:Digit|Numpad)([0-9])$/.exec(e.code)
         if (digit) {
           const n = Number(digit[1])
+          const blocked = blockedRef.current()
+          if (blocked) {
+            e.preventDefault()
+            onChange({ editMessage: blocked })
+            return
+          }
           if (n === 0 || pane.maskColors.some((c) => c.label === n)) {
             e.preventDefault()
             onChange({ editActiveLabel: n })
@@ -1956,7 +2017,7 @@ export default function Pane({
           return
         }
       }
-      if (caps.edit && keybinds.toggleScoreComputeMode.some((c) => comboMatches(e, c))) {
+      if (caps.edit && !pane.showAll && keybinds.toggleScoreComputeMode.some((c) => comboMatches(e, c))) {
         e.preventDefault()
         const next = !pane.scoreComputeMode
         onChange(next ? { scoreComputeMode: true, editMode: false } : { scoreComputeMode: false })
@@ -1980,6 +2041,10 @@ export default function Pane({
     onChange,
     onToggleReviewMode,
   ])
+  // The key handler above is registered once per dependency change; this keeps
+  // it reading the current block state (seed finalized? scan recorded as contrast?).
+  const blockedRef = useRef(annotationBlockedReason)
+  blockedRef.current = annotationBlockedReason
 
   function isOverUIBox(target: EventTarget | null): boolean {
     const node = target as Node | null
@@ -2038,7 +2103,7 @@ export default function Pane({
       // click, the user may take several tries to find the ostium/aorta
       // center before clicking "Finalize Seed".
       const coords = getDisplayCoords(e.clientX, e.clientY)
-      if (coords) onChange({ pendingSeed: { plane: pane.plane, index: pane.index, row: coords.row, col: coords.col } })
+      if (coords) onChange({ pendingSeed: { plane: pane.plane, index: pane.index, row: coords.row, col: coords.col, flip } })
       return
     }
     if (e.button === 0 && pane.scoreComputeMode && pane.ctInfo && pane.maskInfo) {
@@ -2681,8 +2746,8 @@ export default function Pane({
               <span className="loading-spinner loading-spinner-lg" />
               {pane.loadingMessage || 'Loading...'}
             </div>
-          ) : (
-            <EmptyStateSketch mode={mode ?? 'view'} showCallouts={!settingsOpen} />
+          ) : sharedSketch ? null : (
+            <EmptyStateSketch mode={mode ?? 'view'} showCallouts={!settingsOpen} withShortcutsNote={primary} />
           )}
           {/* Always mounted (just hidden) so cursorDivRef is available the
               moment a mouse move needs it — positioned and shown/hidden via
@@ -2759,7 +2824,7 @@ export default function Pane({
                   </>
                 )}
               </div>
-              {caps.contrast && pane.contrastMode && (
+              {caps.contrast && !pane.showAll && (
                 <div ref={contrastBoxRef}>
                   <ContrastSeedBox
                     pane={pane}
@@ -2769,7 +2834,7 @@ export default function Pane({
                     onToggleMinimized={() => setContrastBoxMinimized((v) => !v)}
                     saving={contrastSaving}
                     error={contrastError}
-                    onFinalize={finalizeSeed}
+                    onFinalize={() => finalizeSeed()}
                     onReSeed={reSeed}
                     onToggleSeedPlacement={toggleSeedPlacement}
                   />
@@ -2893,10 +2958,8 @@ export default function Pane({
                 onCreateMask={doCreateMask}
                 onSave={() => doSaveMask()}
                 onDragHandleDown={handleEditBoxDragStart}
-                onToggleContrast={requestContrastToggle}
                 thresholdLocked={pane.contrastMode && pane.contrastThresholdLocked}
                 seedRadiusMm={seedRadiusMm}
-                showContrast={caps.contrast}
               />
               {pane.editMode && pane.maskInfo && (
                 <div className="edit-quick-actions" onWheel={(e) => e.stopPropagation()}>
@@ -3160,7 +3223,7 @@ export default function Pane({
             <div className="comment-modal-buttons">
               <button onClick={() => setSaveFolderPrompt(null)}>Cancel</button>
               <button className="add-label-btn" onClick={confirmSaveFolder}>
-                Save
+                {saveFolderPrompt.then === 'save' ? 'Save' : 'OK'}
               </button>
             </div>
           </div>
@@ -3240,21 +3303,6 @@ export default function Pane({
                   : saveConflict.conflict === 'overwrite'
                     ? 'Overwrite'
                     : "Save today's copy"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {contrastUnloadPending !== null && (
-        <div className="comment-modal-backdrop" onClick={() => setContrastUnloadPending(null)}>
-          <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="comment-modal-title">Unsaved annotation changes</div>
-            <div className="nav-modal-body">Switching contrast mode will unload this mask.</div>
-            <div className="comment-modal-buttons">
-              <button onClick={() => setContrastUnloadPending(null)}>Cancel</button>
-              <button className="danger-btn" onClick={() => applyContrastToggle(contrastUnloadPending)}>
-                Discard and switch
               </button>
             </div>
           </div>

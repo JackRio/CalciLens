@@ -433,6 +433,7 @@ export async function computeLesionVolume(params: {
   col: number
   huThreshold: number
   searchRadiusMm?: number
+  flip?: string
 }): Promise<{ found: boolean; label: number | null; voxelCount: number; volumeMm3: number }> {
   const res = await fetch('/api/mask/lesion_volume', {
     method: 'POST',
@@ -446,6 +447,7 @@ export async function computeLesionVolume(params: {
       col: params.col,
       hu_threshold: params.huThreshold,
       search_radius_mm: params.searchRadiusMm ?? null,
+      flip: params.flip ?? '',
     }),
   })
   const data = await handleJson<{ found: boolean; label: number | null; voxel_count: number; volume_mm3: number }>(res)
@@ -486,6 +488,7 @@ export interface ContrastThresholdResult {
   index: number
   row: number
   col: number
+  flip: string
   savedAt?: string
 }
 
@@ -503,6 +506,7 @@ function parseContrastThresholdResult(data: {
   index: number
   row: number
   col: number
+  flip?: string
   saved_at?: string
 }): ContrastThresholdResult {
   return {
@@ -522,6 +526,7 @@ function parseContrastThresholdResult(data: {
     index: data.index,
     row: data.row,
     col: data.col,
+    flip: data.flip ?? '',
     savedAt: data.saved_at,
   }
 }
@@ -539,6 +544,7 @@ export async function computeContrastThreshold(params: {
   maskPath?: string | null
   patientId?: string | null
   saveDir?: string | null
+  flip?: string
 }): Promise<ContrastThresholdResult> {
   const res = await fetch('/api/contrast/compute_threshold', {
     method: 'POST',
@@ -556,6 +562,7 @@ export async function computeContrastThreshold(params: {
       mask_path: params.maskPath,
       patient_id: params.patientId,
       save_dir: params.saveDir || null,
+      flip: params.flip ?? '',
     }),
   })
   const data = await handleJson<Parameters<typeof parseContrastThresholdResult>[0]>(res)

@@ -118,15 +118,47 @@ def _sanitize(name: str) -> str:
     return cleaned or "unknown_scan"
 
 
-def annotation_root(ct_path: str, base_dir: Optional[str] = None) -> str:
-    """Where the dated folders live: the configured save directory, or the
-    CT's own directory when none is configured."""
+class SaveDirRequired(ValueError):
+    """Saving was asked for with no usable save folder. `reason` is
+    "missing" (none chosen) or "same_as_image" (the image's own folder)."""
+
+    def __init__(self, reason: str):
+        super().__init__(
+            "Choose a folder to save annotations in."
+            if reason == "missing"
+            else "Annotations cannot be saved in the same folder as the image. Choose a different folder."
+        )
+        self.reason = reason
+
+
+def annotation_root(ct_path: str, base_dir: Optional[str] = None) -> Optional[str]:
+    """Where the per-scan annotation folders live: the save directory the user
+    chose, and nowhere else. It used to fall back to the CT's own directory,
+    which quietly dropped annotations next to the images; now that is simply
+    "no root", and a caller that needs one must ask the user."""
     if base_dir:
         return clean_path(base_dir)
+    return None
+
+
+def _image_dirs(ct_path: str) -> list:
     ct_path = clean_path(ct_path or "")
+    dirs = [os.path.dirname(ct_path)]
     if os.path.isdir(ct_path):
-        return ct_path
-    return os.path.dirname(ct_path)
+        dirs.append(ct_path)
+    return [_normalize_for_compare(d) for d in dirs if d]
+
+
+def require_save_root(ct_path: str, base_dir: Optional[str]) -> str:
+    """The save root, or SaveDirRequired. Refuses the image's own folder."""
+    root = annotation_root(ct_path, base_dir)
+    if not root:
+        raise SaveDirRequired("missing")
+    # Pointing at <image folder>/Manual_Annotations is fine; the image folder
+    # itself is not.
+    if _normalize_for_compare(root) in _image_dirs(ct_path):
+        raise SaveDirRequired("same_as_image")
+    return root
 
 
 def _normalize_for_compare(path: str) -> str:
@@ -232,7 +264,7 @@ def resolve_target(
     to the caller; nothing here decides on the user's behalf.
     """
     ct_path = clean_path(ct_path or "")
-    root = annotation_root(ct_path, base_dir)
+    root = require_save_root(ct_path, base_dir)
     folder_name = scan_folder_name(ct_path, series_uid)
     target_dir = os.path.join(annotation_dir(root), folder_name)
 
@@ -428,7 +460,9 @@ def find_seed_sidecar(ct_path: str, series_uid: Optional[str] = None, base_dir: 
     root = annotation_root(ct_path, base_dir)
     folder_name = scan_folder_name(ct_path, series_uid)
 
-    for scan_dir in find_existing_scan_dirs(root, folder_name):
+    # No chosen save folder means nothing to search there; the pre-folder-scheme
+    # locations below are still checked so old seeds keep loading.
+    for scan_dir in find_existing_scan_dirs(root, folder_name) if root else []:
         record = read_source_record(scan_dir)
         if not _same_scan(record, ct_path, series_uid):
             continue

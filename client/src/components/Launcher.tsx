@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import './Launcher.css'
+import type { AppMode } from '../types'
 
 type Layout = 'single' | 'split'
 
@@ -24,7 +25,7 @@ function ModeCard({ icon, title, hint, onSelect, children }: ModeCardProps) {
   )
 }
 
-export default function Launcher({ onView }: { onView: () => void }) {
+export default function Launcher({ onSelect }: { onSelect: (mode: AppMode) => void }) {
   const [layout, setLayout] = useState<Layout>('single')
 
   return (
@@ -52,12 +53,14 @@ export default function Launcher({ onView }: { onView: () => void }) {
 
       {layout === 'single' ? (
         <div className="launcher-grid">
-          <ModeCard icon="👁" title="View" hint="Look only" onSelect={onView} />
+          <ModeCard icon="👁" title="View" hint="Look only" onSelect={() => onSelect('view')} />
           <ModeCard icon="💬" title="Review" hint="Comment or edit annotations" />
           <ModeCard icon="✏️" title="Annotate" hint="Semi-automated / Manual annotations">
             <div className="launcher-sub">
               <button type="button">Contrast</button>
-              <button type="button">Non-contrast</button>
+              <button type="button" onClick={() => onSelect('annotate-noncontrast')}>
+                Non-contrast
+              </button>
             </div>
           </ModeCard>
         </div>

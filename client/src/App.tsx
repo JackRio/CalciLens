@@ -1,11 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import Pane from './components/Pane'
 import KeybindSettings from './components/KeybindSettings'
 import ReviewTagsPicker from './components/ReviewTagsPicker'
-import type { AnnotationLookup, ManifestRow, PaneState, VolumeInfo } from './types'
+import type { AnnotationLookup, AppMode, ManifestRow, PaneState, VolumeInfo } from './types'
 import {
-  DEFAULT_MANIFEST_CONFIG,
   DEFAULT_THRESHOLD_COLOR,
   DEFAULT_THRESHOLD_HU,
   DEFAULT_WINDOW_LEVEL,
@@ -13,21 +12,29 @@ import {
   inferMaskAnnotationType,
   detectMaskLooksLikeCt,
   detectGeometryMismatch,
+  detectAlignmentMismatch,
   detectAnnotationTypeMismatch,
   comboMatches,
 } from './types'
 import { loadVolume, lookupAnnotation, resolveDicomLoad, saveManifestComment, saveManifestReason } from './api'
 import { useKeybinds } from './useKeybinds'
+import { capsFor, manifestDefaultsFor } from './modeConfig'
 import { initialLabelColors } from './labelPresets'
 import { useAnnotationSaveDir } from './useAnnotationSaveDir'
 
+const MODE_TITLES: Record<string, string> = {
+  view: 'View',
+  'annotate-noncontrast': 'Annotate · Non-contrast',
+  full: 'CT / Segmentation Viewer',
+}
+
 let paneCounter = 0
-function makePane(): PaneState {
+function makePane(mode?: AppMode): PaneState {
   paneCounter += 1
   const startColors = initialLabelColors()
   return {
     id: `pane-${paneCounter}`,
-    manifestConfig: { ...DEFAULT_MANIFEST_CONFIG },
+    manifestConfig: manifestDefaultsFor(mode),
     manifestColumns: [],
     manifestRows: [],
     activeRowIndex: null,
@@ -142,11 +149,11 @@ const CASE_RESET: Partial<PaneState> = {
   contrastMeta: null,
 }
 
-export type AppMode = 'view'
+export type { AppMode }
 
 export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => void } = {}) {
-  const viewOnly = mode === 'view'
-  const [panes, setPanes] = useState<PaneState[]>([makePane()])
+  const caps = capsFor(mode)
+  const [panes, setPanes] = useState<PaneState[]>([makePane(mode)])
   const [linked, setLinked] = useState(true)
   const [syncNavByPatientId, setSyncNavByPatientId] = useState(true)
   const [activePaneId, setActivePaneId] = useState<string | null>(panes[0]?.id ?? null)
@@ -187,7 +194,7 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
     }
     const names = dirty.map((p) => (panes.length > 1 ? (panes[0].id === p.id ? 'Left' : 'Right') : 'This')).join(' and ')
     setBlockedAction({
-      message: `${names} pane has unsaved annotation changes. ${what} will discard them.`,
+      message: `${what} will discard ${panes.length > 1 ? `${names.toLowerCase()} pane's ` : ''}unsaved edits.`,
       run: action,
     })
   }
@@ -248,6 +255,39 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [keybinds, panes])
+
+  // Closing the desktop window: the main process asks first. Unsaved edits get
+  // the same prompt as every other way of losing them; otherwise it just closes.
+  // The handler is kept in a ref so it always sees the current panes.
+  const closeRequestRef = useRef<() => void>(() => {})
+  closeRequestRef.current = () => {
+    const api = window.electronAPI
+    if (!api) return
+    api.closeAck()
+    withUnsavedGuard(
+      panes.map((p) => p.id),
+      'Closing the app',
+      () => api.confirmClose(),
+    )
+  }
+  useEffect(() => {
+    const api = window.electronAPI
+    if (!api?.onCloseRequested) return
+    return api.onCloseRequested(() => closeRequestRef.current())
+  }, [])
+
+  // Outside the desktop app (a browser tab) the browser's own leave-page prompt
+  // is the best available guard.
+  const anyUnsaved = panes.some((p) => p.hasUnsavedMaskChanges)
+  useEffect(() => {
+    if (!anyUnsaved || window.electronAPI) return
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [anyUnsaved])
 
   function updatePane(id: string, partial: Partial<PaneState>) {
     setPanes((prev) => {
@@ -361,9 +401,9 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
     // this scan, then the original prediction. The middle one matters for a
     // manifest with no annotation column configured, or one written before
     // that column existed — otherwise the user's own work stays invisible.
-    const annotationPath = viewOnly
-      ? ''
-      : (row.annotation_exists && row.annotation_path) || lookup?.annotationPath || ''
+    const annotationPath = caps.annotationLookup
+      ? (row.annotation_exists && row.annotation_path) || lookup?.annotationPath || ''
+      : ''
     const useAnnotation = !!annotationPath
     const maskToLoad = useAnnotation ? annotationPath : row.mask_path
     const maskSource: PaneState['maskSource'] = useAnnotation ? 'annotation' : 'prediction'
@@ -396,6 +436,7 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
               hasUnsavedMaskChanges: false,
               maskAnnotationType: annotationType,
               maskWarning:
+                (loadedCtInfo ? detectAlignmentMismatch(loadedCtInfo, maskInfo) : null) ||
                 detectMaskLooksLikeCt(maskInfo, ctPathForMaskCheck, maskToLoad) ||
                 detectAnnotationTypeMismatch(annotationType, contrastOn),
               showMask: true,
@@ -442,7 +483,7 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
     try {
       // View mode never goes looking for saved annotations (Manual_Annotations)
       // and has no contrast handling, so nothing is loaded that wasn't asked for.
-      if (!viewOnly) lookup = await lookupAnnotation(
+      if (caps.annotationLookup) lookup = await lookupAnnotation(
         ctPath,
         ctInfo?.dicom_series_uid ?? null,
         annotationSaveDir || null,
@@ -451,7 +492,7 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
     } catch {
       /* the lookup is advisory — a failure must not block loading a scan */
     }
-    const isContrast = !viewOnly && (row?.contrast === true || !!lookup?.hasSeed || lookup?.annotationType === 'contrast')
+    const isContrast = caps.contrast && (row?.contrast === true || !!lookup?.hasSeed || lookup?.annotationType === 'contrast')
 
     if (!isContrast) {
       // Nothing says this scan is contrast — make sure the previous case's
@@ -634,7 +675,7 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
 
   function addSplit() {
     if (panes.length >= 2) return
-    const p = makePane()
+    const p = makePane(mode)
     setPanes((prev) => [...prev, p])
     setActivePaneId(p.id)
   }
@@ -647,11 +688,20 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
     <div className="app">
       <div className="app-header">
         {onExit && (
-          <button onClick={onExit} title="Back to mode selection">
+          <button
+            onClick={() =>
+              withUnsavedGuard(
+                panes.map((p) => p.id),
+                'Going back to the modes',
+                onExit,
+              )
+            }
+            title="Back to mode selection"
+          >
             ← Modes
           </button>
         )}
-        <h1>{viewOnly ? 'View' : 'CT / Segmentation Viewer'}</h1>
+        <h1>{MODE_TITLES[mode ?? 'full'] ?? 'CT / Segmentation Viewer'}</h1>
         <div className="app-header-controls">
           {panes.length > 1 && (
             <label className="link-toggle" title="Sync scroll / plane / zoom across panes">
@@ -669,7 +719,7 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
               Iteration
             </label>
           )}
-          {!viewOnly && (
+          {caps.reviewMode && (
           <button
             className={reviewModeOn ? 'active' : ''}
             onClick={toggleReviewMode}
@@ -682,7 +732,7 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
             Review{reviewModeOn ? ' ●' : ''}
           </button>
           )}
-          {!viewOnly && (
+          {caps.reviewMode && (
           <div className="reason-picker-anchor">
             <button
               onClick={() => setReviewTagsPickerOpen((v) => !v)}
@@ -724,7 +774,7 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
           <button onClick={() => setKeybindSettingsOpen(true)} title="Keyboard shortcut settings">
             ⌨ Shortcuts
           </button>
-          {viewOnly ? null : panes.length < 2 ? (
+          {!caps.split ? null : panes.length < 2 ? (
             <button onClick={addSplit}>+ Split view</button>
           ) : (
             <span className="split-hint">Split view active</span>
@@ -750,7 +800,8 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
             onAnnotationSaveDirChange={setAnnotationSaveDir}
             onApplyContrastEvidence={(ctPath, ctInfo) => applyContrastEvidence(pane.id, ctPath, ctInfo)}
             onLoadRow={(row) => loadRowIntoPane(pane.id, row, pane.plane)}
-            viewOnly={viewOnly}
+            caps={caps}
+            mode={mode}
           />
         ))}
       </div>
@@ -759,7 +810,7 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
           keybinds={keybinds}
           onChange={setKeybinds}
           onClose={() => setKeybindSettingsOpen(false)}
-          viewOnly={viewOnly}
+          caps={caps}
         />
       )}
       {blockedAction && (
@@ -768,7 +819,7 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
             <div className="comment-modal-title">Unsaved annotation changes</div>
             <div className="nav-modal-body">{blockedAction.message}</div>
             <div className="comment-modal-buttons">
-              <button onClick={() => setBlockedAction(null)}>Go back and save</button>
+              <button onClick={() => setBlockedAction(null)}>Cancel</button>
               <button
                 className="danger-btn"
                 onClick={() => {
@@ -777,7 +828,7 @@ export default function App({ mode, onExit }: { mode?: AppMode; onExit?: () => v
                   run()
                 }}
               >
-                Discard and continue
+                Discard
               </button>
             </div>
           </div>

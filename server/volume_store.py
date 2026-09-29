@@ -166,6 +166,11 @@ class LoadedVolume:
             "origin": [round(float(v), 6) for v in self.orig_origin],
             "direction": [round(float(v), 6) for v in self.orig_direction],
             "orientation": self.orientation_code,
+            # Where the (LPS-reoriented) array really sits in the world:
+            # origin of voxel [0,0,0] and the axis directions. Two volumes only
+            # line up voxel-for-voxel when these match, not just their shape.
+            "origin_lps": [round(float(v), 6) for v in (self.reoriented_origin or self.orig_origin)],
+            "direction_lps": [round(float(v), 6) for v in (self.reoriented_direction or self.orig_direction)],
             "dtype": self.dtype,
             "value_min": float(self.value_min),
             "value_max": float(self.value_max),
@@ -450,13 +455,31 @@ def get_plane_raw_view(vol: LoadedVolume, plane: str, index: int):
     raise ValueError(f"unknown plane {plane}")
 
 
-def _display_to_view_coords(vol: LoadedVolume, plane: str, row: float, col: float, flipped: bool, view_shape: tuple):
+def _display_to_view_coords(
+    vol: LoadedVolume,
+    plane: str,
+    row: float,
+    col: float,
+    flipped: bool,
+    view_shape: tuple,
+    flips: tuple = (False, False, False),
+):
     """Convert a display-space (row, col) — as sent by the frontend, in the
     rescaled/isotropic pixel space shown in the browser — to a float
-    coordinate in the raw writable view's own space."""
+    coordinate in the raw writable view's own space.
+
+    `flips` are the display-only mirrors the slice was drawn with (see
+    parse_display_flips). They are undone first, in the display slice's own
+    row/col space, so that a click on a mirrored image lands on the voxel that
+    is actually drawn there."""
     scale_h, scale_w = get_plane_display_scale(vol, plane)
     s_row = row / scale_h
     s_col = col / scale_w
+    flip_h, flip_v = _plane_flip_axes(plane, flips)
+    if flip_h:
+        s_col = (view_shape[1] - 1) - s_col
+    if flip_v:
+        s_row = (view_shape[0] - 1) - s_row
     if flipped:
         s_row = (view_shape[0] - 1) - s_row
     return s_row, s_col
@@ -487,6 +510,7 @@ def paint_mask(
     overwrite_mode: str = "any",
     overwrite_label: Optional[int] = None,
     threshold_min: Optional[float] = None,
+    flips: tuple = (False, False, False),
 ) -> int:
     """Stamp an (elliptical, so it reads as a circle in the isotropic display)
     brush at display coordinates (row, col). Returns the number of voxels
@@ -496,7 +520,7 @@ def paint_mask(
     ct_view, _ = get_plane_raw_view(ct_vol, plane, index)
 
     scale_h, scale_w = get_plane_display_scale(ct_vol, plane)
-    center_row, center_col = _display_to_view_coords(ct_vol, plane, row, col, flipped, mask_view.shape)
+    center_row, center_col = _display_to_view_coords(ct_vol, plane, row, col, flipped, mask_view.shape, flips)
     radius_row = radius / scale_h
     radius_col = radius / scale_w
 
@@ -575,11 +599,13 @@ def _voxel_radius_from_mm(spacing_lps, radius_mm: Optional[float]) -> tuple:
     )
 
 
-def _seed_index_3d(ct_vol: LoadedVolume, plane: str, index: int, row: float, col: float):
+def _seed_index_3d(
+    ct_vol: LoadedVolume, plane: str, index: int, row: float, col: float, flips: tuple = (False, False, False)
+):
     """Convert a display-space click (plane, index, row, col) to a (z, y, x)
     index into the full 3D array — same axis order as vol.array (S, P, L)."""
-    _, flipped = get_plane_raw_view(ct_vol, plane, index)
-    view_row, view_col = _display_to_view_coords(ct_vol, plane, row, col, flipped, ct_vol.array.shape[:2])
+    raw_view, flipped = get_plane_raw_view(ct_vol, plane, index)
+    view_row, view_col = _display_to_view_coords(ct_vol, plane, row, col, flipped, raw_view.shape, flips)
     view_row = int(round(view_row))
     view_col = int(round(view_col))
     index = max(0, min(index, ct_vol.plane_length(plane) - 1))
@@ -602,6 +628,7 @@ def region_grow_mask(
     threshold_min: float,
     new_label: int,
     search_radius_mm: Optional[float] = None,
+    flips: tuple = (False, False, False),
 ) -> int:
     """True 3D flood-fill over the whole volume starting at the clicked
     voxel, with 26-connectivity (every face/edge/corner neighbor — maximum
@@ -617,7 +644,7 @@ def region_grow_mask(
 
     assert_same_geometry(mask_vol, ct_vol)
     nz, ny, nx = ct_vol.array.shape
-    z, y, x = _seed_index_3d(ct_vol, plane, index, row, col)
+    z, y, x = _seed_index_3d(ct_vol, plane, index, row, col, flips)
     if not (0 <= z < nz and 0 <= y < ny and 0 <= x < nx):
         return 0
 
@@ -711,7 +738,11 @@ def save_mask(
     the destination, {"status": "conflict", ...} without writing anything —
     the caller asks the user and calls back with `resolution`.
     """
-    target = annotation_paths.resolve_target(ct_path, series_uid, base_dir, resolution)
+    try:
+        target = annotation_paths.resolve_target(ct_path, series_uid, base_dir, resolution)
+    except annotation_paths.SaveDirRequired as e:
+        # Not an error: the caller asks the user where to save and tries again.
+        return {"status": "needs_save_dir", "reason": e.reason, "message": str(e)}
     if target["conflict"]:
         return {"status": "conflict", **target}
 

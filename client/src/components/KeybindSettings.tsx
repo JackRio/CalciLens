@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { KeyCombo, KeybindActionId, KeybindMap } from '../types'
+import type { ModeCaps } from '../modeConfig'
 import { DEFAULT_KEYBINDS, KEYBIND_LABELS, comboLabel, combosEqual } from '../types'
 
 const ACTION_ORDER: KeybindActionId[] = [
@@ -12,8 +13,6 @@ const ACTION_ORDER: KeybindActionId[] = [
   'toggleScoreComputeMode',
 ]
 
-// Edit/review-only actions that mean nothing in View mode.
-const VIEW_HIDDEN: KeybindActionId[] = ['toggleReviewMode', 'toggleScoreComputeMode']
 
 // Fixed mouse gestures — not rebindable key actions, so they don't belong in
 // ACTION_ORDER/KEYBIND_LABELS, but they're still worth documenting here since
@@ -29,13 +28,17 @@ export default function KeybindSettings({
   keybinds,
   onChange,
   onClose,
-  viewOnly = false,
+  caps,
 }: {
   keybinds: KeybindMap
   onChange: (next: KeybindMap) => void
   onClose: () => void
-  viewOnly?: boolean
+  caps?: ModeCaps
 }) {
+  // Shortcuts for things this screen doesn't have would only confuse.
+  const hidden: KeybindActionId[] = []
+  if (caps && !caps.reviewMode) hidden.push('toggleReviewMode')
+  if (caps && !caps.edit) hidden.push('toggleScoreComputeMode')
   const [capturing, setCapturing] = useState<KeybindActionId | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -93,7 +96,7 @@ export default function KeybindSettings({
           (optionally holding Ctrl/Alt/Shift).
         </div>
 
-        {ACTION_ORDER.filter((a) => !viewOnly || !VIEW_HIDDEN.includes(a)).map((action) => (
+        {ACTION_ORDER.filter((a) => !hidden.includes(a)).map((action) => (
           <div className="keybind-row" key={action}>
             <span className="keybind-row-label">{KEYBIND_LABELS[action]}</span>
             <div className="keybind-chips">
@@ -128,12 +131,36 @@ export default function KeybindSettings({
         <div className="keybind-hint" style={{ marginTop: 10 }}>
           Mouse controls (fixed, not remappable):
         </div>
-        {MOUSE_CONTROLS.map((c) => (viewOnly ? { ...c, combo: c.combo.replace(' (or left-click + drag outside Annotation Mode)', ' (or left-click + drag)') } : c)).map((c) => (
+        {MOUSE_CONTROLS.map((c) => (caps && !caps.edit ? { ...c, combo: c.combo.replace(' (or left-click + drag outside Annotation Mode)', ' (or left-click + drag)') } : c)).map((c) => (
           <div className="keybind-row" key={c.label + c.combo}>
             <span className="keybind-row-label">{c.label}</span>
             <span className="keybind-chip">{c.combo}</span>
           </div>
         ))}
+
+        {caps?.edit && (
+          <>
+            <div className="keybind-hint" style={{ marginTop: 10 }}>
+              Label keys (fixed, not remappable):
+            </div>
+            <div className="keybind-row">
+              <span className="keybind-row-label">Switch label</span>
+              <span className="keybind-chip">1–9 (number row or numpad)</span>
+            </div>
+            <div className="keybind-row">
+              <span className="keybind-row-label">Background / erase</span>
+              <span className="keybind-chip">0</span>
+            </div>
+            <div className="keybind-row">
+              <span className="keybind-row-label">Region-grow a tiny lesion</span>
+              <span className="keybind-chip">Ctrl (or Shift) + click</span>
+            </div>
+            <div className="keybind-row">
+              <span className="keybind-row-label">Resize that search circle</span>
+              <span className="keybind-chip">Shift + wheel</span>
+            </div>
+          </>
+        )}
 
         <div className="comment-modal-buttons">
           <button onClick={resetDefaults}>Reset to defaults</button>

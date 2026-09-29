@@ -29,8 +29,53 @@ electron.exe //T` then relaunch `nohup npx electron . &`) since Python isn't run
 **Frontend-only changes**: just `npm run build` — no restart needed if Electron is already open,
 just reload the window (or it'll show on next navigate in a test browser).
 
-**Always run `npx tsc --noEmit -p tsconfig.json` from `client/` before building**, to catch type
-errors that `vite build` alone can surface less clearly.
+**Type-check with `npx tsc --noEmit -p tsconfig.app.json` from `client/`** (or just `npm run build`,
+which runs `tsc -b` first and fails on type errors). `tsc -p tsconfig.json` checks NOTHING — that file
+is only a list of project references. Backend tests: `.venv/Scripts/python.exe -m pytest server/tests`.
+
+## Screens (modes) — the launcher and `modeConfig.ts`
+
+The app opens on a launcher (`Launcher.tsx`: Single screen / Split view tabs; View, Review, and Annotate ▸
+Contrast / Non-contrast cards). `main.tsx` holds the chosen `AppMode` (`types.ts`) and renders
+`<App mode onExit>`; the original unrestricted app is still at `/#app`. Currently wired: **`view`** and
+**`annotate-noncontrast`**.
+
+- **`modeConfig.ts` is the single source of what a screen shows.** `capsFor(mode)` returns a `ModeCaps`
+  (`edit`, `comment`, `reason`, `reviewMode`, `split`, `contrast`, `orientation`, `showAll`,
+  `annotationLookup`, `readOnlyManifest`, `columns{reason,status,annotation,contrast}`).
+  `manifestDefaultsFor(mode)` blanks the columns a mode doesn't show (blank = never read or written).
+  `App` passes `caps` to `Pane`/`CaseLoader`/`KeybindSettings`; **add a capability there rather than
+  sprinkling `mode === ...` checks.** A new screen = a new `ModeCaps` entry + a sketch (below).
+- **View**: read-only. Manifest loads with `read_only` (no columns added to the user's file). Never looks up
+  `Manual_Annotations` or contrast evidence.
+- **Annotate non-contrast**: `caps.edit`; no Review/Tags/Split/Contrast/Reason; Status + Annotation columns.
+- **Empty state** (`EmptyStateSketch.tsx`): a hand-drawn how-to per mode (`ViewArt`,
+  `AnnotateNonContrastArt`), swirly `Callouts` portalled to `document.body` and positioned from the real
+  toolbar/Shortcuts buttons, plus `SettingsPullHandle`. Settings start closed; the close circle is
+  `.settings-close-circle`. `--sketch-neon` (App.css) is the colour for anything that should catch the eye.
+- **Show all** (`MultiPlaneViewer.tsx`): axial/sagittal/coronal linked through ONE voxel `(x,y,z)` (a voxel
+  index in the LPS array IS a physical position: axial=z, sagittal=x, coronal=y). Per-view Ctrl+wheel zoom,
+  Shift/middle-drag pan, double-click reset (state lives in `Pane`, so Reset view resets all three).
+  **Editing is disabled while it is on** (`caps.edit && !pane.showAll`).
+- **Display orientation** (`displayOrientation.ts`, `DisplayOrientationBox`): radiological/neurological and
+  per-axis flips, **display only** (volume stays LPS). Sent as `flip` ("l"/"a"/"s" letters) to
+  `/api/render`, `/api/probe` AND the editing endpoints (`paint`, `region_grow`, `lesion_score`), which undo
+  the flips in `_display_to_view_coords` so a click lands on the voxel actually drawn (tested).
+  `get_plane_slice(..., flips)` is the only place a flip is applied. Edge letters (R/L/A/P/S/I) show it.
+- **Saving**: the folder is chosen **per session** (`useAnnotationSaveDir` no longer persists; the old
+  localStorage key is deleted). First save with none chosen → "No output path" prompt (refuses the image's
+  own folder, client and server). A re-save is quiet only when the mask on screen IS the saved file
+  (`maskSource === 'annotation'` and same path); blank/prediction over an existing annotation still asks.
+- **Alignment warning**: `detectAlignmentMismatch` (types.ts) compares `origin_lps`/`spacing_lps`/
+  `direction_lps` (added to `info_dict`); same shape is not enough. Warning only, at every mask load path.
+- **Label colours**: `labelPresets.ts` (read-only "Calcifications" default + user presets in localStorage,
+  auto-named `user-preset`, `-2`...), `LabelColorEditor.tsx`, `InlineEdit.tsx` (double-click to edit).
+  Score/lesion tile colours are looked up **by label number**, never list position. Digits 0-9 (row or numpad)
+  switch the active label in edit screens; Ctrl/Shift+click in Region-grow seeds from a circle.
+- **Prompts**: every modal shares one look (`.comment-modal`: short title, ≤ 1–2 lines, two big buttons —
+  Cancel left, action right, red if destructive). `withUnsavedGuard` covers ← Modes, reload, and **closing
+  the desktop window** (Electron `close` → `app-close-requested` IPC → the page acks and confirms; 1.5 s
+  fallback so a blank page can still be closed).
 
 ## Backend structure (`server/`)
 
@@ -110,8 +155,10 @@ errors that `vite build` alone can surface less clearly.
 - **`annotation_paths.py`** — **where a saved annotation goes, and whether saving there would
   destroy something.** Every annotation lives in its own per-scan folder:
   `<root>/Manual_Annotations/<scan folder>/annotation.nii.gz`, alongside `_source.json`
-  (provenance) and, for contrast scans, `contrast_seed.json`. `<root>` is the configured save
-  directory, or the CT's own directory when none is set. `<scan folder>` is the DICOM
+  (provenance) and, for contrast scans, `contrast_seed.json`. `<root>` is the save directory the
+  user chose — **there is no default and never the image's own folder**: `annotation_root()` returns
+  `None` without one, `resolve_target()`/`save_mask()` then return `needs_save_dir` (reason `missing` or
+  `same_as_image`) and write nothing, and the client asks (see "Screens"). `<scan folder>` is the DICOM
   SeriesInstanceUID, or the NIFTI/MHA stem. **The name is derived from the CT, never from the
   loaded mask** — deriving it from the mask made every save append another tag
   (`X_ManualAnnotations_ManualEdits...`) and orphan the previous file.

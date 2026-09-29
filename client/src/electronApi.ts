@@ -7,6 +7,9 @@ declare global {
   interface Window {
     electronAPI?: {
       pickPath: (options?: PickPathOptions) => Promise<string | null>
+      onCloseRequested: (callback: () => void) => () => void
+      closeAck: () => void
+      confirmClose: () => void
     }
   }
 }

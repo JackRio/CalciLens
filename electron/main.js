@@ -9,6 +9,8 @@ const SERVER_URL = `http://127.0.0.1:${PORT}`
 
 let pyProc = null
 let mainWindow = null
+let closeConfirmed = false
+let closeAckTimer = null
 
 function resolvePython() {
   const isPackaged = app.isPackaged
@@ -102,10 +104,32 @@ function createWindow() {
     mainWindow.maximize()
     mainWindow.show()
   })
+  // Closing goes through the page first, so it can stop and ask when there are
+  // unsaved annotation edits. If the page never answers (still loading, blank,
+  // crashed) the window must still be closable, hence the timeout.
+  mainWindow.on('close', (event) => {
+    if (closeConfirmed) return
+    event.preventDefault()
+    clearTimeout(closeAckTimer)
+    mainWindow.webContents.send('app-close-requested')
+    closeAckTimer = setTimeout(() => finishClose(), 1500)
+  })
   mainWindow.on('closed', () => {
     mainWindow = null
+    closeConfirmed = false
   })
 }
+
+function finishClose() {
+  clearTimeout(closeAckTimer)
+  closeConfirmed = true
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close()
+}
+
+// The page got the close request and is dealing with it (it may be showing the
+// unsaved-changes prompt), so stop the fallback timer.
+ipcMain.on('app-close-ack', () => clearTimeout(closeAckTimer))
+ipcMain.on('app-close-confirmed', () => finishClose())
 
 ipcMain.handle('pick-path', async (_event, options = {}) => {
   const result = await dialog.showOpenDialog(mainWindow, {

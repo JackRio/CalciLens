@@ -1,5 +1,7 @@
 import type { ManifestRow, PaneState } from '../types'
 import { DEFAULT_MANIFEST_CONFIG } from '../types'
+import type { ModeCaps } from '../modeConfig'
+import { manifestDefaultsForCaps } from '../modeConfig'
 import { getManifestColumns, getManifestPairs } from '../api'
 import { IMAGE_FILE_FILTERS, isElectron, pickPath } from '../electronApi'
 
@@ -63,7 +65,7 @@ export default function CaseLoader({
   onRequestSelectRow,
   onLoadRow,
   hasUnsavedMaskChanges,
-  viewOnly = false,
+  caps,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -77,7 +79,7 @@ export default function CaseLoader({
   onRequestSelectRow: (rowIndex: number) => void
   onLoadRow: (row: ManifestRow) => void
   hasUnsavedMaskChanges: boolean
-  viewOnly?: boolean
+  caps: ModeCaps
 }) {
   const electronAvailable = isElectron()
 
@@ -151,13 +153,15 @@ export default function CaseLoader({
           imageColumn: resolve(baseConfig.imageColumn, ['image', 'ct_path', 'img'], false),
           maskColumn: resolve(baseConfig.maskColumn, ['mask', 'seg'], true),
           patientIdColumn: resolve(baseConfig.patientIdColumn, ['patient'], true),
-          reasonColumn: resolve(baseConfig.reasonColumn, ['reason'], true),
-          statusColumn: resolve(baseConfig.statusColumn, ['status'], true),
+          // A column this screen doesn't show is never looked for, so it is
+          // never read from or added to the file.
+          reasonColumn: caps.columns.reason ? resolve(baseConfig.reasonColumn, ['reason'], true) : '',
+          statusColumn: caps.columns.status ? resolve(baseConfig.statusColumn, ['status'], true) : '',
           // optional=false: keep the default name when the manifest has no
           // such column yet, so the backend creates it. Resolving to "none"
           // would leave saved annotations with nowhere to be recorded.
-          annotationColumn: resolve(baseConfig.annotationColumn, ['annotation'], false),
-          contrastColumn: resolve(baseConfig.contrastColumn, ['contrast'], false),
+          annotationColumn: caps.columns.annotation ? resolve(baseConfig.annotationColumn, ['annotation'], false) : '',
+          contrastColumn: caps.columns.contrast ? resolve(baseConfig.contrastColumn, ['contrast'], false) : '',
         },
       })
     } catch {
@@ -196,7 +200,7 @@ export default function CaseLoader({
           statusColumn: cfg.statusColumn,
           annotationColumn: cfg.annotationColumn,
           contrastColumn: cfg.contrastColumn,
-          readOnly: viewOnly,
+          readOnly: caps.readOnlyManifest,
         })
       onChange({
         manifestRows: rows,
@@ -277,13 +281,13 @@ export default function CaseLoader({
           <button onClick={handleLoadMaskSingle}>Load mask</button>
         </div>
       </label>
-      {!viewOnly && (
+      {caps.edit && (
       <label>
         Save folder
         <div className="inline-row">
           <input
             type="text"
-            placeholder="(default) save next to the image"
+            placeholder="Asked for on your first save"
             value={annotationSaveDir}
             onChange={(e) => onAnnotationSaveDirChange(e.target.value)}
             title="Annotations (and, in contrast mode, seed sidecars) save into <this>/Manual_Annotations/<scan>/ instead of next to the image. Pointing this straight at an existing Manual_Annotations folder works too — it won't nest another one inside."
@@ -400,7 +404,7 @@ export default function CaseLoader({
                 />
               )}
             </label>
-            {!viewOnly && (
+            {caps.columns.reason && (
             <label>
               <span className="reason-column-label">
                 Reason column
@@ -440,8 +444,7 @@ export default function CaseLoader({
                 to be a hardcoded name whose contents the app overwrote on
                 load, wiping any pre-existing Status column a lab already
                 used for something of their own. */}
-            {!viewOnly && (
-              <>
+            {caps.columns.status && (
             <ColumnPicker
               label="Status column"
               title="Column holding each case's annotation status. Existing values are kept and offered alongside the built-in ones."
@@ -451,6 +454,8 @@ export default function CaseLoader({
               columns={availableColumns}
               onChange={(v) => updateConfig({ statusColumn: v })}
             />
+            )}
+            {caps.columns.annotation && (
             <ColumnPicker
               label="Annotation column"
               title="Where this app records the path of each saved annotation. Kept separate from the mask column so the original prediction's path is never lost."
@@ -460,6 +465,8 @@ export default function CaseLoader({
               columns={availableColumns}
               onChange={(v) => updateConfig({ annotationColumn: v })}
             />
+            )}
+            {caps.columns.contrast && (
             <ColumnPicker
               label="Contrast column"
               title="Records whether a case is a contrast-enhanced scan, so the app knows before anyone starts annotating instead of relying on the Contrast checkbox being remembered."
@@ -469,7 +476,6 @@ export default function CaseLoader({
               columns={availableColumns}
               onChange={(v) => updateConfig({ contrastColumn: v })}
             />
-              </>
             )}
           </div>
 
@@ -481,7 +487,7 @@ export default function CaseLoader({
 
           <button
             className="advanced-toggle"
-            onClick={() => updateConfig({ ...DEFAULT_MANIFEST_CONFIG, manifestPath: cfg.manifestPath })}
+            onClick={() => updateConfig({ ...manifestDefaultsForCaps(caps), manifestPath: cfg.manifestPath })}
           >
             Reset column names to defaults
           </button>

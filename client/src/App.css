@@ -2208,12 +2208,12 @@ button .loading-spinner {
   padding: 0;
   background: transparent;
   border: none;
-  color: #7c8093;
+  color: var(--sketch-neon);
   cursor: grab;
 }
 
 .pull-handle:hover {
-  color: #c8ccff;
+  color: var(--sketch-neon-bright);
 }
 
 .pull-handle-bob {
@@ -2270,4 +2270,143 @@ button .loading-spinner {
 /* Keeps the drawing below the arrows and notes, whatever the window size. */
 .empty-sketch-notes {
   padding-top: 120px;
+  /* clear of the pull handle at the bottom-middle */
+  padding-bottom: 104px;
+}
+
+/* Annotate: shown over the viewer while all three views are up. */
+.show-all-note {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  z-index: 4;
+  padding: 3px 12px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.7);
+  border: 1px solid #3c3e4d;
+  color: #c8c9d4;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.save-folder-modal {
+  min-width: 460px;
+}
+
+.save-folder-modal .inline-row input {
+  flex: 1;
+}
+
+/* The one colour for things in the empty-state drawings that should catch the
+   eye (the swirly arrows, the settings pull handle): neon-ish teal, toned down
+   so it stands out without glaring. Reuse it for future drawings. */
+:root {
+  --sketch-neon: #3ccfb4;
+  --sketch-neon-bright: #7cefd8;
+}
+
+/* The output-folder prompt: path bar first, then two big buttons underneath. */
+.save-folder-modal .comment-modal-buttons,
+.save-conflict-modal .comment-modal-buttons {
+  display: flex;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.save-folder-modal .comment-modal-buttons button,
+.save-conflict-modal .comment-modal-buttons button {
+  flex: 1;
+  padding: 12px 18px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* Overwrite prompt: the path, small, then two big buttons. */
+.save-conflict-modal {
+  min-width: 460px;
+  max-width: 640px;
+}
+
+.save-conflict-modal code {
+  display: block;
+  margin-top: 4px;
+  padding: 8px 10px;
+  background: #12131a;
+  border: 1px solid #2a2c34;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #c8c9d4;
+  word-break: break-all;
+}
+
+.save-conflict-modal .danger-btn {
+  background: #c0392b;
+  border-color: #e0503f;
+  color: #fff;
+}
+
+.save-conflict-modal .danger-btn:hover {
+  background: #d6453a;
+}
+
+/* "Last saved …" under the path in the overwrite prompt: same green as the
+   "Your annotation (saved …)" tag next to Reset view. */
+.save-conflict-modal .saved-stamp {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #7fd39a;
+}
+
+/* ---- One look for every prompt ----
+   Short title, at most a line or two of text (or a path / field), then two
+   big equal buttons underneath: Cancel on the left, the action on the right,
+   in red when it destroys something. */
+.comment-modal {
+  width: 460px;
+}
+
+.comment-modal-title {
+  font-size: 16px;
+}
+
+.comment-modal .nav-modal-body,
+.comment-modal .busy-msg {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #c9cad3;
+}
+
+.comment-modal .comment-modal-buttons {
+  display: flex;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.comment-modal .comment-modal-buttons button {
+  flex: 1;
+  padding: 12px 18px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.comment-modal .danger-btn {
+  background: #c0392b;
+  border-color: #e0503f;
+  color: #fff;
+}
+
+.comment-modal .danger-btn:hover {
+  background: #d6453a;
+}
+
+.comment-modal .nav-modal-save-btn {
+  align-self: stretch;
+  padding: 10px 14px;
+  font-size: 15px;
+}
+
+.comment-modal .nav-modal-status-row button {
+  padding: 9px 8px;
+  font-size: 13px;
 }

@@ -308,6 +308,7 @@ export async function paintMask(params: {
   overwriteMode: OverwriteMode
   overwriteLabel?: number | null
   thresholdMin?: number
+  flip?: string // display-only mirrors the click was made on
 }): Promise<{ changed: number; labels: number[] }> {
   const res = await fetch('/api/mask/paint', {
     method: 'POST',
@@ -324,6 +325,7 @@ export async function paintMask(params: {
       overwrite_mode: params.overwriteMode,
       overwrite_label: params.overwriteLabel ?? null,
       threshold_min: params.thresholdMin ?? null,
+      flip: params.flip ?? '',
     }),
   })
   return handleJson(res)
@@ -339,6 +341,7 @@ export async function regionGrowMask(params: {
   thresholdMin: number
   newLabel: number
   searchRadiusMm?: number
+  flip?: string
 }): Promise<{ changed: number; labels: number[] }> {
   const res = await fetch('/api/mask/region_grow', {
     method: 'POST',
@@ -353,6 +356,7 @@ export async function regionGrowMask(params: {
       threshold_min: params.thresholdMin,
       new_label: params.newLabel,
       search_radius_mm: params.searchRadiusMm ?? null,
+      flip: params.flip ?? '',
     }),
   })
   return handleJson(res)
@@ -367,6 +371,7 @@ export async function computeLesionScore(params: {
   col: number
   huThreshold?: number
   searchRadiusMm?: number
+  flip?: string
 }): Promise<{ found: boolean; label: number | null; voxelCount: number; agatstonScore: number; isCoronary: boolean }> {
   const res = await fetch('/api/mask/lesion_score', {
     method: 'POST',
@@ -380,6 +385,7 @@ export async function computeLesionScore(params: {
       col: params.col,
       hu_threshold: params.huThreshold ?? 130,
       search_radius_mm: params.searchRadiusMm ?? null,
+      flip: params.flip ?? '',
     }),
   })
   const data = await handleJson<{
@@ -607,6 +613,14 @@ export interface SaveMaskSuccess {
   folder_name: string
 }
 
+// Nothing was written: there is no usable save folder yet (none chosen, or the
+// image's own folder). The caller asks the user, then saves again.
+export interface SaveMaskNeedsDir {
+  status: 'needs_save_dir'
+  reason: 'missing' | 'same_as_image'
+  message: string
+}
+
 export async function saveMask(params: {
   maskId: string
   ctPath: string
@@ -618,7 +632,7 @@ export async function saveMask(params: {
   // annotation was derived from rather than only what it currently is.
   maskSource?: string | null
   resolution?: 'overwrite' | 'new_copy' | null
-}): Promise<SaveMaskSuccess | SaveMaskConflict> {
+}): Promise<SaveMaskSuccess | SaveMaskConflict | SaveMaskNeedsDir> {
   const res = await fetch('/api/mask/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -633,7 +647,7 @@ export async function saveMask(params: {
       resolution: params.resolution || null,
     }),
   })
-  return handleJson<SaveMaskSuccess | SaveMaskConflict>(res)
+  return handleJson<SaveMaskSuccess | SaveMaskConflict | SaveMaskNeedsDir>(res)
 }
 
 // What previous sessions already recorded about this scan. Called on every

@@ -7,8 +7,7 @@ import type {
   PaneState,
   Plane,
   ScoreClass,
-  VolumeInfo,
-} from '../types'
+  VolumeInfo, AppMode } from '../types'
 import {
   WINDOW_PRESETS,
   DEFAULT_WINDOW_LEVEL,
@@ -20,6 +19,7 @@ import {
   inferMaskAnnotationType,
   detectMaskLooksLikeCt,
   detectGeometryMismatch,
+  detectAlignmentMismatch,
   comboMatches,
 } from '../types'
 import {
@@ -50,6 +50,8 @@ import { useContrastSettings } from '../useContrastSettings'
 import InfoPanel from './InfoPanel'
 import { BUILTIN_PRESET_ID, builtinColors, useLabelPresets } from '../labelPresets'
 import { edgeLabels, flipCode, useDisplayOrientation } from '../displayOrientation'
+import type { ModeCaps } from '../modeConfig'
+import { isElectron, pickPath } from '../electronApi'
 import DisplayOrientationBox from './DisplayOrientationBox'
 import EmptyStateSketch from './EmptyStateSketch'
 import SettingsPullHandle from './SettingsPullHandle'
@@ -78,6 +80,22 @@ const PLANES: Plane[] = ['axial', 'sagittal', 'coronal']
 const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 function formatShortDate(d: Date): string {
   return `${d.getDate()} ${SHORT_MONTHS[d.getMonth()]} ${String(d.getFullYear()).slice(-2)}`
+}
+
+// Same date style plus the time: "29 Sep, 26 at 17:52". Takes the ISO stamp a
+// save records (local time, no zone) and returns '' if it can't be read.
+// Paths compared the way the OS does: slash style and case don't matter.
+function samePath(a: string | null | undefined, b: string | null | undefined): boolean {
+  const norm = (p: string) => p.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  return !!a && !!b && norm(a) === norm(b)
+}
+
+function formatSavedStamp(iso: string | undefined | null): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getDate()} ${SHORT_MONTHS[d.getMonth()]}, ${String(d.getFullYear()).slice(-2)} at ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 // Solves V = (4/3)*pi*r^3 for r — the sphere-VOI preview radius is knowable
@@ -194,7 +212,8 @@ export default function Pane({
   onAnnotationSaveDirChange,
   onApplyContrastEvidence,
   onLoadRow,
-  viewOnly = false,
+  caps,
+  mode,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -217,8 +236,10 @@ export default function Pane({
   // annotation over the original prediction, checks geometry, and applies
   // whatever is recorded about the scan being contrast-enhanced.
   onLoadRow: (row: ManifestRow) => void
-  // View mode: no editing, commenting, tagging, scoring or saving UI.
-  viewOnly?: boolean
+  // What this launcher screen shows (see modeConfig.ts).
+  caps: ModeCaps
+  // Which launcher screen this pane belongs to (drives the empty-state guide).
+  mode?: AppMode
 }) {
   // Closed on first load: the empty viewer explains how to load a scan and offers a pull-handle for this panel.
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -257,6 +278,11 @@ export default function Pane({
   // A save that reported something already at the destination, waiting for
   // the user to say what to do about it. Nothing has been written yet.
   const [saveConflict, setSaveConflict] = useState<SaveMaskConflict | null>(null)
+  // Asked on the first save (or when the chosen folder is unusable): where
+  // annotations should go. There is no default, and never the image's folder.
+  const [saveFolderPrompt, setSaveFolderPrompt] = useState<{ resolution?: 'overwrite' | 'new_copy' } | null>(null)
+  const [saveFolderDraft, setSaveFolderDraft] = useState('')
+  const [saveFolderError, setSaveFolderError] = useState<string | null>(null)
   // Turning the Contrast toggle off/on can unload an edited mask; this holds
   // that intent until the user confirms they're willing to lose the edits.
   const [contrastUnloadPending, setContrastUnloadPending] = useState<boolean | null>(null)
@@ -265,8 +291,8 @@ export default function Pane({
   const [contrastError, setContrastError] = useState<string | null>(null)
   const [contrastBoxMinimized, setContrastBoxMinimized] = useState(false)
   const [computingVolumeScores, setComputingVolumeScores] = useState(false)
-  // Shift+click circle-seed (see MIN/MAX_SEED_RADIUS_MM above): shiftHeld only
-  // drives the preview cursor; the actual click/scroll handlers read
+  // Shift+click or Ctrl+click circle-seed (see MIN/MAX_SEED_RADIUS_MM above):
+  // shiftHeld (true while EITHER key is down) only drives the preview cursor; the actual click/scroll handlers read
   // e.shiftKey directly off the native event instead, so they stay correct
   // regardless of which element currently has focus.
   const [shiftHeld, setShiftHeld] = useState(false)
@@ -544,6 +570,7 @@ export default function Pane({
               maskBaselineVersion: pane.editVersion,
               hasUnsavedMaskChanges: false,
               lastSavedAt: lookup.savedAt,
+              maskWarning: detectAlignmentMismatch(info, maskInfo),
               showMask: true,
             })
           }
@@ -610,7 +637,9 @@ export default function Pane({
         maskInfo: info,
         maskSource: 'manual',
         maskAnnotationType: inferMaskAnnotationType(path),
-        maskWarning: detectMaskLooksLikeCt(info, pane.ctPath, path),
+        maskWarning:
+          (pane.ctInfo ? detectAlignmentMismatch(pane.ctInfo, info) : null) ||
+          detectMaskLooksLikeCt(info, pane.ctPath, path),
         loading: false,
         loadingMessage: null,
         showMask: true,
@@ -811,8 +840,58 @@ export default function Pane({
     }
   }
 
-  async function doSaveMask(resolution?: 'overwrite' | 'new_copy') {
+  const SAME_FOLDER_MESSAGE = 'Annotations cannot be saved in the same folder as the image. Choose a different folder.'
+
+  function normalizeDir(p: string): string {
+    return p.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  }
+
+  // The image's own folder (a DICOM series folder counts as its own folder).
+  function isImageFolder(dir: string): boolean {
+    const ct = normalizeDir(pane.ctPath)
+    const parent = ct.includes('/') ? ct.slice(0, ct.lastIndexOf('/')) : ''
+    const d = normalizeDir(dir)
+    return d === ct || (parent !== '' && d === parent)
+  }
+
+  function openSaveFolderPrompt(reason: 'missing' | 'same_as_image', resolution?: 'overwrite' | 'new_copy') {
+    setSaveFolderDraft(reason === 'missing' ? annotationSaveDir : '')
+    setSaveFolderError(reason === 'same_as_image' ? SAME_FOLDER_MESSAGE : null)
+    setSaveFolderPrompt({ resolution })
+  }
+
+  async function confirmSaveFolder() {
+    const dir = saveFolderDraft.trim()
+    if (!dir) {
+      setSaveFolderError('Choose a folder to save annotations in.')
+      return
+    }
+    if (isImageFolder(dir)) {
+      setSaveFolderError(SAME_FOLDER_MESSAGE)
+      return
+    }
+    const pending = saveFolderPrompt?.resolution
+    onAnnotationSaveDirChange(dir)
+    setSaveFolderPrompt(null)
+    // Pass the folder along: the prop above only updates on the next render.
+    await doSaveMask(pending, dir)
+  }
+
+  async function browseSaveFolder() {
+    const picked = await pickPath({ properties: ['openDirectory'] })
+    if (picked) {
+      setSaveFolderDraft(picked)
+      setSaveFolderError(isImageFolder(picked) ? SAME_FOLDER_MESSAGE : null)
+    }
+  }
+
+  async function doSaveMask(resolution?: 'overwrite' | 'new_copy', dirOverride?: string) {
     if (!pane.maskInfo || !pane.ctPath) return
+    const saveDir = dirOverride ?? annotationSaveDir
+    if (!saveDir) {
+      openSaveFolderPrompt('missing', resolution)
+      return
+    }
     onChange({ editBusy: true, editMessage: null })
     try {
       const res = await saveMask({
@@ -822,12 +901,33 @@ export default function Pane({
         // the previous save.
         ctPath: pane.ctPath,
         seriesUid: pane.ctInfo?.dicom_series_uid ?? null,
-        saveDir: annotationSaveDir || null,
+        saveDir,
         annotationType: pane.contrastMode ? 'contrast' : 'non-contrast',
         patientId: currentRow?.patient_id || null,
         maskSource: pane.maskSource,
         resolution: resolution || null,
       })
+
+      if (res.status === 'needs_save_dir') {
+        // The server refused the folder (none, or the image's own). Nothing was written.
+        onChange({ editBusy: false })
+        openSaveFolderPrompt(res.reason, resolution)
+        return
+      }
+
+      // What is on screen IS the saved file being replaced (you opened your own
+      // annotation, or saved it earlier and are still working on it): saving
+      // again is just "save", so don't ask. A blank new mask or a prediction
+      // over an existing annotation is different, and still asks.
+      if (
+        res.status === 'conflict' &&
+        res.conflict === 'overwrite' &&
+        pane.maskSource === 'annotation' &&
+        samePath(pane.maskPath, res.annotation_path)
+      ) {
+        await doSaveMask('overwrite', saveDir)
+        return
+      }
 
       if (res.status === 'conflict') {
         // Nothing was written. Ask, then call back with the answer.
@@ -1097,6 +1197,7 @@ export default function Pane({
     const erasing = paintDrag.current.erasing
     try {
       await paintMask({
+        flip,
         maskId: pane.maskInfo.volume_id,
         ctId: pane.ctInfo.volume_id,
         plane: pane.plane,
@@ -1138,6 +1239,7 @@ export default function Pane({
     }
     try {
       const res = await regionGrowMask({
+        flip,
         maskId: pane.maskInfo.volume_id,
         ctId: pane.ctInfo.volume_id,
         plane: pane.plane,
@@ -1312,10 +1414,10 @@ export default function Pane({
   // read e.shiftKey directly off the native event instead.
   useEffect(() => {
     function handleShiftDown(e: KeyboardEvent) {
-      if (e.key === 'Shift') setShiftHeld(true)
+      if (e.key === 'Shift' || e.key === 'Control') setShiftHeld(e.shiftKey || e.ctrlKey)
     }
     function handleShiftUp(e: KeyboardEvent) {
-      if (e.key === 'Shift') setShiftHeld(false)
+      if (e.key === 'Shift' || e.key === 'Control') setShiftHeld(e.shiftKey || e.ctrlKey)
     }
     function handleBlur() {
       setShiftHeld(false) // window/tab lost focus while Shift was held — don't get stuck
@@ -1406,6 +1508,7 @@ export default function Pane({
     onChange({ loading: true, loadingMessage: 'Computing lesion score...' })
     try {
       const res = await computeLesionScore({
+        flip,
         maskId: pane.maskInfo.volume_id,
         ctId: pane.ctInfo.volume_id,
         plane: pane.plane,
@@ -1613,7 +1716,7 @@ export default function Pane({
 
   // ---- Show all: the three views, linked through one point ----
   const orient = useDisplayOrientation()
-  const flip = viewOnly ? flipCode(orient) : ''
+  const flip = caps.orientation ? flipCode(orient) : ''
   const [mprState, setMprState] = useState<(MprCursor & { vol: string }) | null>(null)
   const [mprActive, setMprActive] = useState<Plane>('axial')
   const mprCursor: MprCursor | null = pane.ctInfo
@@ -1834,12 +1937,26 @@ export default function Pane({
         onChange({ thresholdEnabled: !pane.thresholdEnabled })
         return
       }
-      if (!viewOnly && pane.manifestRows.length > 0 && keybinds.toggleReviewMode.some((c) => comboMatches(e, c))) {
+      if (caps.reviewMode && pane.manifestRows.length > 0 && keybinds.toggleReviewMode.some((c) => comboMatches(e, c))) {
         e.preventDefault()
         onToggleReviewMode()
         return
       }
-      if (!viewOnly && keybinds.toggleScoreComputeMode.some((c) => comboMatches(e, c))) {
+      // Number keys, top row or numpad, pick the label with that number (0 is
+      // Background, which paints as an eraser). e.code is used so both rows
+      // work whatever NumLock does to e.key. A number with no label is ignored.
+      if (caps.edit && !pane.showAll && pane.ctInfo && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+        const digit = /^(?:Digit|Numpad)([0-9])$/.exec(e.code)
+        if (digit) {
+          const n = Number(digit[1])
+          if (n === 0 || pane.maskColors.some((c) => c.label === n)) {
+            e.preventDefault()
+            onChange({ editActiveLabel: n })
+          }
+          return
+        }
+      }
+      if (caps.edit && keybinds.toggleScoreComputeMode.some((c) => comboMatches(e, c))) {
         e.preventDefault()
         const next = !pane.scoreComputeMode
         onChange(next ? { scoreComputeMode: true, editMode: false } : { scoreComputeMode: false })
@@ -1851,6 +1968,8 @@ export default function Pane({
   }, [
     isActive,
     keybinds,
+    caps.edit,
+    pane.maskColors,
     pane.showAll,
     pane.ctInfo,
     pane.plane,
@@ -1925,7 +2044,7 @@ export default function Pane({
     if (e.button === 0 && pane.scoreComputeMode && pane.ctInfo && pane.maskInfo) {
       const coords = getDisplayCoords(e.clientX, e.clientY)
       if (!coords) return
-      const searchRadiusMm = e.shiftKey ? seedRadiusMm : undefined
+      const searchRadiusMm = e.shiftKey || e.ctrlKey ? seedRadiusMm : undefined
       if (pane.contrastMode) doLesionVolume(coords.row, coords.col, searchRadiusMm)
       else doLesionScore(coords.row, coords.col, searchRadiusMm)
       return
@@ -1946,7 +2065,9 @@ export default function Pane({
         paintDrag.current.erasing = e.ctrlKey
         doPaint(coords.row, coords.col, true)
       } else {
-        doRegionGrow(coords.row, coords.col, e.shiftKey ? seedRadiusMm : undefined)
+        // Shift or Ctrl: seed from the circle, so a click near a one-voxel or
+        // tiny lesion still finds it (Shift+wheel resizes the circle).
+        doRegionGrow(coords.row, coords.col, e.shiftKey || e.ctrlKey ? seedRadiusMm : undefined)
       }
     }
   }
@@ -2095,8 +2216,8 @@ export default function Pane({
         pendingCursor.current = { x: e.clientX - containerRect.left, y: e.clientY - containerRect.top, diameter, variant: 'brush' }
         scheduleCursorApply()
       }
-    } else if (e.shiftKey && circleClickActive && pane.ctInfo && !isOverUIBox(e.target)) {
-      // Shift+click circle-seed preview — same cursor DOM/RAF machinery as
+    } else if ((e.shiftKey || e.ctrlKey) && circleClickActive && pane.ctInfo && !isOverUIBox(e.target)) {
+      // Shift/Ctrl+click circle-seed preview — same cursor DOM/RAF machinery as
       // the brush cursor above (mutually exclusive with it: this only
       // engages in Score/Volume-compute or Region-grow, brush's own branch
       // above already claims 'brush' edit mode).
@@ -2300,7 +2421,7 @@ export default function Pane({
             </button>
           ))}
         </div>
-        {viewOnly && pane.ctInfo && (
+        {caps.showAll && pane.ctInfo && (
           <button
             className={`show-all-btn${pane.showAll ? ' active' : ''}`}
             onClick={() => (pane.showAll ? exitShowAll(mprActive) : enterShowAll())}
@@ -2353,7 +2474,7 @@ export default function Pane({
             >
               Next ▸
             </button>
-            {!viewOnly && (
+            {caps.comment && (
             <button
               className={currentRow?.comment ? 'has-comment' : ''}
               onClick={openCommentModal}
@@ -2363,7 +2484,7 @@ export default function Pane({
               {currentRow?.comment ? 'Read' : 'Comment'}
             </button>
             )}
-            {!viewOnly && (pane.manifestConfig.reasonColumn || pane.manifestConfig.includeDefaultReasonTags) && (
+            {caps.reason && (pane.manifestConfig.reasonColumn || pane.manifestConfig.includeDefaultReasonTags) && (
               <div className="reason-picker-anchor">
                 <button
                   className={currentRow?.reason.length ? 'has-comment' : ''}
@@ -2384,7 +2505,7 @@ export default function Pane({
                 )}
               </div>
             )}
-            {!viewOnly && onCopyToOtherPane && (
+            {caps.split && onCopyToOtherPane && (
               <button
                 onClick={handleCopyToOtherPane}
                 disabled={!currentRow || copyingToOtherPane}
@@ -2561,7 +2682,7 @@ export default function Pane({
               {pane.loadingMessage || 'Loading...'}
             </div>
           ) : (
-            <EmptyStateSketch viewOnly={viewOnly} showCallouts={!settingsOpen} />
+            <EmptyStateSketch mode={mode ?? 'view'} showCallouts={!settingsOpen} />
           )}
           {/* Always mounted (just hidden) so cursorDivRef is available the
               moment a mouse move needs it — positioned and shown/hidden via
@@ -2574,7 +2695,10 @@ export default function Pane({
           <div ref={seedSphereRef} className="seed-sphere-circle" hidden />
           <div ref={seedMarkerRef} className="seed-marker" hidden />
           {!settingsOpen && !pane.ctInfo && !pane.loading && <SettingsPullHandle onOpen={() => setSettingsOpen(true)} />}
-          {viewOnly && orient.letters && imgSrc && !pane.showAll && (
+          {caps.edit && pane.showAll && pane.ctInfo && (
+            <div className="show-all-note">Editing is off while all three views are shown</div>
+          )}
+          {caps.orientation && orient.letters && imgSrc && !pane.showAll && (
             <>
               {(() => {
                 const l = edgeLabels(pane.plane, orient)
@@ -2635,7 +2759,7 @@ export default function Pane({
                   </>
                 )}
               </div>
-              {!viewOnly && pane.contrastMode && (
+              {caps.contrast && pane.contrastMode && (
                 <div ref={contrastBoxRef}>
                   <ContrastSeedBox
                     pane={pane}
@@ -2690,7 +2814,7 @@ export default function Pane({
                 onDragHandleDown={handleScorePanelDragStart}
               />
             )}
-          {!viewOnly && pane.ctInfo && pane.contrastMode && pane.volumeScores && (
+          {caps.contrast && pane.ctInfo && pane.contrastMode && pane.volumeScores && (
             <ScorePanel
               ref={scorePanelRef}
               style={
@@ -2753,7 +2877,7 @@ export default function Pane({
               </div>
             </div>
           )}
-          {!viewOnly && pane.ctInfo && (
+          {caps.edit && !pane.showAll && pane.ctInfo && (
             <div
               ref={editBoxRef}
               className="viewer-bottom-right"
@@ -2772,6 +2896,7 @@ export default function Pane({
                 onToggleContrast={requestContrastToggle}
                 thresholdLocked={pane.contrastMode && pane.contrastThresholdLocked}
                 seedRadiusMm={seedRadiusMm}
+                showContrast={caps.contrast}
               />
               {pane.editMode && pane.maskInfo && (
                 <div className="edit-quick-actions" onWheel={(e) => e.stopPropagation()}>
@@ -2789,7 +2914,7 @@ export default function Pane({
               )}
             </div>
           )}
-          {!viewOnly && pane.ctInfo && pane.maskInfo && (
+          {caps.edit && !pane.showAll && pane.ctInfo && pane.maskInfo && (
             <div
               ref={scoreComputeBoxRef}
               className="viewer-score-compute-box"
@@ -2854,7 +2979,7 @@ export default function Pane({
               onRequestSelectRow={requestSelectRow}
               onLoadRow={onLoadRow}
               hasUnsavedMaskChanges={hasUnsavedMaskChanges}
-              viewOnly={viewOnly}
+              caps={caps}
             />
 
             <div className="settings-section label-colors-card">
@@ -2874,7 +2999,7 @@ export default function Pane({
               </div>
             </div>
 
-            {viewOnly && <DisplayOrientationBox />}
+            {caps.orientation && <DisplayOrientationBox />}
 
             <div className="settings-section">
               <InfoPanel title="CT image" info={pane.ctInfo} />
@@ -2913,7 +3038,7 @@ export default function Pane({
       {/* A save conflict raised from inside this modal takes precedence, or
           the two stack on top of each other. The navigation intent is kept,
           so this modal comes back once the conflict is resolved. */}
-      {(navModalDirection !== null || jumpPos !== null || seriesStepDirection !== null) && !saveConflict && (
+      {(navModalDirection !== null || jumpPos !== null || seriesStepDirection !== null) && !saveConflict && !saveFolderPrompt && (
         <div
           className="comment-modal-backdrop"
           onClick={() => {
@@ -3009,14 +3134,47 @@ export default function Pane({
         </div>
       )}
 
+      {saveFolderPrompt && (
+        <div className="comment-modal-backdrop" onClick={() => setSaveFolderPrompt(null)}>
+          <div className="comment-modal save-folder-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="comment-modal-title">No output path</div>
+            <div className="inline-row">
+              <input
+                type="text"
+                autoFocus
+                placeholder="e.g. D:\annotations"
+                value={saveFolderDraft}
+                onChange={(e) => {
+                  setSaveFolderDraft(e.target.value)
+                  setSaveFolderError(null)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') confirmSaveFolder()
+                }}
+              />
+              <button onClick={browseSaveFolder} disabled={!isElectron()} title={isElectron() ? undefined : 'Only available in the desktop app'}>
+                Browse folder...
+              </button>
+            </div>
+            {saveFolderError && <div className="busy-msg manifest-error">{saveFolderError}</div>}
+            <div className="comment-modal-buttons">
+              <button onClick={() => setSaveFolderPrompt(null)}>Cancel</button>
+              <button className="add-label-btn" onClick={confirmSaveFolder}>
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {saveConflict && (
         <div className="comment-modal-backdrop" onClick={() => setSaveConflict(null)}>
-          <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="comment-modal save-conflict-modal" onClick={(e) => e.stopPropagation()}>
             <div className="comment-modal-title">
               {saveConflict.conflict === 'collision'
                 ? 'That name is already taken by a different scan'
                 : saveConflict.conflict === 'overwrite'
-                  ? 'An annotation for this scan already exists'
+                  ? 'Manual annotation already exists, overwrite?'
                   : 'You already saved this scan'}
             </div>
             <div className="nav-modal-body">
@@ -3037,14 +3195,12 @@ export default function Pane({
                 </>
               ) : saveConflict.conflict === 'overwrite' ? (
                 <>
-                  <p>
-                    This scan already has an annotation saved today
-                    {saveConflict.existing_source?.updated_at ? ` at ${saveConflict.existing_source.updated_at}` : ''}.
-                  </p>
-                  <p>
-                    <code>{saveConflict.annotation_path}</code>
-                  </p>
-                  <p>Saving replaces it with what is on screen now.</p>
+                  <code>{saveConflict.annotation_path}</code>
+                  {formatSavedStamp(saveConflict.existing_source?.updated_at) && (
+                    <div className="saved-stamp">
+                      Last saved {formatSavedStamp(saveConflict.existing_source?.updated_at)}
+                    </div>
+                  )}
                 </>
               ) : (
                 <>
@@ -3073,7 +3229,7 @@ export default function Pane({
                 </button>
               )}
               <button
-                className={saveConflict.conflict === 'collision' ? 'danger-btn' : 'add-label-btn'}
+                className={saveConflict.conflict === 'earlier' ? 'add-label-btn' : 'danger-btn'}
                 onClick={() => {
                   setSaveConflict(null)
                   doSaveMask('overwrite')
@@ -3094,12 +3250,9 @@ export default function Pane({
         <div className="comment-modal-backdrop" onClick={() => setContrastUnloadPending(null)}>
           <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
             <div className="comment-modal-title">Unsaved annotation changes</div>
-            <div className="nav-modal-body">
-              Switching contrast mode will unload this mask, because it was annotated under the other threshold basis.
-              It has unsaved changes that would be lost.
-            </div>
+            <div className="nav-modal-body">Switching contrast mode will unload this mask.</div>
             <div className="comment-modal-buttons">
-              <button onClick={() => setContrastUnloadPending(null)}>Go back and save</button>
+              <button onClick={() => setContrastUnloadPending(null)}>Cancel</button>
               <button className="danger-btn" onClick={() => applyContrastToggle(contrastUnloadPending)}>
                 Discard and switch
               </button>
@@ -3113,15 +3266,14 @@ export default function Pane({
           <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
             <div className="comment-modal-title">{scoreConfirmPending.targetClass} score not found</div>
             <div className="busy-msg">
-              This case has no {scoreConfirmPending.targetClass} score in the manifest. Compute it now from the mask?
-              This may take a moment.
+              No {scoreConfirmPending.targetClass} score in the manifest. Compute it from the mask?
             </div>
             <div className="comment-modal-buttons">
               <button onClick={declineComputeScore} disabled={computingScore}>
-                No
+                Cancel
               </button>
               <button className="add-label-btn" onClick={confirmComputeScore} disabled={computingScore}>
-                {computingScore ? 'Computing...' : 'Yes, compute'}
+                {computingScore ? 'Computing...' : 'Compute'}
               </button>
             </div>
           </div>

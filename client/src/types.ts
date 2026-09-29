@@ -8,6 +8,10 @@ export interface VolumeInfo {
   spacing_lps: [number, number, number] // (sx, sy, sz) in the LPS-reoriented array's axis order — use this for any physical-space math against plane/index/row/col
   origin: [number, number, number]
   direction: number[] // 9 values, row-major
+  // Where the LPS-reoriented array sits in the world (voxel [0,0,0] and axis
+  // directions). Same shape is not enough for two volumes to line up.
+  origin_lps?: number[]
+  direction_lps?: number[]
   orientation: string
   dtype: string
   value_min: number
@@ -23,6 +27,9 @@ export interface VolumeInfo {
 // One entry per series found under a DICOM directory (see
 // api.ts's listDicomSeries) — used to drive the series Previous/Next
 // navigator when a folder holds more than one.
+// Which screen the user picked on the launcher.
+export type AppMode = 'view' | 'annotate-noncontrast'
+
 export interface DicomSeriesInfo {
   // 'file' entries are single images (NIfTI/MHA/...): `directory` is then the
   // file path and seriesUid is empty.
@@ -101,6 +108,31 @@ export function detectGeometryMismatch(ctInfo: VolumeInfo, maskInfo: VolumeInfo)
   return (
     `This mask does not match the CT: mask is ${b.join(' x ')} voxels, CT is ${a.join(' x ')}. ` +
     'They must share the same geometry, so it cannot be displayed or edited against this scan.'
+  )
+}
+
+// Same size is necessary but not sufficient: a mask on a shifted origin, other
+// voxel spacing or another orientation has the right shape and still draws in
+// the wrong place. This is a warning, not a block, because tiny differences
+// from resampling tools are common and the user can judge the overlay.
+export function detectAlignmentMismatch(ctInfo: VolumeInfo, maskInfo: VolumeInfo): string | null {
+  const co = ctInfo.origin_lps
+  const mo = maskInfo.origin_lps
+  const cd = ctInfo.direction_lps
+  const md = maskInfo.direction_lps
+  if (!co || !mo || !cd || !md) return null
+  const minSpacing = Math.min(...ctInfo.spacing_lps)
+  const originShift = Math.hypot(...co.map((v, i) => v - mo[i]))
+  const spacingOff = Math.max(...ctInfo.spacing_lps.map((v, i) => Math.abs(v - maskInfo.spacing_lps[i]) / v))
+  const directionOff = Math.max(...cd.map((v, i) => Math.abs(v - md[i])))
+  const problems: string[] = []
+  if (originShift > 0.1 * minSpacing) problems.push(`its position is ${originShift.toFixed(1)} mm away from the CT's`)
+  if (spacingOff > 1e-3) problems.push('its voxel spacing differs')
+  if (directionOff > 1e-3) problems.push('its orientation differs')
+  if (problems.length === 0) return null
+  return (
+    `This mask is the same size as the CT, but ${problems.join(' and ')}. ` +
+    'It may not line up with the anatomy. Check the overlay before you rely on it.'
   )
 }
 

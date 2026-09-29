@@ -45,6 +45,7 @@ def find_lesion_component(
     col: float,
     hu_threshold: float = DEFAULT_HU_THRESHOLD,
     search_radius_mm: Optional[float] = None,
+    flips: tuple = (False, False, False),
 ) -> Optional[tuple[np.ndarray, int]]:
     """Isolate the 3D lesion (same label as the clicked voxel, HU >=
     hu_threshold, 26-connected) containing the seed. Returns (region, label)
@@ -56,7 +57,7 @@ def find_lesion_component(
     lesion); a larger value backs the Shift+click circle-seed feature.
     """
     nz, ny, nx = ct_vol.array.shape
-    z, y, x = _seed_index_3d(ct_vol, plane, index, row, col)
+    z, y, x = _seed_index_3d(ct_vol, plane, index, row, col, flips)
     if not (0 <= z < nz and 0 <= y < ny and 0 <= x < nx):
         return None
 

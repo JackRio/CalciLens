@@ -260,6 +260,7 @@ class PaintRequest(BaseModel):
     overwrite_mode: str = "any"  # "any" | "label" | "threshold"
     overwrite_label: Optional[int] = None
     threshold_min: Optional[float] = None
+    flip: str = ""  # display-only mirrors the click was made on, see parse_display_flips
 
 
 @app.post("/api/mask/paint")
@@ -282,6 +283,7 @@ def mask_paint(req: PaintRequest):
             overwrite_mode=req.overwrite_mode,
             overwrite_label=req.overwrite_label,
             threshold_min=req.threshold_min,
+            flips=parse_display_flips(req.flip),
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"paint failed: {e}")
@@ -315,6 +317,7 @@ class RegionGrowRequest(BaseModel):
     threshold_min: float
     new_label: int
     search_radius_mm: Optional[float] = None
+    flip: str = ""
 
 
 @app.post("/api/mask/region_grow")
@@ -335,6 +338,7 @@ def mask_region_grow(req: RegionGrowRequest):
             req.threshold_min,
             req.new_label,
             search_radius_mm=req.search_radius_mm,
+            flips=parse_display_flips(req.flip),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -353,6 +357,7 @@ class LesionScoreRequest(BaseModel):
     col: float
     hu_threshold: float = DEFAULT_HU_THRESHOLD
     search_radius_mm: Optional[float] = None
+    flip: str = ""
 
 
 @app.post("/api/mask/lesion_score")
@@ -367,7 +372,15 @@ def mask_lesion_score(req: LesionScoreRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     result = find_lesion_component(
-        mask_vol, ct_vol, req.plane, req.index, req.row, req.col, req.hu_threshold, search_radius_mm=req.search_radius_mm
+        mask_vol,
+        ct_vol,
+        req.plane,
+        req.index,
+        req.row,
+        req.col,
+        req.hu_threshold,
+        search_radius_mm=req.search_radius_mm,
+        flips=parse_display_flips(req.flip),
     )
     if result is None:
         return {"found": False, "label": None, "voxel_count": 0, "agatston_score": 0.0, "is_coronary": False}
@@ -507,13 +520,16 @@ def contrast_compute_threshold(req: ContrastThresholdRequest):
             "patient_id": req.patient_id,
             "saved_at": datetime.datetime.now().isoformat(),
         }
-        save_sidecar(
-            req.ct_path,
-            record,
-            base_dir=req.save_dir,
-            series_uid=ct_vol.dicom_series_uid,
-            patient_id=req.patient_id,
-        )
+        try:
+            save_sidecar(
+                req.ct_path,
+                record,
+                base_dir=req.save_dir,
+                series_uid=ct_vol.dicom_series_uid,
+                patient_id=req.patient_id,
+            )
+        except annotation_paths.SaveDirRequired as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     return stats
 
@@ -597,9 +613,12 @@ def annotations_lookup(
         if os.path.isdir(hinted):
             candidates.append(hinted)
 
+    # Without a chosen save folder there is nothing to search (the CT's own
+    # folder is no longer treated as one); only the manifest's hint counts.
     root = annotation_paths.annotation_root(ct_path, save_dir)
-    folder_name = annotation_paths.scan_folder_name(ct_path, series_uid)
-    candidates.extend(annotation_paths.find_existing_scan_dirs(root, folder_name))
+    if root:
+        folder_name = annotation_paths.scan_folder_name(ct_path, series_uid)
+        candidates.extend(annotation_paths.find_existing_scan_dirs(root, folder_name))
 
     for scan_dir in candidates:
         record = annotation_paths.read_source_record(scan_dir)

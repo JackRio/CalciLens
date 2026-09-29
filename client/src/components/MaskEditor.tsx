@@ -10,6 +10,7 @@ export default function MaskEditor({
   onToggleContrast,
   thresholdLocked,
   seedRadiusMm,
+  showContrast = true,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -21,6 +22,7 @@ export default function MaskEditor({
   onToggleContrast: (checked: boolean) => void
   thresholdLocked?: boolean
   seedRadiusMm: number
+  showContrast?: boolean
 }) {
   if (!pane.ctInfo) return null
 
@@ -59,7 +61,7 @@ export default function MaskEditor({
   if (!pane.maskInfo) {
     return (
       <div className="overlay-box edit-box" onWheel={(e) => e.stopPropagation()}>
-        {contrastToggle}
+        {showContrast && contrastToggle}
         <div className="overlay-toggle edit-header">
           <span>{title}</span>
           <div className="edit-header-buttons">
@@ -94,7 +96,7 @@ export default function MaskEditor({
 
   return (
     <div className="overlay-box edit-box" onWheel={(e) => e.stopPropagation()}>
-      {contrastToggle}
+      {showContrast && contrastToggle}
       <div className="overlay-toggle edit-header">
         <label className="edit-header-label">
           <input
@@ -207,7 +209,7 @@ export default function MaskEditor({
             {pane.editTool === 'region-grow' && (
               <>
                 <br />
-                {`Hold Shift + click to seed from a circle for tiny/isolated voxels (Shift+scroll to resize, ${seedRadiusMm.toFixed(1)} mm).`}
+                {`Hold Ctrl (or Shift) + click to seed from a circle for tiny or single-voxel lesions. Shift+scroll resizes it (${seedRadiusMm.toFixed(1)} mm).`}
               </>
             )}
           </div>

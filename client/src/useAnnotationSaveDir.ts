@@ -1,27 +1,21 @@
 import { useState } from 'react'
 
-const STORAGE_KEY = 'ctviewer.annotationSaveDir'
+const OLD_STORAGE_KEY = 'ctviewer.annotationSaveDir'
 
-function loadAnnotationSaveDir(): string {
-  try {
-    return localStorage.getItem(STORAGE_KEY) || ''
-  } catch {
-    return ''
-  }
-}
-
-// '' means unset — saves fall back to the existing next-to-image behavior.
+// The folder annotations are saved into. It used to be remembered between
+// sessions, which meant a folder typed once (or an old dated one) came back on
+// its own and annotations went there without the user ever choosing it.
+// Now it lives only for the session: the first save asks where to put things,
+// and '' means "not chosen yet". Any value an earlier version left behind is
+// deleted so it cannot come back.
 export function useAnnotationSaveDir(): [string, (next: string) => void] {
-  const [dir, setDirState] = useState<string>(loadAnnotationSaveDir)
-
-  function setDir(next: string) {
-    setDirState(next)
+  const [dir, setDir] = useState<string>(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, next)
+      localStorage.removeItem(OLD_STORAGE_KEY)
     } catch {
-      /* localStorage unavailable (e.g. disabled) — keep working in-memory */
+      /* storage unavailable — nothing to clean up */
     }
-  }
-
+    return ''
+  })
   return [dir, setDir]
 }

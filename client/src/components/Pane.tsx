@@ -1449,15 +1449,17 @@ export default function Pane({
   const updateSeedMarkerPositionRef = useRef(updateSeedMarkerPosition)
   updateSeedMarkerPositionRef.current = updateSeedMarkerPosition
 
+  // Re-attached when a scan loads (or Show all toggles): at mount there is no
+  // <img> yet, and an effect with no dependencies that bails out then never
+  // observed anything, so the marker stayed put when the viewer resized.
   useEffect(() => {
     const container = viewerAreaRef.current
-    const img = imgRef.current
-    if (!container || !img) return
+    if (!container) return
     const ro = new ResizeObserver(() => updateSeedMarkerPositionRef.current())
     ro.observe(container)
-    ro.observe(img)
+    if (imgRef.current) ro.observe(imgRef.current)
     return () => ro.disconnect()
-  }, [])
+  }, [pane.ctInfo?.volume_id, pane.showAll])
 
   // Global Shift tracking for the circle-seed preview cursor. Deliberately a
   // fresh window-level listener rather than reusing the keybind effect

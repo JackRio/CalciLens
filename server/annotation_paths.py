@@ -353,6 +353,7 @@ def write_source_record(
     bump_count: bool = True,
     mask_source: Optional[str] = None,
     stats: Optional[dict] = None,
+    scoring: Optional[dict] = None,
 ) -> dict:
     """Create/update the folder's `_source.json`.
 
@@ -402,6 +403,9 @@ def write_source_record(
         ) != _normalize_for_compare(own_annotation):
             record["original_mask_path"] = source_mask_path
             record["original_mask_source"] = mask_source or ""
+
+    if scoring:
+        record["scoring"] = scoring
 
     if bump_count:
         entry = {"at": now, "mask_source": mask_source or "", "annotation_type": annotation_type or ""}

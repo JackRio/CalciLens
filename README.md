@@ -33,11 +33,6 @@ Pick a mode on the start screen. Each one shows only the tools it needs.
 - **Orientation flips** (radiological / neurological, per axis) that change the display only, never the data.
 - **Window/level presets**, a HU threshold overlay, editable label colours and mask opacity.
 
-<p align="center">
-  <img src="docs/screenshots/contrast-seed.jpg" alt="Placing the aortic seed" width="48%">
-  <img src="docs/screenshots/contrast-painted.jpg" alt="A painted lesion with volume scores" width="48%">
-</p>
-
 ## Getting started
 
 ### Windows app
@@ -76,6 +71,14 @@ npm run app
 ```
 
 Open the same scan again and its annotation loads. Contrast and non-contrast work on the same scan are kept apart, and the app warns you if you open one on the wrong screen.
+
+## References
+
+- Agatston AS, et al. Quantification of coronary artery calcium using ultrafast computed tomography. *J Am Coll Cardiol* 1990;15:827-832. [doi:10.1016/0735-1097(90)90282-T](https://doi.org/10.1016/0735-1097(90)90282-T) (the scoring method)
+- SCCT guidelines for the interpretation and reporting of coronary CT angiography ([article](https://www.journalofcardiovascularct.com/article/S1934-5925(09)00070-7/fulltext)) and the [SCCT 2021 expert consensus](https://pmc.ncbi.nlm.nih.gov/articles/PMC8713482/) (coronary segments and branches in the Coronary label sets)
+- [Reporting incidental coronary, aortic valve and cardiac calcification on non-gated thoracic CT](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7774698/), BSCI/BSCCT/BSTI consensus statement (mitral valve/annulus, pericardium and myocardium in the Heart Calcification set)
+- Contrast scans, threshold formulas: ascending aorta mean + k × SD, Eberhard M, et al. *EuroIntervention* 2017 ([doi:10.4244/EIJ-D-17-00060](https://eurointervention.pcronline.com/article/quantification-of-aortic-valve-calcification-on-contrast-enhanced-ct-of-patients-prior-to-transcatheter-aortic-valve-implantation)), with k = 2 discussed in Schuhbaeck A, et al. *J Cardiovasc Comput Tomogr* 2015 ([doi:10.1016/j.jcct.2015.06.001](https://doi.org/10.1016/j.jcct.2015.06.001)); fixed 320 HU, Otton JM, et al. *J Cardiovasc Comput Tomogr* 2012 ([doi:10.1016/j.jcct.2011.11.004](https://doi.org/10.1016/j.jcct.2011.11.004))
+- [Why and how to measure aortic valve calcification in patients with aortic stenosis](https://www.jacc.org/doi/10.1016/j.jcmg.2019.01.045), *JACC Cardiovasc Imaging* (aortic valve versus aortic root and annulus)
 
 ## For developers
 

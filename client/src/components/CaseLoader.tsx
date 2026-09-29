@@ -1,3 +1,4 @@
+import type { ContrastSettings } from '../useContrastSettings'
 import type { ManifestRow, PaneState } from '../types'
 import { DEFAULT_MANIFEST_CONFIG } from '../types'
 import type { ModeCaps } from '../modeConfig'
@@ -55,6 +56,54 @@ const MANIFEST_FILTERS = [
   { name: 'All files', extensions: ['*'] },
 ]
 
+// The part of the loaded scan's path that lies below what the user chose (e.g.
+// the series sub-folder a DICOM folder search resolved to), or '' when the
+// loaded scan IS what they chose.
+function loadedSuffix(chosen: string, loaded: string): string {
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '')
+  const c = norm(chosen.trim())
+  const l = norm(loaded)
+  if (!c || !l || l.length <= c.length || l.slice(0, c.length).toLowerCase() !== c.toLowerCase()) return ''
+  const rest = l.slice(c.length)
+  if (!rest.startsWith('/')) return ''
+  // Shown with the separator the user typed.
+  return chosen.includes('\\') ? rest.replace(/\//g, '\\') : rest
+}
+
+// A path field that shows what the user chose in normal text and, after it in
+// grey, where inside it the scan was actually found. The grey part is not part
+// of the value: Load searches the chosen path again.
+function PathField({
+  value,
+  suffix,
+  placeholder,
+  onChange,
+}: {
+  value: string
+  suffix: string
+  placeholder: string
+  onChange: (next: string) => void
+}) {
+  return (
+    <div className="path-field">
+      <span className="path-field-input">
+        <span className="path-field-sizer" aria-hidden>
+          {value || placeholder}
+        </span>
+        <input type="text" placeholder={placeholder} value={value} onChange={(e) => onChange(e.target.value)} />
+      </span>
+      {suffix && (
+        <span
+          className="path-field-suffix"
+          title="Loaded from inside the folder you chose. Load CT searches the whole folder again."
+        >
+          {suffix}
+        </span>
+      )}
+    </div>
+  )
+}
+
 export default function CaseLoader({
   pane,
   onChange,
@@ -66,6 +115,8 @@ export default function CaseLoader({
   onLoadRow,
   hasUnsavedMaskChanges,
   caps,
+  contrastSettings,
+  onContrastSettingsChange,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -80,6 +131,9 @@ export default function CaseLoader({
   onLoadRow: (row: ManifestRow) => void
   hasUnsavedMaskChanges: boolean
   caps: ModeCaps
+  // Defaults for the contrast seed (Contrast screen only).
+  contrastSettings?: ContrastSettings
+  onContrastSettingsChange?: (next: ContrastSettings) => void
 }) {
   const electronAvailable = isElectron()
 
@@ -98,12 +152,12 @@ export default function CaseLoader({
 
   async function handleBrowseCtFile() {
     const picked = await pickPath({ properties: ['openFile'], filters: IMAGE_FILE_FILTERS })
-    if (picked) onChange({ ctPath: picked })
+    if (picked) onChange({ ctInputPath: picked })
   }
 
   async function handleBrowseCtFolder() {
     const picked = await pickPath({ properties: ['openDirectory'] })
-    if (picked) onChange({ ctPath: picked })
+    if (picked) onChange({ ctInputPath: picked })
   }
 
   async function handleBrowseMaskFile() {
@@ -244,7 +298,7 @@ export default function CaseLoader({
       return
     }
     onChange({ manifestRows: [], activeRowIndex: null, reasonOptions: [], scoreClasses: [], manifestError: null })
-    await onLoadCt(pane.ctPath)
+    await onLoadCt(pane.ctInputPath)
   }
 
   async function handleLoadMaskSingle() {
@@ -261,11 +315,11 @@ export default function CaseLoader({
       <label>
         CT file path
         <div className="inline-row">
-          <input
-            type="text"
+          <PathField
             placeholder="e.g. D:\\data\\CASE001\\CASE001_ST3.nii.gz"
-            value={pane.ctPath}
-            onChange={(e) => onChange({ ctPath: e.target.value })}
+            value={pane.ctInputPath}
+            suffix={loadedSuffix(pane.ctInputPath, pane.ctPath)}
+            onChange={(v) => onChange({ ctInputPath: v })}
           />
           <button onClick={handleBrowseCtFile} disabled={!electronAvailable} title={electronAvailable ? undefined : 'Only available in the desktop app'}>Browse file...</button>
           {(
@@ -313,6 +367,102 @@ export default function CaseLoader({
           {annotationSaveDir && <button onClick={() => onAnnotationSaveDirChange('')}>Clear</button>}
         </div>
       </label>
+      )}
+      {caps.contrast && contrastSettings && onContrastSettingsChange && (
+        <div className="threshold-settings">
+          <div className="threshold-settings-title">Contrast threshold</div>
+          <div className="seg-toggle" role="group" aria-label="Threshold method">
+            <button
+              type="button"
+              className={contrastSettings.method === 'aorta-sd' ? 'active' : ''}
+              onClick={() => onContrastSettingsChange({ ...contrastSettings, method: 'aorta-sd' })}
+            >
+              From aorta seed
+            </button>
+            <button
+              type="button"
+              className={contrastSettings.method === 'fixed' ? 'active' : ''}
+              onClick={() => onContrastSettingsChange({ ...contrastSettings, method: 'fixed' })}
+            >
+              Fixed HU
+            </button>
+          </div>
+          {contrastSettings.method === 'aorta-sd' ? (
+            <div className="threshold-body">
+              <div className="threshold-left">
+                <div className="threshold-params">
+                  <label title="The seed samples a sphere of this volume inside the aorta">
+                    Sphere
+                    <input
+                      type="number"
+                      min={1}
+                      value={contrastSettings.targetVolumeMm3}
+                      onChange={(e) => onContrastSettingsChange({ ...contrastSettings, targetVolumeMm3: Number(e.target.value) })}
+                    />
+                    mm³
+                  </label>
+                  <label className="threshold-editable" title="How many standard deviations above the aortic mean">
+                    k
+                    <input
+                      type="number"
+                      step={0.1}
+                      value={contrastSettings.kMultiplier}
+                      onChange={(e) => onContrastSettingsChange({ ...contrastSettings, kMultiplier: Number(e.target.value) })}
+                    />
+                  </label>
+                </div>
+                <div className="threshold-source">
+                  <a href="https://eurointervention.pcronline.com/article/quantification-of-aortic-valve-calcification-on-contrast-enhanced-ct-of-patients-prior-to-transcatheter-aortic-valve-implantation" target="_blank" rel="noreferrer">
+                    Eberhard 2017 · doi:10.4244/EIJ-D-17-00060
+                  </a>{' '}
+                  (k = 3)
+                  <br />
+                  <a href="https://doi.org/10.1016/j.jcct.2015.06.001" target="_blank" rel="noreferrer">
+                    Schuhbaeck 2015 · doi:10.1016/j.jcct.2015.06.001
+                  </a>{' '}
+                  (k = 2)
+                </div>
+              </div>
+              <div className="threshold-formula-big">
+                <div className="threshold-formula-line">
+                  threshold = aortic mean + <span className="formula-var">k</span> × SD
+                </div>
+                <div className="threshold-formula-note">
+                  <span className="formula-var">k</span> is yours to change: currently {contrastSettings.kMultiplier}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="threshold-body">
+              <div className="threshold-left">
+                <div className="threshold-params">
+                  <label className="threshold-editable">
+                    Value
+                    <input
+                      type="number"
+                      min={1}
+                      value={contrastSettings.fixedHu}
+                      onChange={(e) => onContrastSettingsChange({ ...contrastSettings, fixedHu: Number(e.target.value) })}
+                    />
+                    HU
+                  </label>
+                </div>
+                <div className="threshold-source">
+                  <a href="https://doi.org/10.1016/j.jcct.2011.11.004" target="_blank" rel="noreferrer">
+                    Otton 2012 · doi:10.1016/j.jcct.2011.11.004
+                  </a>{' '}
+                  (320 HU)
+                </div>
+              </div>
+              <div className="threshold-formula-big">
+                <div className="threshold-formula-line">
+                  threshold = <span className="formula-var">{contrastSettings.fixedHu} HU</span>
+                </div>
+                <div className="threshold-formula-note">the same value for every scan, no seed</div>
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       <div className="settings-title batch-load-header" style={{ marginTop: 10 }}>

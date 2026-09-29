@@ -2,11 +2,12 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import InlineEdit from './InlineEdit'
 import type { LabelColor } from '../types'
 import {
+  BUILTIN_PRESETS,
   BUILTIN_PRESET_ID,
-  BUILTIN_PRESET_NAME,
   MAX_PRESET_NAME_LENGTH,
   addPreset,
   builtinColors,
+  findBuiltinPreset,
   findPreset,
   isNameTaken,
   removePreset,
@@ -75,14 +76,20 @@ function PresetDropdown({
       </div>
       {open && (
         <div className="preset-dropdown-menu" role="listbox">
-          <div
-            className={`preset-dropdown-item${selectedId === BUILTIN_PRESET_ID ? ' selected' : ''}`}
-            role="option"
-            aria-selected={selectedId === BUILTIN_PRESET_ID}
-            onClick={() => pick(BUILTIN_PRESET_ID)}
-          >
-            <span className="preset-dropdown-name">{BUILTIN_PRESET_NAME} (default)</span>
-          </div>
+          {BUILTIN_PRESETS.map((b) => (
+            <div
+              key={b.id}
+              className={`preset-dropdown-item${selectedId === b.id ? ' selected' : ''}`}
+              role="option"
+              aria-selected={selectedId === b.id}
+              onClick={() => pick(b.id)}
+            >
+              <span className="preset-dropdown-name">
+                {b.name}
+                {b.id === BUILTIN_PRESET_ID ? ' (default)' : ''}
+              </span>
+            </div>
+          ))}
           {presets.map((p) => (
             <div
               key={p.id}
@@ -131,15 +138,18 @@ export default function LabelColorEditor({
 }) {
   const presets = useLabelPresets()
   const [pendingDelete, setPendingDelete] = useState<UserPreset | null>(null)
-  const userPreset = presetId === BUILTIN_PRESET_ID ? undefined : findPreset(presetId)
+  const builtinPreset = findBuiltinPreset(presetId)
+  const userPreset = builtinPreset ? undefined : findPreset(presetId)
   // A preset id that no longer exists (deleted elsewhere) is treated as the
-  // built-in, so the next edit forks a new preset rather than vanishing.
+  // default built-in, so the next edit forks a new preset rather than vanishing.
   const isBuiltin = !userPreset
+  const shownBuiltin = builtinPreset ?? findBuiltinPreset(BUILTIN_PRESET_ID)!
 
   function select(id: string) {
     if (id === NEW_PRESET_VALUE) return newPreset()
     setSelectedPresetId(id)
-    if (id === BUILTIN_PRESET_ID) return onChange(builtinColors(), BUILTIN_PRESET_ID)
+    const b = findBuiltinPreset(id)
+    if (b) return onChange(builtinColors(b.id), b.id)
     const p = findPreset(id)
     if (p) onChange(p.colors.map((c) => ({ ...c })), p.id)
   }
@@ -191,11 +201,11 @@ export default function LabelColorEditor({
       <div className="label-editor-header">
         <span className="label-editor-title">Label colors</span>
         <PresetDropdown
-          selectedId={isBuiltin ? BUILTIN_PRESET_ID : presetId}
+          selectedId={isBuiltin ? shownBuiltin.id : presetId}
           presets={presets}
           hint={
             isBuiltin
-              ? 'Default preset is read-only. Any change saves as a new preset.'
+              ? 'Built-in presets are read-only. Any change saves as a new preset.'
               : 'Double-click the name to rename'
           }
           nameNode={
@@ -211,7 +221,7 @@ export default function LabelColorEditor({
                 onCommit={(next) => renamePreset(userPreset.id, next)}
               />
             ) : (
-              <span className="preset-default-name">{BUILTIN_PRESET_NAME} (default)</span>
+              <span className="preset-default-name">{shownBuiltin.name}</span>
             )
           }
           onSelect={select}
@@ -221,6 +231,19 @@ export default function LabelColorEditor({
           + Add label
         </button>
       </div>
+      {isBuiltin && shownBuiltin.sources && (
+        <div className="label-editor-sources">
+          Based on:{' '}
+          {shownBuiltin.sources.map((s, i) => (
+            <span key={s.url}>
+              {i > 0 && ' · '}
+              <a href={s.url} target="_blank" rel="noreferrer">
+                {s.label}
+              </a>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="label-grid">
         {colors.map((c) => (
           <div className="label-grid-item" key={c.label}>

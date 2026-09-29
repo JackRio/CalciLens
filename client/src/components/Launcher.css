@@ -210,11 +210,7 @@
   transform: translate(60px, 60px);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .lp-part,
-  .lp-view-a,
-  .lp-view-b,
-  .lp-ann-slice {
-    transition: none;
-  }
-}
+/* No prefers-reduced-motion override here on purpose: Windows reports "reduce"
+   whenever its animation effects are off (often on remote/low-power setups),
+   which made these drawings jump instead of flow. The motion is a short slide
+   inside a small illustration, not page-level movement. */

@@ -1,12 +1,24 @@
 """Per-lesion and per-volume Agatston calcium scoring.
 
-A "lesion" is the 3D 26-connected component of voxels sharing one mask label
-AND clearing the calcium HU threshold, reachable from a clicked seed voxel
-(see find_lesion_component). The score itself follows the classic per-slice
-Agatston method (area_mm2 x density_factor, summed over axial slices), with a
-slice-thickness correction factor applied since these scans use a 1.5mm
-reconstruction increment against an assumed 3mm slice thickness — see
-compute_agatston_score.
+The classic Agatston (1990) method, done slice by slice:
+
+  * a "lesion" on one axial slice is a 2D 8-connected group of pixels with the
+    same mask label and HU >= 130;
+  * it counts only if its area is at least `min_area_mm2` (1 mm^2 by default,
+    the usual noise floor);
+  * its score is area (mm^2) x density weight from its PEAK HU
+    (130-199 -> 1, 200-299 -> 2, 300-399 -> 3, >= 400 -> 4);
+  * the slice scores are summed, then scaled by (slice spacing / 3 mm) so scans
+    that are not 3 mm apart are expressed on the standard 3 mm scale.
+
+Which lesion a click means is still decided in 3D (find_lesion_component): the
+clicked voxel's 26-connected component. That component always contains whole
+2D lesions (8-connected in-plane is a subset of 26-connected), so a lesion's
+score and the volume totals add up consistently.
+
+Reference: Agatston AS, Janowitz WR, Hildner FJ, et al. Quantification of
+coronary artery calcium using ultrafast computed tomography. J Am Coll Cardiol
+1990;15(4):827-832. https://doi.org/10.1016/0735-1097(90)90282-T
 """
 from __future__ import annotations
 
@@ -19,9 +31,13 @@ from volume_store import LoadedVolume, _seed_index_3d, _nearest_qualifying_voxel
 
 CORONARY_LABELS = (1, 2, 3)  # LAD, LCx, RCA
 DEFAULT_HU_THRESHOLD = 130.0
-AGATSTON_SLICE_THICKNESS_MM = 3.0
+# The standard's reference: 3 mm slices. Scores from other spacings are scaled
+# onto this scale (see compute_agatston_score).
+AGATSTON_REFERENCE_SPACING_MM = 3.0
+DEFAULT_MIN_LESION_AREA_MM2 = 1.0
 
 _CONNECTIVITY_26 = np.ones((3, 3, 3), dtype=bool)
+_CONNECTIVITY_8 = np.ones((3, 3), dtype=bool)
 
 
 def _density_weight(hu: float) -> int:
@@ -75,21 +91,36 @@ def find_lesion_component(
     return region, label
 
 
-def compute_agatston_score(region: np.ndarray, ct_array: np.ndarray, spacing_lps) -> float:
-    """Sum area_mm2 x density_factor per axial slice over `region`, then
-    apply the slice-thickness/overlap correction factor (no resampling —
-    just scales the raw sum by spacing.z / assumed 3mm slice thickness)."""
+def compute_agatston_score(
+    region: np.ndarray,
+    ct_array: np.ndarray,
+    spacing_lps,
+    min_area_mm2: float = DEFAULT_MIN_LESION_AREA_MM2,
+    slice_spacing_mm: Optional[float] = None,
+) -> float:
+    """Agatston score of the voxels in `region` (a boolean (z, y, x) array):
+    per axial slice, per 2D 8-connected lesion of at least `min_area_mm2`,
+    area x density weight of the lesion's peak HU; summed over slices and scaled
+    by slice spacing / 3 mm. `slice_spacing_mm` overrides the image's own z
+    spacing (used when the user corrects it)."""
     pixel_area_mm2 = float(spacing_lps[0]) * float(spacing_lps[1])
     total = 0.0
     for z in range(region.shape[0]):
         slice_mask = region[z]
         if not slice_mask.any():
             continue
-        area_mm2 = float(np.count_nonzero(slice_mask)) * pixel_area_mm2
-        max_hu = float(ct_array[z][slice_mask].max())
-        total += area_mm2 * _density_weight(max_hu)
-    correction = float(spacing_lps[2]) / AGATSTON_SLICE_THICKNESS_MM
-    return total * correction
+        labeled, count = ndimage.label(slice_mask, structure=_CONNECTIVITY_8)
+        if count == 0:
+            continue
+        slice_hu = ct_array[z]
+        for lesion_id in range(1, count + 1):
+            lesion = labeled == lesion_id
+            area_mm2 = float(np.count_nonzero(lesion)) * pixel_area_mm2
+            if area_mm2 < min_area_mm2:
+                continue
+            total += area_mm2 * _density_weight(float(slice_hu[lesion].max()))
+    spacing = float(slice_spacing_mm) if slice_spacing_mm else float(spacing_lps[2])
+    return total * (spacing / AGATSTON_REFERENCE_SPACING_MM)
 
 
 def compute_volume_agatston(
@@ -97,16 +128,15 @@ def compute_volume_agatston(
     ct_vol: LoadedVolume,
     labels: tuple[int, ...] = CORONARY_LABELS,
     hu_threshold: float = DEFAULT_HU_THRESHOLD,
+    min_area_mm2: float = DEFAULT_MIN_LESION_AREA_MM2,
+    slice_spacing_mm: Optional[float] = None,
 ) -> float:
-    """Total Agatston score across all lesions of the given labels in the
-    whole volume — used as the fallback when the manifest has no CAC_Agatston
-    value. Components are labeled in 3D first so each lesion's density
-    factor is computed from its own voxels, not blurred across unrelated
-    lesions that happen to share a slice."""
-    candidate = np.isin(mask_vol.array, labels) & (ct_vol.array >= hu_threshold)
-    labeled, num = ndimage.label(candidate, structure=_CONNECTIVITY_26)
+    """Total Agatston score of the given labels over the whole volume: each
+    label is scored on its own (a lesion belongs to one artery) and the results
+    are added, so a total of several labels always equals the sum of theirs."""
     total = 0.0
-    for component_id in range(1, num + 1):
-        region = labeled == component_id
-        total += compute_agatston_score(region, ct_vol.array, ct_vol.spacing_lps)
+    for label in labels:
+        region = (mask_vol.array == label) & (ct_vol.array >= hu_threshold)
+        if region.any():
+            total += compute_agatston_score(region, ct_vol.array, ct_vol.spacing_lps, min_area_mm2, slice_spacing_mm)
     return total

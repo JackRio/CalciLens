@@ -37,6 +37,7 @@ from agatston import (
     find_lesion_component,
     compute_agatston_score,
     compute_volume_agatston,
+    DEFAULT_MIN_LESION_AREA_MM2,
     CORONARY_LABELS,
     DEFAULT_HU_THRESHOLD,
 )
@@ -358,6 +359,8 @@ class LesionScoreRequest(BaseModel):
     hu_threshold: float = DEFAULT_HU_THRESHOLD
     search_radius_mm: Optional[float] = None
     flip: str = ""
+    min_area_mm2: float = DEFAULT_MIN_LESION_AREA_MM2
+    slice_spacing_mm: Optional[float] = None
 
 
 @app.post("/api/mask/lesion_score")
@@ -383,15 +386,16 @@ def mask_lesion_score(req: LesionScoreRequest):
         flips=parse_display_flips(req.flip),
     )
     if result is None:
-        return {"found": False, "label": None, "voxel_count": 0, "agatston_score": 0.0, "is_coronary": False}
+        return {"found": False, "label": None, "voxel_count": 0, "agatston_score": 0.0}
     region, label = result
-    score = compute_agatston_score(region, ct_vol.array, ct_vol.spacing_lps)
+    score = compute_agatston_score(
+        region, ct_vol.array, ct_vol.spacing_lps, req.min_area_mm2, req.slice_spacing_mm
+    )
     return {
         "found": True,
         "label": label,
         "voxel_count": int(np.count_nonzero(region)),
         "agatston_score": score,
-        "is_coronary": label in CORONARY_LABELS,
     }
 
 
@@ -400,6 +404,8 @@ class VolumeAgatstonRequest(BaseModel):
     ct_id: str
     labels: list[int] = list(CORONARY_LABELS)
     hu_threshold: float = DEFAULT_HU_THRESHOLD
+    min_area_mm2: float = DEFAULT_MIN_LESION_AREA_MM2
+    slice_spacing_mm: Optional[float] = None
 
 
 @app.post("/api/volumes/agatston_total")
@@ -413,7 +419,9 @@ def volumes_agatston_total(req: VolumeAgatstonRequest):
         assert_same_geometry(mask_vol, ct_vol)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    total = compute_volume_agatston(mask_vol, ct_vol, tuple(req.labels), req.hu_threshold)
+    total = compute_volume_agatston(
+        mask_vol, ct_vol, tuple(req.labels), req.hu_threshold, req.min_area_mm2, req.slice_spacing_mm
+    )
     return {"total_score": total}
 
 
@@ -519,6 +527,7 @@ def contrast_compute_threshold(req: ContrastThresholdRequest):
             raise HTTPException(status_code=400, detail="ct_path is required to save the seed")
         record = {
             **stats,
+            "method": "aorta-sd",
             "ct_path": req.ct_path,
             "mask_path": req.mask_path,
             "patient_id": req.patient_id,
@@ -536,6 +545,37 @@ def contrast_compute_threshold(req: ContrastThresholdRequest):
             raise HTTPException(status_code=400, detail=str(e))
 
     return stats
+
+
+class FixedThresholdRequest(BaseModel):
+    threshold_hu: float
+    ct_path: str
+    series_uid: Optional[str] = None
+    mask_path: Optional[str] = None
+    patient_id: Optional[str] = None
+    save_dir: Optional[str] = None
+
+
+@app.post("/api/contrast/set_fixed_threshold")
+def contrast_set_fixed_threshold(req: FixedThresholdRequest):
+    """Record a fixed-HU threshold for this scan (no seed involved), in the same
+    per-scan sidecar a seed is kept in, so it is found again when the scan is
+    reopened."""
+    record = {
+        "method": "fixed",
+        "threshold_hu": float(req.threshold_hu),
+        "ct_path": req.ct_path,
+        "mask_path": req.mask_path,
+        "patient_id": req.patient_id,
+        "saved_at": datetime.datetime.now().isoformat(),
+    }
+    try:
+        save_sidecar(
+            req.ct_path, record, base_dir=req.save_dir, series_uid=req.series_uid, patient_id=req.patient_id
+        )
+    except annotation_paths.SaveDirRequired as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return record
 
 
 @app.get("/api/contrast/load_threshold")
@@ -559,6 +599,9 @@ class SaveMaskRequest(BaseModel):
     # "prediction" | "annotation" | "new" | "manual". Recorded so a later
     # session can tell what this annotation was originally derived from.
     mask_source: Optional[str] = None
+    # How this scan was scored (spacing, labels, minimum lesion area, ...), kept
+    # in `_source.json` next to the annotation. See /api/scoring/record.
+    scoring: Optional[dict] = None
     # The user's answer to a conflict reported by a previous call:
     # "overwrite" or "new_copy". None means "tell me if there's a conflict".
     resolution: Optional[str] = None
@@ -582,6 +625,7 @@ def mask_save(req: SaveMaskRequest):
             patient_id=req.patient_id,
             resolution=req.resolution,
             mask_source=req.mask_source,
+            scoring=req.scoring,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"save failed: {e}")
@@ -589,6 +633,32 @@ def mask_save(req: SaveMaskRequest):
     # nothing written — the client asks the user and calls again with a
     # resolution. It is not an error, so it must not be an HTTP error.
     return result
+
+
+def _find_scan_records(ct_path: str, series_uid: Optional[str], save_dir: Optional[str], annotation_path: Optional[str]):
+    """The (scan_dir, source record) of the saved work for this scan, or None.
+
+    The manifest already records exactly where this case's annotation
+    folder is, so that is trusted before searching. Without it the search is
+    rooted at the *currently configured* save directory, and a seed saved
+    under a different (or since-cleared) save folder became invisible —
+    which would silently put a contrast scan back on the 130 HU default.
+    Without a chosen save folder there is nothing else to search (the CT's own
+    folder is not treated as one)."""
+    candidates = []
+    if annotation_path:
+        hinted = os.path.dirname(clean_path(annotation_path))
+        if os.path.isdir(hinted):
+            candidates.append(hinted)
+    root = annotation_paths.annotation_root(ct_path, save_dir)
+    if root:
+        folder_name = annotation_paths.scan_folder_name(ct_path, series_uid)
+        candidates.extend(annotation_paths.find_existing_scan_dirs(root, folder_name))
+    for scan_dir in candidates:
+        record = annotation_paths.read_source_record(scan_dir)
+        if annotation_paths._same_scan(record, ct_path, series_uid):
+            return scan_dir, record
+    return None
 
 
 @app.get("/api/annotations/lookup")
@@ -599,40 +669,20 @@ def annotations_lookup(
     annotation_path: Optional[str] = None,
 ):
     """What this app already knows about a scan, before anything is loaded:
-    whether an annotation was saved for it, when, and whether it was
-    annotated as contrast.
+    whether an annotation was saved for it, when, whether it was annotated as
+    contrast, and how it was scored.
 
     This is what makes "is this a contrast scan?" answerable from the data
     rather than from whether the user remembered to tick a checkbox."""
     ct_path = clean_path(ct_path)
-
-    # The manifest already records exactly where this case's annotation
-    # folder is, so trust that before searching. Without it the search is
-    # rooted at the *currently configured* save directory, and a seed saved
-    # under a different (or since-cleared) save folder became invisible —
-    # which would silently put a contrast scan back on the 130 HU default.
-    candidates = []
-    if annotation_path:
-        hinted = os.path.dirname(clean_path(annotation_path))
-        if os.path.isdir(hinted):
-            candidates.append(hinted)
-
-    # Without a chosen save folder there is nothing to search (the CT's own
-    # folder is no longer treated as one); only the manifest's hint counts.
-    root = annotation_paths.annotation_root(ct_path, save_dir)
-    if root:
-        folder_name = annotation_paths.scan_folder_name(ct_path, series_uid)
-        candidates.extend(annotation_paths.find_existing_scan_dirs(root, folder_name))
-
-    for scan_dir in candidates:
-        record = annotation_paths.read_source_record(scan_dir)
-        if not annotation_paths._same_scan(record, ct_path, series_uid):
-            continue
-        annotation_path = os.path.join(scan_dir, annotation_paths.ANNOTATION_FILENAME)
+    found = _find_scan_records(ct_path, series_uid, save_dir, annotation_path)
+    if found:
+        scan_dir, record = found
+        annotation_file = os.path.join(scan_dir, annotation_paths.ANNOTATION_FILENAME)
         return {
             "found": True,
             "scan_dir": scan_dir,
-            "annotation_path": annotation_path if os.path.isfile(annotation_path) else None,
+            "annotation_path": annotation_file if os.path.isfile(annotation_file) else None,
             "has_seed": os.path.isfile(os.path.join(scan_dir, annotation_paths.SEED_SIDECAR_NAME)),
             "source_record": record,
         }
@@ -643,6 +693,30 @@ def annotations_lookup(
         "has_seed": load_sidecar(ct_path, base_dir=save_dir, series_uid=series_uid) is not None,
         "source_record": None,
     }
+
+
+class ScoringRecordRequest(BaseModel):
+    ct_path: str
+    series_uid: Optional[str] = None
+    save_dir: Optional[str] = None
+    annotation_path: Optional[str] = None
+    scoring: dict
+
+
+@app.post("/api/scoring/record")
+def scoring_record(req: ScoringRecordRequest):
+    """Write how this scan is scored into its `_source.json`, if the scan
+    already has a folder there. Never creates a folder: with none yet, the
+    client keeps the setup and sends it along with the annotation's first save."""
+    ct_path = clean_path(req.ct_path)
+    found = _find_scan_records(ct_path, req.series_uid, req.save_dir, req.annotation_path)
+    if not found:
+        return {"saved": False}
+    scan_dir, record = found
+    annotation_paths.atomic_write_json(
+        os.path.join(scan_dir, annotation_paths.SOURCE_RECORD_NAME), {**(record or {}), "scoring": req.scoring}
+    )
+    return {"saved": True, "scan_dir": scan_dir}
 
 
 # ---- CSV / Excel manifest driven batch loading ----

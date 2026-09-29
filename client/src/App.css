@@ -666,6 +666,32 @@ button .loading-spinner {
   color: #fff;
 }
 
+.score-panel-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.score-panel-note {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px 6px;
+  font-size: 11px;
+  color: #8d8fa0;
+}
+
+.score-panel-note a,
+.score-panel-setup-link {
+  color: #8fb8ff;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 .score-panel-groups {
   display: flex;
   align-items: flex-start;
@@ -2461,4 +2487,325 @@ button .loading-spinner {
 
 .app-title-icon {
   margin-right: 8px;
+}
+
+/* ---- Scoring setup prompt ---- */
+.label-editor-sources {
+  font-size: 11px;
+  color: #8d8fa0;
+  margin: 2px 0 6px;
+}
+
+.label-editor-sources a {
+  color: #8fb8ff;
+}
+
+.scoring-modal {
+  width: min(520px, 94vw);
+}
+
+.scoring-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 4px;
+}
+
+.scoring-fields label {
+  display: grid;
+  grid-template-columns: 1fr 96px 92px;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.scoring-fields input,
+.scoring-labels-row input[type='text'],
+.scoring-labels-row input:not([type]) {
+  width: 100%;
+  min-width: 0;
+}
+
+.scoring-hint {
+  font-size: 12px;
+  color: #8d8fa0;
+}
+
+.scoring-hint-needed {
+  color: #ff9a5c;
+  font-weight: 600;
+}
+
+.scoring-summary {
+  font-size: 12px;
+  color: #8d8fa0;
+}
+
+.scoring-note {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: #b8bacb;
+  line-height: 1.4;
+}
+
+.scoring-note a {
+  color: #8fb8ff;
+}
+
+.scoring-note-error {
+  color: #ff8a80;
+}
+
+.scoring-labels {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.scoring-labels-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.scoring-labels-head,
+.scoring-labels-row {
+  display: grid;
+  grid-template-columns: 64px 1fr 40px 28px;
+  align-items: center;
+  gap: 8px;
+}
+
+.scoring-labels-head {
+  font-size: 11px;
+  color: #8d8fa0;
+}
+
+.scoring-labels-row button {
+  padding: 0;
+  height: 24px;
+}
+
+.scoring-add {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
+/* ---- Score Compute: remove an entry ---- */
+.lesion-row-delete {
+  background: transparent;
+  border: none;
+  color: #8d8fa0;
+  padding: 0 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.lesion-row-delete:hover {
+  color: #ff8a80;
+}
+
+.lesion-clear-cell {
+  text-align: right;
+}
+
+/* ---- Contrast threshold settings ---- */
+.threshold-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0;
+  padding: 8px 10px;
+  border: 1px solid #3c3e4d;
+  border-radius: 6px;
+}
+
+.threshold-settings-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #b8bacb;
+}
+
+.seg-toggle {
+  display: flex;
+  border: 1px solid #3c3e4d;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.seg-toggle button {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 5px 8px;
+  color: #9c9dab;
+  font-size: 12px;
+}
+
+.seg-toggle button.active {
+  background: #3b5bdb;
+  color: #fff;
+}
+
+.threshold-formula {
+  font-size: 12px;
+  color: #d7d8de;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.threshold-params {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+
+.threshold-params label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #b8bacb;
+}
+
+.threshold-params input {
+  width: 72px;
+  flex: none;
+}
+
+.threshold-source {
+  font-size: 11px;
+  color: #8d8fa0;
+  line-height: 1.5;
+}
+
+.threshold-source a {
+  color: #8fb8ff;
+}
+
+.case-loader .threshold-params label {
+  flex-direction: row;
+  align-items: center;
+  margin: 0;
+}
+
+.case-loader .threshold-params input {
+  width: 72px;
+}
+
+/* Contrast threshold: inputs on the left, the formula large on the right. */
+.threshold-body {
+  display: grid;
+  grid-template-columns: minmax(260px, auto) 1fr;
+  gap: 16px;
+  align-items: center;
+}
+
+.threshold-left {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.threshold-formula-big {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border-left: 1px solid #3c3e4d;
+  text-align: center;
+}
+
+.threshold-formula-line {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: clamp(16px, 2.4vw, 28px);
+  color: #e6e7ee;
+}
+
+.threshold-formula-note {
+  font-size: 12px;
+  color: #8d8fa0;
+}
+
+/* The part of the formula the user can change. */
+.formula-var {
+  color: #7fb0ff;
+  font-weight: 700;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: rgba(127, 176, 255, 0.14);
+  box-shadow: inset 0 -2px 0 #7fb0ff;
+}
+
+.case-loader .threshold-params label.threshold-editable input {
+  border-color: #7fb0ff;
+}
+
+@media (max-width: 720px) {
+  .threshold-body {
+    grid-template-columns: 1fr;
+  }
+  .threshold-formula-big {
+    border-left: none;
+    border-top: 1px solid #3c3e4d;
+  }
+}
+
+/* CT path: what was chosen, then (grey) where in it the scan was found. */
+.path-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  background: #15161d;
+  overflow: hidden;
+}
+
+.path-field-input {
+  display: inline-grid;
+  flex: 0 1 auto;
+  min-width: 40px;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.path-field-sizer,
+.path-field-input input {
+  grid-area: 1 / 1;
+  padding: 5px 0 5px 8px;
+  font: inherit;
+  white-space: pre;
+}
+
+.path-field-sizer {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.path-field-input input {
+  width: 100%;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  color: inherit;
+}
+
+.path-field-suffix {
+  flex: 0 0 auto;
+  max-width: 45%;
+  min-width: 0;
+  padding: 5px 8px 5px 0;
+  color: #6c6d7a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

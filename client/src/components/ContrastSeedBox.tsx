@@ -1,10 +1,7 @@
 import type { PaneState } from '../types'
-import type { ContrastSettings } from '../useContrastSettings'
 
 export default function ContrastSeedBox({
   pane,
-  contrastSettings,
-  onContrastSettingsChange,
   minimized,
   onToggleMinimized,
   saving,
@@ -12,10 +9,10 @@ export default function ContrastSeedBox({
   onFinalize,
   onReSeed,
   onToggleSeedPlacement,
+  fixedHu,
+  onApplyFixed,
 }: {
   pane: PaneState
-  contrastSettings: ContrastSettings
-  onContrastSettingsChange: (next: ContrastSettings) => void
   minimized: boolean
   onToggleMinimized: () => void
   saving: boolean
@@ -23,6 +20,9 @@ export default function ContrastSeedBox({
   onFinalize: () => void
   onReSeed: () => void
   onToggleSeedPlacement: () => void
+  // The fixed value when Settings says to use one (no seed then), else null.
+  fixedHu: number | null
+  onApplyFixed: () => void
 }) {
   if (!pane.ctInfo) return null
 
@@ -42,45 +42,39 @@ export default function ContrastSeedBox({
               <div className="contrast-stat-row">
                 Threshold <strong>{pane.contrastThreshold?.toFixed(2)} HU</strong>
               </div>
-              <div className="contrast-stat-row">
-                Mean {pane.contrastMeta.meanHu.toFixed(1)} · STD {pane.contrastMeta.stdHu.toFixed(1)}
-              </div>
-              <div className="contrast-stat-row">
-                VOI {pane.contrastMeta.voxelCount} vox · {pane.contrastMeta.actualVolumeMm3.toFixed(1)} mm³
-              </div>
+              {pane.contrastMeta.method === 'fixed' ? (
+                <div className="contrast-stat-row">Fixed value, no seed</div>
+              ) : (
+                <>
+                  <div className="contrast-stat-row">
+                    Mean {pane.contrastMeta.meanHu.toFixed(1)} · STD {pane.contrastMeta.stdHu.toFixed(1)}
+                  </div>
+                  <div className="contrast-stat-row">
+                    VOI {pane.contrastMeta.voxelCount} vox · {pane.contrastMeta.actualVolumeMm3.toFixed(1)} mm³
+                  </div>
+                </>
+              )}
               {pane.contrastMeta.mismatch && (
                 <div className="busy-msg manifest-error">
                   Recomputed threshold differs from the saved value — the image or saved seed may have changed.
                 </div>
               )}
-              <button className="add-label-btn" onClick={onReSeed}>
-                Re-seed
+              {/* Nothing to change when the setting already gives this value. */}
+              {!(fixedHu !== null && pane.contrastMeta.method === 'fixed' && fixedHu === pane.contrastThreshold) && (
+                <button className="add-label-btn" onClick={onReSeed}>
+                  {fixedHu !== null ? `Use ${fixedHu} HU` : 'Re-seed'}
+                </button>
+              )}
+            </>
+          ) : fixedHu !== null ? (
+            <>
+              <div className="edit-hint">Settings use one fixed threshold for every scan (no seed).</div>
+              <button className="add-label-btn" onClick={onApplyFixed}>
+                {`Use ${fixedHu} HU`}
               </button>
             </>
           ) : (
             <>
-              <label className="edit-field">
-                Target volume (mm³)
-                <input
-                  type="number"
-                  min={1}
-                  value={contrastSettings.targetVolumeMm3}
-                  onChange={(e) =>
-                    onContrastSettingsChange({ ...contrastSettings, targetVolumeMm3: Number(e.target.value) })
-                  }
-                />
-              </label>
-              <label className="edit-field">
-                K multiplier
-                <input
-                  type="number"
-                  step={0.1}
-                  value={contrastSettings.kMultiplier}
-                  onChange={(e) =>
-                    onContrastSettingsChange({ ...contrastSettings, kMultiplier: Number(e.target.value) })
-                  }
-                />
-              </label>
               <label className="edit-header-label">
                 <input type="checkbox" checked={pane.seedPlacementMode} onChange={onToggleSeedPlacement} />
                 Set AO seed

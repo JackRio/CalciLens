@@ -7,6 +7,8 @@ import type {
   PaneState,
   Plane,
   ScoreClass,
+  ScoringLabel,
+  ScoringSetup,
   VolumeInfo, AppMode } from '../types'
 import {
   WINDOW_PRESETS,
@@ -14,21 +16,22 @@ import {
   DEFAULT_WINDOW_WIDTH,
   DEFAULT_THRESHOLD_HU,
   STATUS_OPTIONS,
-  CORONARY_LABELS,
-  SCORE_CLASS_BY_LABEL,
+  labelsFromColors,
+  coronaryLabels,
+  scoreClassForLabel,
   inferMaskAnnotationType,
-  detectMaskLooksLikeCt,
   detectGeometryMismatch,
-  detectAlignmentMismatch,
   detectAnnotationTypeMismatch,
   scanRecordedAsContrast,
   NONCONTRAST_SCREEN_BLOCK,
+  CONTRAST_NEEDS_SEED,
   comboMatches,
 } from '../types'
 import {
   loadVolume,
   lookupAnnotation,
   resolveDicomLoad,
+  scanningMessage,
   probeVoxel,
   renderUrl,
   createBlankMask,
@@ -47,12 +50,15 @@ import {
   saveManifestReason,
   saveManifestAnnotationPath,
   saveManifestContrast,
+  setFixedContrastThreshold,
+  recordScoring,
 } from '../api'
 import type { SaveMaskConflict } from '../api'
 import { getCachedCac, setCachedCac } from '../lesionCache'
 import { useContrastSettings } from '../useContrastSettings'
 import InfoPanel from './InfoPanel'
-import { BUILTIN_PRESET_ID, builtinColors, useLabelPresets } from '../labelPresets'
+import ScoringSetupModal, { initialScoringSetup } from './ScoringSetupModal'
+import { BUILTIN_PRESET_ID, builtinColors, isBuiltinId, useLabelPresets } from '../labelPresets'
 import { edgeLabels, flipCode, useDisplayOrientation } from '../displayOrientation'
 import type { ModeCaps } from '../modeConfig'
 import { isElectron, pickPath } from '../electronApi'
@@ -229,19 +235,25 @@ function seedIndexAlongPlane(voxel: [number, number, number], plane: Plane): num
   return y0 // coronal
 }
 
-// One entry per tile ScorePanel can render: the CAC aggregate (all three
-// coronary labels combined) plus each individual class — including LAD/LCx/
-// RCA, which ScorePanel shows as members under the CAC header tile. Missing
-// any of these from pane.volumeScores is exactly why they'd render blank.
-const VOLUME_SCORE_SPECS: { cls: ScoreClass; labels: number[] }[] = [
-  { cls: 'CAC', labels: [...CORONARY_LABELS] },
-  { cls: 'LAD', labels: [1] },
-  { cls: 'LCx', labels: [2] },
-  { cls: 'RCA', labels: [3] },
-  { cls: 'TAC', labels: [4] },
-  { cls: 'AV', labels: [5] },
-  { cls: 'MV', labels: [6] },
-]
+// One entry per tile ScorePanel renders: the CAC aggregate (the labels ticked
+// as coronary, added up) plus each label on its own. Missing any of these from
+// the score maps is exactly why a tile would render blank.
+function scoreSpecs(labels: ScoringLabel[]): { cls: ScoreClass; labels: number[] }[] {
+  const coronary = coronaryLabels(labels)
+  return [
+    ...(coronary.length > 0 ? [{ cls: 'CAC', labels: coronary }] : []),
+    ...labels.map((l) => ({ cls: l.name, labels: [l.label] })),
+  ]
+}
+
+// Changing any of these changes the numbers, so cached totals must not survive it.
+function setupSignature(setup: ScoringSetup): string {
+  return [
+    setup.sliceSpacingMm,
+    setup.minLesionAreaMm2,
+    setup.labels.map((l) => `${l.label}${l.name}${l.coronary ? '+' : '-'}`).join(','),
+  ].join('|')
+}
 
 export default function Pane({
   pane,
@@ -329,6 +341,9 @@ export default function Pane({
     col: number
   } | null>(null)
   const [computingScore, setComputingScore] = useState(false)
+  // The scoring-setup prompt. `then` carries on with whatever the user was
+  // doing once they confirm it (null when they opened it just to edit).
+  const [scoringPrompt, setScoringPrompt] = useState<{ then: ((setup: ScoringSetup) => void) | null } | null>(null)
   const [flashRowId, setFlashRowId] = useState<number | null>(null)
   const [contrastSettings, setContrastSettings] = useContrastSettings()
   // A save that reported something already at the destination, waiting for
@@ -505,7 +520,16 @@ export default function Pane({
     const ctInfo = pane.ctInfo
     const saved = await loadContrastThreshold(pane.ctPath, dir, ctInfo.dicom_series_uid).catch(() => null)
     if (token !== seedLoadToken.current) return
+    if (saved?.method === 'fixed') {
+      applyThreshold(saved.thresholdHu, { method: 'fixed', savedAt: saved.savedAt || '' })
+      return
+    }
     if (!saved) {
+      if (contrastSettings.method === 'fixed') {
+        // No seed to look for: the setting says every scan uses the same value.
+        applyFixedThreshold(dir)
+        return
+      }
       if (resetIfMissing) {
         onChange({
           contrastThreshold: null,
@@ -552,6 +576,7 @@ export default function Pane({
           targetVolumeMm3: recomputed.targetVolumeMm3,
           kMultiplier: recomputed.kMultiplier,
           radiusMm: recomputed.radiusMm,
+          method: 'aorta-sd',
           savedAt: saved.savedAt || '',
           mismatch,
         },
@@ -581,6 +606,13 @@ export default function Pane({
     openSaveFolderPrompt('missing', undefined, 'lookup')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caps.contrast, pane.ctInfo?.volume_id, pane.loading, annotationSaveDir])
+
+  // A threshold in force means the "place a seed first" banner is stale (a fixed
+  // threshold is applied without a seed, and the lookup can land after it).
+  useEffect(() => {
+    if (pane.contrastNotice === CONTRAST_NEEDS_SEED && pane.contrastThreshold !== null) onChange({ contrastNotice: null })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pane.contrastNotice, pane.contrastThreshold])
 
   // After the up-front folder is chosen: re-read what is recorded there.
   // Also runs when the folder is picked or typed in Settings: whatever is
@@ -630,8 +662,7 @@ export default function Pane({
           maskBaselineVersion: pane.editVersion,
           hasUnsavedMaskChanges: false,
           lastSavedAt: lookup.savedAt,
-          maskWarning:
-            detectAlignmentMismatch(info, maskInfo) || detectAnnotationTypeMismatch(lookup.annotationType, caps.contrast),
+          maskWarning: detectAnnotationTypeMismatch(lookup.annotationType, caps.contrast),
           showMask: true,
         })
       }
@@ -668,6 +699,7 @@ export default function Pane({
         maskWarning: null,
         editMode: false,
         lesionResults: [],
+        scoringSetup: null,
         volumeScores: null,
         agatstonScores: null,
         maskSource: null,
@@ -702,7 +734,16 @@ export default function Pane({
   }
 
   async function doLoadCt(path: string) {
-    const { directory, seriesUid, seriesList } = await resolveDicomLoad(path)
+    // A DICOM folder can take a while to look through: say so, and which folder.
+    onChange({ loading: true, loadingMessage: scanningMessage(path), error: null })
+    let resolved
+    try {
+      resolved = await resolveDicomLoad(path)
+    } catch (e) {
+      onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
+      return
+    }
+    const { directory, seriesUid, seriesList } = resolved
     onChange({
       dicomSeriesList: seriesList.length > 1 ? seriesList : [],
       dicomSeriesIndex: seriesList.length > 1 ? 0 : null,
@@ -754,9 +795,7 @@ export default function Pane({
         maskInfo: info,
         maskSource: 'manual',
         maskAnnotationType: inferMaskAnnotationType(path),
-        maskWarning:
-          (pane.ctInfo ? detectAlignmentMismatch(pane.ctInfo, info) : null) ||
-          detectMaskLooksLikeCt(info, pane.ctPath, path),
+        maskWarning: null,
         loading: false,
         loadingMessage: null,
         showMask: true,
@@ -817,6 +856,7 @@ export default function Pane({
           targetVolumeMm3: result.targetVolumeMm3,
           kMultiplier: result.kMultiplier,
           radiusMm: result.radiusMm,
+          method: 'aorta-sd',
           savedAt: result.savedAt || new Date().toISOString(),
           mismatch: false,
         },
@@ -840,6 +880,72 @@ export default function Pane({
       else setContrastError(msg)
     } finally {
       setContrastSaving(false)
+    }
+  }
+
+  // Puts a threshold in force for the scan on screen: the fields the labels are
+  // drawn against are read-only from here until it is changed.
+  function applyThreshold(hu: number, meta: { method: 'fixed'; savedAt: string }) {
+    onChange({
+      contrastThreshold: hu,
+      contrastThresholdLocked: true,
+      seedPlacementMode: false,
+      ...(pane.maskInfo ? { editMode: true, scoreComputeMode: false } : {}),
+      thresholdValue: hu,
+      thresholdEnabled: true,
+      editThresholdMin: hu,
+      editRegionGrowThreshold: hu,
+      pendingSeed: null,
+      contrastNotice: null,
+      contrastMeta: {
+        method: meta.method,
+        meanHu: 0,
+        stdHu: 0,
+        voxelCount: 0,
+        actualVolumeMm3: 0,
+        targetVolumeMm3: 0,
+        kMultiplier: 0,
+        radiusMm: 0,
+        savedAt: meta.savedAt,
+        mismatch: false,
+      },
+    })
+  }
+
+  // The fixed-HU method: no seed, the setting's value is the threshold. It is
+  // recorded with the scan (like a seed) as soon as there is a folder for it.
+  async function applyFixedThreshold(dirArg?: string) {
+    if (!pane.ctInfo) return
+    const hu = contrastSettings.fixedHu
+    if (!Number.isFinite(hu) || hu <= 0) {
+      setContrastError('Enter a fixed threshold above 0 HU in Settings.')
+      return
+    }
+    setContrastError(null)
+    applyThreshold(hu, { method: 'fixed', savedAt: new Date().toISOString() })
+    const dir = dirArg ?? annotationSaveDir
+    if (dir) {
+      try {
+        await setFixedContrastThreshold({
+          thresholdHu: hu,
+          ctPath: pane.ctPath,
+          seriesUid: pane.ctInfo.dicom_series_uid,
+          maskPath: pane.maskPath || null,
+          patientId: currentRow?.patient_id || null,
+          saveDir: dir,
+        })
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        if (msg === SAME_FOLDER_MESSAGE) openSaveFolderPrompt('same_as_image', undefined, 'lookup')
+        else setContrastError(msg)
+      }
+    }
+    if (currentRow && pane.manifestConfig.manifestPath && pane.manifestConfig.contrastColumn) {
+      saveManifestContrast(pane.manifestConfig.manifestPath, currentRow.index, pane.manifestConfig.contrastColumn, true).catch(
+        () => {
+          /* advisory only, like the seed sidecar's manifest mirror */
+        },
+      )
     }
   }
 
@@ -885,6 +991,7 @@ export default function Pane({
       scoreComputeMode: false,
       contrastNotice: 'No threshold is active while re-seeding — finalize a seed before annotating.',
     })
+    if (contrastSettings.method === 'fixed') applyFixedThreshold()
   }
 
   async function doCreateMask() {
@@ -997,6 +1104,7 @@ export default function Pane({
         patientId: currentRow?.patient_id || null,
         maskSource: pane.maskSource,
         resolution: resolution || null,
+        scoring: pane.scoringSetup,
       })
 
       if (res.status === 'needs_save_dir') {
@@ -1359,8 +1467,76 @@ export default function Pane({
   // Coronary labels (1-3, LAD/LCx/RCA) are scored against the aggregate CAC
   // total; every other label (4-6, TAC/AV/MV) is scored against its own
   // class's total instead — each maps onto exactly one score class.
-  function targetClassForLabel(label: number): ScoreClass {
-    return CORONARY_LABELS.includes(label) ? 'CAC' : SCORE_CLASS_BY_LABEL[label - 1]
+  // ---- scoring setup: asked once per scan, before the first score ----
+
+  // What the setup should be right now: this session's, else the one recorded
+  // with the scan, else what the file says. Labels the mask uses that the table
+  // does not know are added, so they are not silently left out of the scores.
+  function currentScoringSetup(): ScoringSetup | null {
+    if (!pane.ctInfo) return null
+    const wanted = pane.contrastMode ? 'volume' : 'agatston'
+    const known = [pane.scoringSetup, pane.annotationLookup?.scoring].find((x) => x && x.metric === wanted) ?? null
+    const base =
+      known ?? initialScoringSetup(pane.ctInfo, pane.maskInfo, pane.maskColors, pane.contrastMode, pane.contrastThreshold)
+    const extra = (pane.maskInfo?.labels ?? []).filter((l) => !base.labels.some((x) => x.label === l))
+    if (extra.length === 0) return base
+    const fresh = initialScoringSetup(pane.ctInfo, pane.maskInfo, pane.maskColors, pane.contrastMode, pane.contrastThreshold)
+    return {
+      ...base,
+      // Not confirmed for the new labels yet: the prompt shows them.
+      confirmedAt: '',
+      labels: [...base.labels, ...fresh.labels.filter((l) => extra.includes(l.label))],
+    }
+  }
+
+  function ensureScoringSetup(then: (setup: ScoringSetup) => void) {
+    const setup = currentScoringSetup()
+    if (!setup) return
+    if (setup.confirmedAt) {
+      if (pane.scoringSetup !== setup) onChange({ scoringSetup: setup })
+      then(setup)
+      return
+    }
+    // A volume needs nothing from the user (the threshold comes from the scan
+    // itself), so there is nothing to ask: the label table as it stands is used
+    // and kept. The gear reopens it for anyone who wants to change it.
+    if (setup.metric === 'volume') {
+      const confirmed = { ...setup, confirmedAt: new Date().toISOString() }
+      onChange({ scoringSetup: confirmed })
+      persistScoringSetup(confirmed)
+      then(confirmed)
+      return
+    }
+    setScoringPrompt({ then })
+  }
+
+  async function persistScoringSetup(setup: ScoringSetup) {
+    if (!pane.ctInfo) return
+    try {
+      await recordScoring({
+        ctPath: pane.ctPath,
+        seriesUid: pane.ctInfo.dicom_series_uid,
+        saveDir: annotationSaveDir || null,
+        annotationPath: currentRow?.annotation_path || null,
+        scoring: setup,
+      })
+    } catch {
+      /* it is sent again with the annotation's next save */
+    }
+  }
+
+  function confirmScoringSetup(setup: ScoringSetup) {
+    const then = scoringPrompt?.then ?? null
+    const previous = pane.scoringSetup
+    const changed = !!previous && setupSignature(previous) !== setupSignature(setup)
+    // Numbers computed under the old setup no longer describe the scan.
+    onChange({
+      scoringSetup: setup,
+      ...(changed ? { lesionResults: [], agatstonScores: null, volumeScores: null } : {}),
+    })
+    persistScoringSetup(setup)
+    setScoringPrompt(null)
+    then?.(setup)
   }
 
   function flashRow(id: number) {
@@ -1586,14 +1762,15 @@ export default function Pane({
     index: number,
     row: number,
     col: number,
+    setup: ScoringSetup,
   ) {
-    const targetClass = targetClassForLabel(label)
+    const targetClass = scoreClassForLabel(label, setup.labels)
     const volumeId = pane.maskInfo!.volume_id
     // editVersion is part of the key: the cached total is a property of the
     // mask's CONTENTS, and the volume id alone survives every edit and every
     // reset, so a stale total was being subtracted from long after the mask
     // it was computed from had changed.
-    const cacheKey = `${volumeId}:${pane.editVersion}:${targetClass}`
+    const cacheKey = `${volumeId}:${pane.editVersion}:${targetClass}:${setupSignature(setup)}`
     const cached = getCachedCac(cacheKey)
     if (cached) {
       applyScoreResult(label, voxelCount, agatstonScore, targetClass, cached.total, cached.source, plane, index, row, col)
@@ -1608,7 +1785,12 @@ export default function Pane({
     setScoreConfirmPending({ label, voxelCount, agatstonScore, targetClass, plane, index, row, col })
   }
 
-  async function doLesionScore(row: number, col: number, searchRadiusMm?: number) {
+  function doLesionScore(row: number, col: number, searchRadiusMm?: number) {
+    if (!pane.ctInfo || !pane.maskInfo) return
+    ensureScoringSetup((setup) => runLesionScore(row, col, searchRadiusMm, setup))
+  }
+
+  async function runLesionScore(row: number, col: number, searchRadiusMm: number | undefined, setup: ScoringSetup) {
     if (!pane.ctInfo || !pane.maskInfo) return
     onChange({ loading: true, loadingMessage: 'Computing lesion score...' })
     try {
@@ -1621,6 +1803,8 @@ export default function Pane({
         row,
         col,
         searchRadiusMm,
+        minAreaMm2: setup.minLesionAreaMm2,
+        sliceSpacingMm: setup.sliceSpacingMm,
       })
       onChange({ loading: false, loadingMessage: null })
       if (!res.found || res.label === null) {
@@ -1637,7 +1821,7 @@ export default function Pane({
         flashRow(existing.id)
         return
       }
-      finishLesionScore(res.label, res.voxelCount, res.agatstonScore, pane.plane, pane.index, row, col)
+      finishLesionScore(res.label, res.voxelCount, res.agatstonScore, pane.plane, pane.index, row, col, setup)
     } catch (e) {
       onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
     }
@@ -1648,7 +1832,12 @@ export default function Pane({
   // Agatston score, and skips the manifest-baseline lookup/confirm-total
   // dance entirely — there's no "existing manifest volume" concept to
   // reconcile against, so every click just computes and appends fresh.
-  async function doLesionVolume(row: number, col: number, searchRadiusMm?: number) {
+  function doLesionVolume(row: number, col: number, searchRadiusMm?: number) {
+    if (!pane.ctInfo || !pane.maskInfo || pane.contrastThreshold === null) return
+    ensureScoringSetup((setup) => runLesionVolume(row, col, searchRadiusMm, setup))
+  }
+
+  async function runLesionVolume(row: number, col: number, searchRadiusMm: number | undefined, setup: ScoringSetup) {
     if (!pane.ctInfo || !pane.maskInfo || pane.contrastThreshold === null) return
     onChange({ loading: true, loadingMessage: 'Computing lesion volume...' })
     try {
@@ -1683,7 +1872,7 @@ export default function Pane({
         metric: 'volume',
         agatstonScore: 0,
         volumeMm3: res.volumeMm3,
-        targetClass: targetClassForLabel(res.label),
+        targetClass: scoreClassForLabel(res.label, setup.labels),
         oldScore: null,
         newScore: null,
         scoreSource: 'unavailable',
@@ -1705,12 +1894,13 @@ export default function Pane({
   // of confirmComputeScore's per-class Agatston total, but for all classes in
   // one go rather than one at a time, since there's no manifest baseline to
   // reconcile against here.
-  async function computeAllVolumeScores() {
+  async function computeAllVolumeScores(setup: ScoringSetup) {
     if (!pane.ctInfo || !pane.maskInfo || pane.contrastThreshold === null) return
     setComputingVolumeScores(true)
+    const specs = scoreSpecs(setup.labels)
     try {
       const results = await Promise.all(
-        VOLUME_SCORE_SPECS.map((s) =>
+        specs.map((s) =>
           computeVolumeTotal({
             maskId: pane.maskInfo!.volume_id,
             ctId: pane.ctInfo!.volume_id,
@@ -1720,7 +1910,7 @@ export default function Pane({
         ),
       )
       const volumeScores: Partial<Record<ScoreClass, number>> = {}
-      VOLUME_SCORE_SPECS.forEach((s, i) => {
+      specs.forEach((s, i) => {
         volumeScores[s.cls] = results[i].totalVolumeMm3
       })
       onChange({ volumeScores, scorePanelOpen: true })
@@ -1736,21 +1926,24 @@ export default function Pane({
   // than the existing one-class-at-a-time confirmComputeScore flow — and
   // shows them in the Score panel even without a manifest `<CLASS>_Agatston`
   // baseline to compare against.
-  async function computeAllAgatstonScores() {
+  async function computeAllAgatstonScores(setup: ScoringSetup) {
     if (!pane.ctInfo || !pane.maskInfo) return
     setComputingVolumeScores(true)
+    const specs = scoreSpecs(setup.labels)
     try {
       const results = await Promise.all(
-        VOLUME_SCORE_SPECS.map((s) =>
+        specs.map((s) =>
           computeVolumeAgatston({
             maskId: pane.maskInfo!.volume_id,
             ctId: pane.ctInfo!.volume_id,
             labels: s.labels,
+            minAreaMm2: setup.minLesionAreaMm2,
+            sliceSpacingMm: setup.sliceSpacingMm,
           }),
         ),
       )
       const agatstonScores: Partial<Record<ScoreClass, number>> = {}
-      VOLUME_SCORE_SPECS.forEach((s, i) => {
+      specs.forEach((s, i) => {
         agatstonScores[s.cls] = results[i].totalScore
       })
       onChange({ agatstonScores, scorePanelOpen: true })
@@ -1761,22 +1954,29 @@ export default function Pane({
     }
   }
 
+  // Only ever runs from a click on the play button: nothing scores a scan on
+  // its own (not on load, not after an edit).
   function computeAllScores() {
-    if (pane.contrastMode) computeAllVolumeScores()
-    else computeAllAgatstonScores()
+    ensureScoringSetup((setup) => {
+      if (pane.contrastMode) computeAllVolumeScores(setup)
+      else computeAllAgatstonScores(setup)
+    })
   }
 
   async function confirmComputeScore() {
     if (!scoreConfirmPending || !pane.ctInfo || !pane.maskInfo) return
     setComputingScore(true)
     try {
-      const labels = scoreConfirmPending.targetClass === 'CAC' ? CORONARY_LABELS : [scoreConfirmPending.label]
+      const setup = pane.scoringSetup ?? currentScoringSetup()!
+      const labels = scoreConfirmPending.targetClass === 'CAC' ? coronaryLabels(setup.labels) : [scoreConfirmPending.label]
       const res = await computeVolumeAgatston({
         maskId: pane.maskInfo.volume_id,
         ctId: pane.ctInfo.volume_id,
         labels,
+        minAreaMm2: setup.minLesionAreaMm2,
+        sliceSpacingMm: setup.sliceSpacingMm,
       })
-      const cacheKey = `${pane.maskInfo.volume_id}:${pane.editVersion}:${scoreConfirmPending.targetClass}`
+      const cacheKey = `${pane.maskInfo.volume_id}:${pane.editVersion}:${scoreConfirmPending.targetClass}:${setupSignature(setup)}`
       setCachedCac(cacheKey, res.totalScore, 'computed')
       applyScoreResult(
         scoreConfirmPending.label,
@@ -1986,7 +2186,7 @@ export default function Pane({
   // it is deleted there.
   const labelPresets = useLabelPresets()
   useEffect(() => {
-    if (pane.labelPresetId === BUILTIN_PRESET_ID) return
+    if (isBuiltinId(pane.labelPresetId)) return
     const preset = labelPresets.find((p) => p.id === pane.labelPresetId)
     if (!preset) {
       onChange({ labelPresetId: BUILTIN_PRESET_ID, maskColors: builtinColors() })
@@ -2878,14 +3078,14 @@ export default function Pane({
                 <div ref={contrastBoxRef}>
                   <ContrastSeedBox
                     pane={pane}
-                    contrastSettings={contrastSettings}
-                    onContrastSettingsChange={setContrastSettings}
                     minimized={contrastBoxMinimized}
                     onToggleMinimized={() => setContrastBoxMinimized((v) => !v)}
                     saving={contrastSaving}
                     error={contrastError}
                     onFinalize={() => finalizeSeed()}
                     onReSeed={requestReSeed}
+                    fixedHu={contrastSettings.method === 'fixed' ? contrastSettings.fixedHu : null}
+                    onApplyFixed={() => applyFixedThreshold()}
                     onToggleSeedPlacement={toggleSeedPlacement}
                   />
                 </div>
@@ -2923,7 +3123,10 @@ export default function Pane({
                 }
                 scoreClasses={pane.agatstonScores ? (Object.keys(pane.agatstonScores) as ScoreClass[]) : pane.scoreClasses}
                 scores={pane.agatstonScores ?? currentRow!.scores}
+                labels={pane.scoringSetup?.labels ?? labelsFromColors(pane.maskColors)}
                 maskColors={pane.maskColors}
+                showMethodNote
+                onEditSetup={() => setScoringPrompt({ then: null })}
                 open={pane.scorePanelOpen}
                 onToggleOpen={() => onChange({ scorePanelOpen: !pane.scorePanelOpen })}
                 onDragHandleDown={handleScorePanelDragStart}
@@ -2939,7 +3142,9 @@ export default function Pane({
               }
               scoreClasses={Object.keys(pane.volumeScores) as ScoreClass[]}
               scores={pane.volumeScores}
+              labels={pane.scoringSetup?.labels ?? labelsFromColors(pane.maskColors)}
               maskColors={pane.maskColors}
+              onEditSetup={() => setScoringPrompt({ then: null })}
               open={pane.scorePanelOpen}
               onToggleOpen={() => onChange({ scorePanelOpen: !pane.scorePanelOpen })}
               onDragHandleDown={handleScorePanelDragStart}
@@ -3044,6 +3249,9 @@ export default function Pane({
                 flashRowId={flashRowId}
                 onRowClick={jumpToLesion}
                 onComputeAll={computeAllScores}
+                onOpenSetup={() => setScoringPrompt({ then: null })}
+                onDeleteRow={(id) => onChange({ lesionResults: pane.lesionResults.filter((r) => r.id !== id) })}
+                onClearRows={() => onChange({ lesionResults: [] })}
                 computingAll={computingVolumeScores}
                 seedRadiusMm={seedRadiusMm}
               />
@@ -3093,6 +3301,8 @@ export default function Pane({
               onLoadRow={onLoadRow}
               hasUnsavedMaskChanges={hasUnsavedMaskChanges}
               caps={caps}
+              contrastSettings={contrastSettings}
+              onContrastSettingsChange={setContrastSettings}
             />
 
             <div className="settings-section label-colors-card">
@@ -3151,14 +3361,14 @@ export default function Pane({
       {reseedAsk && (
         <div className="comment-modal-backdrop" onClick={() => setReseedAsk(false)}>
           <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="comment-modal-title">Re-seed erases the mask</div>
+            <div className="comment-modal-title">A new threshold erases the mask</div>
             <div className="nav-modal-body">
               The annotation on screen was made with the old threshold, so it is replaced by an empty mask and has to be redone.
             </div>
             <div className="comment-modal-buttons">
               <button onClick={() => setReseedAsk(false)}>Cancel</button>
               <button className="danger-btn" onClick={() => reSeed()}>
-                Erase and re-seed
+                Erase and continue
               </button>
             </div>
           </div>
@@ -3374,6 +3584,16 @@ export default function Pane({
             </div>
           </div>
         </div>
+      )}
+
+      {scoringPrompt && pane.ctInfo && currentScoringSetup() && (
+        <ScoringSetupModal
+          ctInfo={pane.ctInfo}
+          initial={currentScoringSetup()!}
+          editOnly={scoringPrompt.then === null}
+          onConfirm={confirmScoringSetup}
+          onCancel={() => setScoringPrompt(null)}
+        />
       )}
 
       {scoreConfirmPending && (

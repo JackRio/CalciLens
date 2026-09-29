@@ -104,6 +104,59 @@ def _series_description(dirpath: str, series_id: str, file_names) -> str:
         return ""
 
 
+def _tag_float(reader, index: int, key: str) -> Optional[float]:
+    """One numeric DICOM tag of slice `index`, or None when absent/garbled."""
+    try:
+        value = reader.GetMetaData(index, key).strip()
+        return float(value.split("\\")[0]) if value else None
+    except Exception:
+        return None
+
+
+def _tag_text(reader, index: int, key: str) -> str:
+    try:
+        return reader.GetMetaData(index, key).strip()
+    except Exception:
+        return ""
+
+
+def _dicom_acquisition(reader, image, file_count: int) -> dict:
+    """What the DICOM headers say about how the scan was acquired: slice
+    thickness (0018,0050), tube voltage (0018,0060), reconstruction kernel
+    (0018,1210), and whether the slices are evenly spaced. Best effort: every
+    field can come back None. The image's own z spacing is reported next to
+    them because that, not the thickness tag, is what the score scales by."""
+    info = {
+        "source": "dicom",
+        "slice_thickness_mm": _tag_float(reader, 0, "0018|0050"),
+        "kvp": _tag_float(reader, 0, "0018|0060"),
+        "kernel": _tag_text(reader, 0, "0018|1210") or None,
+        "non_uniform_spacing": False,
+        "spacing_variation_mm": 0.0,
+    }
+    try:
+        # Position of each slice along the slice normal.
+        d = image.GetDirection()
+        normal = np.array([d[2], d[5], d[8]], dtype=np.float64)
+        positions = []
+        for k in range(file_count):
+            raw = _tag_text(reader, k, "0020|0032")
+            if not raw:
+                positions = []
+                break
+            ipp = np.array([float(v) for v in raw.split("\\")], dtype=np.float64)
+            positions.append(float(ipp @ normal))
+        if len(positions) > 2:
+            gaps = np.abs(np.diff(np.sort(positions)))
+            median = float(np.median(gaps))
+            variation = float(np.max(np.abs(gaps - median)))
+            info["spacing_variation_mm"] = round(variation, 4)
+            info["non_uniform_spacing"] = bool(median > 0 and variation > 0.05 * median)
+    except Exception:
+        pass
+    return info
+
+
 def _hash_id(path: str, series_uid: Optional[str] = None) -> str:
     key = os.path.normcase(os.path.abspath(path)) + "|" + (series_uid or "")
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
@@ -133,6 +186,8 @@ class LoadedVolume:
     # annotation_paths.scan_folder_name), since a folder can hold multiple series and the
     # basename alone can't disambiguate them.
     dirty: bool = False  # has unsaved in-memory edits — see VolumeStore._register
+    # How the scan was acquired, as far as the file says (see _dicom_acquisition).
+    acquisition: dict = field(default_factory=dict)
 
     def plane_length(self, plane: str) -> int:
         nz, ny, nx = self.array.shape
@@ -179,6 +234,17 @@ class LoadedVolume:
             "labels": self.labels,
             "is_new_mask": self.is_new_mask,
             "dicom_series_uid": self.dicom_series_uid,
+            "acquisition": {
+                # Non-DICOM files have no thickness tag: only the spacing is known.
+                "source": "image",
+                "slice_thickness_mm": None,
+                "kvp": None,
+                "kernel": None,
+                "non_uniform_spacing": False,
+                "spacing_variation_mm": 0.0,
+                **(self.acquisition or {}),
+                "slice_spacing_mm": round(float(self.spacing_lps[2]), 6) if self.spacing_lps[2] else None,
+            },
         }
 
 
@@ -224,14 +290,17 @@ class VolumeStore:
         resolved_series_uid = series_uid
         if is_dicom_dir:
             reader = sitk.ImageSeriesReader()
+            reader.MetaDataDictionaryArrayUpdateOn()
             if series_uid:
                 file_names = sitk.ImageSeriesReader.GetGDCMSeriesFileNames(path, series_uid)
             else:
                 _, resolved_series_uid, file_names = _find_dicom_series(path)
             reader.SetFileNames(file_names)
             image = reader.Execute()
+            acquisition = {} if is_mask else _dicom_acquisition(reader, image, len(file_names))
         else:
             image = sitk.ReadImage(path)
+            acquisition = {}
 
         orig_spacing = image.GetSpacing()
         orig_origin = image.GetOrigin()
@@ -274,6 +343,7 @@ class VolumeStore:
             reoriented_origin=reoriented.GetOrigin(),
             reoriented_direction=reoriented.GetDirection(),
             dicom_series_uid=resolved_series_uid if is_dicom_dir else None,
+            acquisition=acquisition,
         )
 
         self._register(vol)
@@ -675,6 +745,34 @@ def assert_same_geometry(mask_vol: LoadedVolume, ct_vol: LoadedVolume) -> None:
             f"(z,y,x), CT is {tuple(int(v) for v in ct_vol.array.shape)}. "
             "They must be the same volume geometry to be edited or scored together."
         )
+    problems = alignment_problems(mask_vol, ct_vol)
+    if problems:
+        raise ValueError(
+            f"The mask is the same size as the CT but {' and '.join(problems)}, so it does not line up "
+            "with the anatomy. It cannot be edited or scored against this scan."
+        )
+
+
+def alignment_problems(mask_vol: LoadedVolume, ct_vol: LoadedVolume) -> list:
+    """How a same-shaped mask sits differently from the CT (position, voxel
+    spacing, orientation). Empty when they line up. A volume without the
+    geometry (older objects) is given the benefit of the doubt."""
+    mo, co = mask_vol.reoriented_origin, ct_vol.reoriented_origin
+    md, cd = mask_vol.reoriented_direction, ct_vol.reoriented_direction
+    problems = []
+    try:
+        min_spacing = min(float(v) for v in ct_vol.spacing_lps)
+        if mo is not None and co is not None:
+            shift = float(np.linalg.norm(np.array(mo, dtype=np.float64) - np.array(co, dtype=np.float64)))
+            if shift > 0.1 * min_spacing:
+                problems.append(f"its position is {shift:.1f} mm away from the CT's")
+        if any(abs(float(m) - float(c)) > 1e-3 * float(c) for m, c in zip(mask_vol.spacing_lps, ct_vol.spacing_lps)):
+            problems.append("its voxel spacing differs")
+        if md is not None and cd is not None and max(abs(float(m) - float(c)) for m, c in zip(md, cd)) > 1e-3:
+            problems.append("its orientation differs")
+    except (TypeError, ValueError):
+        return []
+    return problems
 
 
 def _atomic_write_image(img: "sitk.Image", out_path: str) -> None:
@@ -709,6 +807,7 @@ def save_mask(
     patient_id: Optional[str] = None,
     resolution: Optional[str] = None,
     mask_source: Optional[str] = None,
+    scoring: Optional[dict] = None,
 ) -> dict:
     """Write the current in-memory mask into this scan's own annotation
     folder, preserving the geometry it currently occupies (LPS-reoriented
@@ -747,6 +846,7 @@ def save_mask(
         annotation_type=annotation_type,
         source_mask_path=mask_vol.path or None,
         mask_source=mask_source,
+        scoring=scoring,
         stats={
             "labels": [int(v) for v in np.unique(mask_vol.array) if v != 0],
             "labelled_voxels": int(np.count_nonzero(mask_vol.array)),

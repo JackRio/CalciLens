@@ -5,8 +5,10 @@ import type {
   ManifestPairsResult,
   OverwriteMode,
   Plane,
+  ScoringSetup,
   VolumeInfo,
 } from './types'
+import { AGATSTON_REFERENCE_SPACING_MM, DEFAULT_MIN_LESION_AREA_MM2 } from './types'
 
 async function handleJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -51,6 +53,14 @@ async function listDicomSeries(path: string): Promise<DicomSeriesInfo[]> {
     description: s.description,
     numFiles: s.num_files,
   }))
+}
+
+// What the loading indicator says while the backend looks through a folder for
+// scans (a big DICOM folder can take a while); loading the scan then says
+// "Loading CT scan..." as before.
+export function scanningMessage(path: string): string {
+  const name = path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path
+  return `Scanning "${name}" for scans...`
 }
 
 // Shared by every CT-loading entry point (single-scan Load CT, manifest row
@@ -358,7 +368,9 @@ export async function computeLesionScore(params: {
   huThreshold?: number
   searchRadiusMm?: number
   flip?: string
-}): Promise<{ found: boolean; label: number | null; voxelCount: number; agatstonScore: number; isCoronary: boolean }> {
+  minAreaMm2?: number
+  sliceSpacingMm?: number | null
+}): Promise<{ found: boolean; label: number | null; voxelCount: number; agatstonScore: number }> {
   const res = await fetch('/api/mask/lesion_score', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -372,6 +384,8 @@ export async function computeLesionScore(params: {
       hu_threshold: params.huThreshold ?? 130,
       search_radius_mm: params.searchRadiusMm ?? null,
       flip: params.flip ?? '',
+      min_area_mm2: params.minAreaMm2 ?? DEFAULT_MIN_LESION_AREA_MM2,
+      slice_spacing_mm: params.sliceSpacingMm ?? null,
     }),
   })
   const data = await handleJson<{
@@ -379,14 +393,12 @@ export async function computeLesionScore(params: {
     label: number | null
     voxel_count: number
     agatston_score: number
-    is_coronary: boolean
   }>(res)
   return {
     found: data.found,
     label: data.label,
     voxelCount: data.voxel_count,
     agatstonScore: data.agatston_score,
-    isCoronary: data.is_coronary,
   }
 }
 
@@ -395,6 +407,8 @@ export async function computeVolumeAgatston(params: {
   ctId: string
   labels?: number[]
   huThreshold?: number
+  minAreaMm2?: number
+  sliceSpacingMm?: number | null
 }): Promise<{ totalScore: number }> {
   const res = await fetch('/api/volumes/agatston_total', {
     method: 'POST',
@@ -404,6 +418,8 @@ export async function computeVolumeAgatston(params: {
       ct_id: params.ctId,
       labels: params.labels ?? [1, 2, 3],
       hu_threshold: params.huThreshold ?? 130,
+      min_area_mm2: params.minAreaMm2 ?? DEFAULT_MIN_LESION_AREA_MM2,
+      slice_spacing_mm: params.sliceSpacingMm ?? null,
     }),
   })
   const data = await handleJson<{ total_score: number }>(res)
@@ -461,6 +477,8 @@ export async function computeVolumeTotal(params: {
 }
 
 export interface ContrastThresholdResult {
+  // 'fixed' records hold only the value; the seed fields are then placeholders.
+  method: 'aorta-sd' | 'fixed'
   meanHu: number
   stdHu: number
   thresholdHu: number
@@ -494,8 +512,10 @@ function parseContrastThresholdResult(data: {
   col: number
   flip?: string
   saved_at?: string
+  method?: string
 }): ContrastThresholdResult {
   return {
+    method: 'aorta-sd',
     meanHu: data.mean_hu,
     stdHu: data.std_hu,
     // Rounded once here so every consumer (display, mismatch check, the
@@ -555,6 +575,30 @@ export async function computeContrastThreshold(params: {
   return parseContrastThresholdResult(data)
 }
 
+// A fixed-HU threshold for this scan, kept beside the annotation like a seed.
+export async function setFixedContrastThreshold(params: {
+  thresholdHu: number
+  ctPath: string
+  seriesUid?: string | null
+  maskPath?: string | null
+  patientId?: string | null
+  saveDir?: string | null
+}): Promise<void> {
+  const res = await fetch('/api/contrast/set_fixed_threshold', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      threshold_hu: params.thresholdHu,
+      ct_path: params.ctPath,
+      series_uid: params.seriesUid || null,
+      mask_path: params.maskPath || null,
+      patient_id: params.patientId || null,
+      save_dir: params.saveDir || null,
+    }),
+  })
+  await handleJson(res)
+}
+
 export async function loadContrastThreshold(
   ctPath: string,
   saveDir?: string | null,
@@ -565,7 +609,27 @@ export async function loadContrastThreshold(
   if (seriesUid) params.set('series_uid', seriesUid)
   const res = await fetch(`/api/contrast/load_threshold?${params.toString()}`)
   if (res.status === 404) return null
-  const data = await handleJson<Parameters<typeof parseContrastThresholdResult>[0]>(res)
+  const data = await handleJson<Parameters<typeof parseContrastThresholdResult>[0] & { threshold_hu: number }>(res)
+  if (data.method === 'fixed') {
+    return {
+      method: 'fixed',
+      meanHu: 0,
+      stdHu: 0,
+      thresholdHu: data.threshold_hu,
+      voxelCount: 0,
+      actualVolumeMm3: 0,
+      targetVolumeMm3: 0,
+      kMultiplier: 0,
+      radiusMm: 0,
+      seedVoxel: [0, 0, 0],
+      plane: 'axial',
+      index: 0,
+      row: 0,
+      col: 0,
+      flip: '',
+      savedAt: data.saved_at,
+    }
+  }
   return parseContrastThresholdResult(data)
 }
 
@@ -625,6 +689,8 @@ export async function saveMask(params: {
   // annotation was derived from rather than only what it currently is.
   maskSource?: string | null
   resolution?: 'overwrite' | 'new_copy' | null
+  // How the scan is scored, when the user has been through the scoring prompt.
+  scoring?: ScoringSetup | null
 }): Promise<SaveMaskSuccess | SaveMaskConflict | SaveMaskNeedsDir> {
   const res = await fetch('/api/mask/save', {
     method: 'POST',
@@ -638,9 +704,71 @@ export async function saveMask(params: {
       patient_id: params.patientId || null,
       mask_source: params.maskSource || null,
       resolution: params.resolution || null,
+      scoring: params.scoring ? scoringToJson(params.scoring) : null,
     }),
   })
   return handleJson<SaveMaskSuccess | SaveMaskConflict | SaveMaskNeedsDir>(res)
+}
+
+// The scoring setup as it is written to the scan's `_source.json`.
+function scoringToJson(s: ScoringSetup) {
+  return {
+    metric: s.metric,
+    slice_spacing_mm: s.sliceSpacingMm,
+    slice_thickness_mm: s.sliceThicknessMm,
+    kvp: s.kvp,
+    kernel: s.kernel,
+    source: s.source,
+    min_lesion_area_mm2: s.minLesionAreaMm2,
+    reference_spacing_mm: AGATSTON_REFERENCE_SPACING_MM,
+    hu_threshold: s.metric === 'agatston' ? 130 : s.thresholdHu,
+    method: s.metric === 'agatston' ? 'Agatston 1990, per-slice 2D lesions' : 'volume above the scan-specific threshold',
+    labels: s.labels,
+    confirmed_at: s.confirmedAt,
+  }
+}
+
+function scoringFromJson(raw: any): ScoringSetup | null {
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.labels)) return null
+  return {
+    metric: raw.metric === 'volume' ? 'volume' : 'agatston',
+    sliceSpacingMm: typeof raw.slice_spacing_mm === 'number' ? raw.slice_spacing_mm : null,
+    sliceThicknessMm: typeof raw.slice_thickness_mm === 'number' ? raw.slice_thickness_mm : null,
+    kvp: typeof raw.kvp === 'number' ? raw.kvp : null,
+    kernel: typeof raw.kernel === 'string' ? raw.kernel : null,
+    source: raw.source === 'dicom' ? 'dicom' : 'image',
+    minLesionAreaMm2: typeof raw.min_lesion_area_mm2 === 'number' ? raw.min_lesion_area_mm2 : DEFAULT_MIN_LESION_AREA_MM2,
+    thresholdHu: raw.metric === 'volume' && typeof raw.hu_threshold === 'number' ? raw.hu_threshold : null,
+    labels: raw.labels
+      .filter((l: any) => l && typeof l.label === 'number')
+      .map((l: any) => ({ label: l.label, name: String(l.name ?? `Label ${l.label}`), coronary: !!l.coronary })),
+    confirmedAt: String(raw.confirmed_at ?? ''),
+  }
+}
+
+// Write the scoring setup into the scan's annotation record if the scan
+// already has a folder. False means there is none yet: the caller keeps the
+// setup and sends it with the annotation's first save instead.
+export async function recordScoring(params: {
+  ctPath: string
+  seriesUid?: string | null
+  saveDir?: string | null
+  annotationPath?: string | null
+  scoring: ScoringSetup
+}): Promise<boolean> {
+  const res = await fetch('/api/scoring/record', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ct_path: params.ctPath,
+      series_uid: params.seriesUid || null,
+      save_dir: params.saveDir || null,
+      annotation_path: params.annotationPath || null,
+      scoring: scoringToJson(params.scoring),
+    }),
+  })
+  const data = await handleJson<{ saved: boolean }>(res)
+  return data.saved
 }
 
 // What previous sessions already recorded about this scan. Called on every
@@ -665,7 +793,7 @@ export async function lookupAnnotation(
     scan_dir: string | null
     annotation_path: string | null
     has_seed: boolean
-    source_record: { annotation_type?: string; updated_at?: string; ct_path?: string } | null
+    source_record: { annotation_type?: string; updated_at?: string; ct_path?: string; scoring?: unknown } | null
   }>(res)
   const type = data.source_record?.annotation_type
   return {
@@ -676,5 +804,6 @@ export async function lookupAnnotation(
     annotationType: type === 'contrast' || type === 'non-contrast' ? type : null,
     savedAt: data.source_record?.updated_at || null,
     savedForCtPath: data.source_record?.ct_path || null,
+    scoring: scoringFromJson(data.source_record?.scoring),
   }
 }

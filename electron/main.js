@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, dialog } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron')
 const { spawn } = require('child_process')
 const path = require('path')
 const http = require('http')
@@ -99,6 +99,12 @@ function createWindow() {
     },
   })
   Menu.setApplicationMenu(null)
+  // Links that point outside the app (e.g. the Agatston paper) open in the
+  // user's browser, never in a new app window.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https:\/\//i.test(url)) shell.openExternal(url)
+    return { action: 'deny' }
+  })
   mainWindow.loadURL(SERVER_URL)
   mainWindow.once('ready-to-show', () => {
     mainWindow.maximize()

@@ -12,9 +12,7 @@ import {
   DEFAULT_WINDOW_LEVEL,
   DEFAULT_WINDOW_WIDTH,
   inferMaskAnnotationType,
-  detectMaskLooksLikeCt,
   detectGeometryMismatch,
-  detectAlignmentMismatch,
   detectAnnotationTypeMismatch,
   scanRecordedAsContrast,
   NONCONTRAST_SCREEN_BLOCK,
@@ -22,7 +20,7 @@ import {
   CONTRAST_NEEDS_SEED,
   comboMatches,
 } from './types'
-import { loadVolume, lookupAnnotation, resolveDicomLoad, saveManifestComment, saveManifestReason } from './api'
+import { loadVolume, lookupAnnotation, resolveDicomLoad, scanningMessage, saveManifestComment, saveManifestReason } from './api'
 import { useKeybinds } from './useKeybinds'
 import { capsFor, manifestDefaultsFor } from './modeConfig'
 import { initialLabelColors } from './labelPresets'
@@ -68,6 +66,7 @@ function makePane(mode?: AppMode): PaneState {
     scorePanelPos: null,
     loadingMessage: null,
 
+    ctInputPath: '',
     ctPath: '',
     maskPath: '',
     ctInfo: null,
@@ -115,6 +114,7 @@ function makePane(mode?: AppMode): PaneState {
     scoreComputeMinimized: false,
     scoreComputeBoxPos: null,
     lesionResults: [],
+    scoringSetup: null,
 
     // Fixed by the screen, never a switch: the Contrast screen derives its
     // threshold from a seed, every other screen uses the fixed 130 HU.
@@ -150,6 +150,7 @@ const CASE_RESET: Partial<PaneState> = {
   dicomSeriesIndex: null,
   editMode: false,
   lesionResults: [],
+  scoringSetup: null,
   volumeScores: null,
   agatstonScores: null,
   maskSource: null,
@@ -355,7 +356,7 @@ export default function App({
       manifestError: null,
       error: null,
       loading: true,
-      loadingMessage: 'Loading CT scan...',
+      loadingMessage: scanningMessage(row.image_path),
       // Anything computed against the *previous* case's mask (or the mask
       // itself, cleared further below once we know whether this row has
       // one) belongs to that case, not this one — leaving it in place made
@@ -382,10 +383,12 @@ export default function App({
     let loadedCtInfo: VolumeInfo | null = null
     try {
       const { directory, seriesUid, seriesList } = await resolveDicomLoad(row.image_path)
+      updatePane(paneId, { loadingMessage: 'Loading CT scan...' })
       const ctInfo = await loadVolume(directory, false, false, seriesUid)
       ctPathForMaskCheck = directory
       loadedCtInfo = ctInfo
       updatePane(paneId, {
+        ctInputPath: row.image_path,
         ctPath: directory,
         ctInfo,
         // A multi-series folder still just auto-loads its first series here
@@ -458,10 +461,7 @@ export default function App({
               maskBaselineVersion: 0,
               hasUnsavedMaskChanges: false,
               maskAnnotationType: annotationType,
-              maskWarning:
-                (loadedCtInfo ? detectAlignmentMismatch(loadedCtInfo, maskInfo) : null) ||
-                detectMaskLooksLikeCt(maskInfo, ctPathForMaskCheck, maskToLoad) ||
-                detectAnnotationTypeMismatch(annotationType, contrastOn),
+              maskWarning: detectAnnotationTypeMismatch(annotationType, contrastOn),
               showMask: true,
             })
           }

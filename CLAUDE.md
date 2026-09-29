@@ -59,6 +59,13 @@ count (1, or 2 for View ▸ Split view) and renders `<App mode initialPaneCount 
   read-only until **Re-seed**. Painting, region-grow and the digit keys are refused until a seed is finalized
   (`annotationBlockedReason`; the amber `.pane-warning-contrast` banner says so). Scoring is a physical
   **volume (mm³)**, never Agatston (the manifest Agatston panel is hidden here).
+  - **Threshold method** (Settings ▸ Contrast threshold, `useContrastSettings.method`): two formulas from the
+    literature, each with its DOI linked next to the setting. `aorta-sd` (default): aortic sphere mean + k × SD
+    (k = 3: Eberhard 2017, doi:10.4244/EIJ-D-17-00060; k = 2 is the SAME formula, Schuhbaeck 2015, so k is a
+    number to edit, not another method). `fixed`: one HU for every scan (320: Otton 2012, doi:10.1016/j.jcct.2011.11.004),
+    applied when the scan opens with no seed. Either is recorded in the scan's `contrast_seed.json` with a
+    `method` field, and a scan's saved record wins over the current setting (switching method later needs
+    the box's "Use N HU" / "Re-seed" button, which asks before erasing the mask).
   - **Show all is view-only here too**: the seed box and seed placement are hidden/off, Score Compute is off.
   - **Every contrast call carries the display `flip`** (`/api/contrast/compute_threshold`,
     `/api/mask/lesion_volume`; `compute_sphere_stats(..., flips)`), like paint/region-grow/lesion_score. A
@@ -95,9 +102,29 @@ count (1, or 2 for View ▸ Split view) and renders `<App mode initialPaneCount 
   localStorage key is deleted). First save with none chosen → "No output path" prompt (refuses the image's
   own folder, client and server). A re-save is quiet only when the mask on screen IS the saved file
   (`maskSource === 'annotation'` and same path); blank/prediction over an existing annotation still asks.
-- **Alignment warning**: `detectAlignmentMismatch` (types.ts) compares `origin_lps`/`spacing_lps`/
-  `direction_lps` (added to `info_dict`); same shape is not enough. Warning only, at every mask load path.
-- **Label colours**: `labelPresets.ts` (read-only "Calcifications" default + user presets in localStorage,
+- **Alignment is blocking**: a mask must match the CT's size, position, spacing AND orientation
+  (`detectGeometryMismatch` on load, `assert_same_geometry`/`alignment_problems` on the server for paint,
+  region-grow and scoring). Same shape is not enough: a shifted mask draws and scores in the wrong place.
+- **Scoring** (`agatston.py`, `ScoringSetupModal.tsx`, `Pane.tsx` `ensureScoringSetup`): the classic Agatston
+  method, slice by slice — 2D 8-connected lesions of one label at >= 130 HU, ignored below a minimum area
+  (1 mm² default), score = area x density weight of the lesion's PEAK HU, summed over slices, x (slice
+  spacing / 3 mm). A clicked lesion is still picked in 3D (26-connected) but always holds whole 2D lesions, so
+  lesion scores and totals agree; a total over several labels is the sum of each label's own score. The
+  factor uses slice SPACING (the increment), not the thickness tag: that is what makes sums over overlapping
+  slices comparable to the 3 mm standard. **Nothing scores on its own**: only a lesion click in Score Compute,
+  the ▶ button, or confirming the class-total prompt. The first time a scan is scored the **scoring setup
+  prompt** shows what was read (spacing; DICOM thickness/kVp/kernel, `info_dict.acquisition`), what is still
+  needed, the minimum area, and the label table (name, counts-towards-CAC, add/remove; mask labels the table
+  lacks are pre-added; it starts as the label set in use). It is kept in `PaneState.scoringSetup`, written to the scan's `_source.json` under
+  `scoring` (`/api/scoring/record` when the folder exists, else sent with the annotation's first save) and
+  read back through the lookup, so it is asked once per scan. Changing it clears the numbers computed
+  under the old one. It can be reopened any time from the ⚙ in the Score Compute box or the score panel's
+  "Scoring setup" link, and Score Compute rows can be removed one by one (✕) or all at once (clear). Score tiles follow the table (`ScorePanel` `labels`), not a fixed list. Contrast scans
+  get the same prompt without the Agatston fields (volume above the scan's threshold).
+- **Label colours**: `labelPresets.ts` (four read-only built-ins — Coronary Basic, Coronary Extended [SCCT 18-segment
+  vessels and branches], Heart Calcification [coronaries + mitral/aortic annulus, valves, root, pericardium,
+  myocardium], Heart and Aorta [the default] — each label carries `coronary`, which feeds the scoring table;
+  user presets in localStorage,
   auto-named `user-preset`, `-2`...), `LabelColorEditor.tsx`, `InlineEdit.tsx` (double-click to edit).
   Score/lesion tile colours are looked up **by label number**, never list position. Digits 0-9 (row or numpad)
   switch the active label in edit screens; Ctrl/Shift+click in Region-grow seeds from a circle.
@@ -277,7 +304,7 @@ count (1, or 2 for View ▸ Split view) and renders `<App mode initialPaneCount 
   `showMask`, `thresholdEnabled`) when `linked` is on.
 - **`types.ts`** — `PaneState` (the full per-pane state shape), `ManifestRow`, keybind types
   (`KeybindActionId`, `KeybindMap`, `DEFAULT_KEYBINDS`), constants (
-  `STATUS_OPTIONS`, `SCORE_CLASSES`, window presets, calcification label-color preset).
+  `STATUS_OPTIONS`, the scoring types, window presets, calcification label-color preset).
 - **`api.ts`** — every backend call as a typed async function. `renderUrl()` builds the
   `/api/render` query string from a pane's current render params (window/level, mask colors,
   threshold, `editVersion` as a cache-buster).
@@ -311,7 +338,7 @@ count (1, or 2 for View ▸ Split view) and renders `<App mode initialPaneCount 
 - **`useKeybinds.ts`** — persists `KeybindMap` to `localStorage`.
 - **`useContrastSettings.ts`** — same localStorage-hook pattern as
   `useKeybinds.ts`, persists the contrast threshold's target VOI volume (mm³) and k-multiplier
-  defaults (used to seed `ContrastSeedBox`'s inputs, still overridable per placement).
+  defaults, edited in Settings (Contrast screen: "Seed sphere volume (mm³) / k").
 - **`components/ContrastSeedBox.tsx`** — seed placement + computed
   threshold display, lives in `.viewer-left-controls` alongside the W/L box. See feature inventory
   below.
@@ -351,6 +378,10 @@ count (1, or 2 for View ▸ Split view) and renders `<App mode initialPaneCount 
 
 ## Feature inventory (so a fresh session doesn't need to rediscover these)
 
+- **CT path field keeps what the user chose** (`PaneState.ctInputPath`), separate from `ctPath`, the scan that
+  loaded. A DICOM folder search resolves to one series sub-folder; that used to overwrite the field, so pressing
+  Load again only ever saw that one series. Load now always searches `ctInputPath`, and `CaseLoader`'s
+  `PathField` shows the resolved remainder after it in grey (not part of the value).
 - **Manifest-driven batch loading** with configurable image/mask/PatientID/Reason column names, only
   `image_path` required — mask/PatientID/Reason columns each have a "-- none --" option in
   `CaseLoader.tsx`'s column pickers and are skipped entirely if absent (no mask column ⇒ CT-only
@@ -371,8 +402,8 @@ count (1, or 2 for View ▸ Split view) and renders `<App mode initialPaneCount 
 - **Reason tag picker sorts by usage frequency**, snapshotted when opened (not live-recomputed
   while open, to avoid reordering under the user's cursor mid-click) — see `computeReason
   OptionsByFrequency`/`reasonOptionsSnapshot` in `Pane.tsx`.
-- **Score panel**: per-class Agatston scores from `<CLASS>_Agatston` manifest columns, shown only
-  for classes actually present, grouped (coronary/aorta/valve), 2-decimal + thousands-separator
+- **Score panel**: per-class Agatston scores from `<CLASS>_Agatston` manifest columns (standard names), shown only
+  for classes actually present, grouped (coronary/aorta/valve/other), 2-decimal + thousands-separator
   formatting, draggable, collapsible with fixed-size rail buttons regardless of open/collapsed
   state, anchored bottom-center by default.
 - **Split view** (max 2 panes): "Interaction" (sync plane/index/zoom/W-L-minimized/mask-toggle/
@@ -390,17 +421,11 @@ count (1, or 2 for View ▸ Split view) and renders `<App mode initialPaneCount 
   split view (it's a global App-level listener, not per-pane-scoped).
 - **Mask editing**: brush + region-grow tools, overwrite modes (any/label/threshold), undo via
   `editVersion` counter, save/reset, never synced between split-view panes.
-- **Mask sanity checks on load** (`types.ts`), two kinds with deliberately different force:
-  - `detectGeometryMismatch` is **exact and blocking** — a mask whose `shape_lps` differs from the
-    CT's is refused outright, because slice indices are clamped per-volume and painting one would
-    silently write to the wrong slice.
-  - `detectMaskLooksLikeCt` is a **dismissible warning**, because it is a heuristic and the user
-    may legitimately know better. Its criteria: the mask path being the *same file* as the CT
-    (exact), more than 256 distinct non-zero values, `value_min < -100` (air is ~-1000 HU; a label
-    map is never negative), or a floating-point dtype. It reports which of these fired.
-    **Don't reintroduce a total value-RANGE test** — an earlier version flagged range > 500, which
-    false-positived on whole-heart/MMWHS masks whose label *values* run 205…850. Flagging a valid
-    mask trains people to dismiss the banner, which costs more than the case it catches.
+- **Mask sanity check on load** (`types.ts`): `detectGeometryMismatch` is **exact and blocking** — a mask
+  whose size, position, spacing or orientation differs from the CT's is refused outright, because slice
+  indices are clamped per-volume and painting one would silently write to the wrong slice. There is
+  deliberately no "does this look like a CT" heuristic any more (it guessed, and false-positived on
+  whole-heart masks whose label values run 205…850).
 - **Annotation saving/reloading**: one folder per scan under `Manual_Annotations/` (see
   `annotation_paths.py` — no date in the name; the dates are in `_source.json`), reloaded
   automatically whenever that scan is opened again — through the manifest's `annotation_path`

@@ -1,14 +1,10 @@
 import type { LesionScoreResult, PaneState } from '../types'
-import { CAC_COLOR, SCORE_CLASS_BY_LABEL } from '../types'
+import { CAC_COLOR, labelsFromColors } from '../types'
 
 function formatScore(val: number | null | undefined): string {
   return val === null || val === undefined
     ? '—'
     : val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-
-function lesionName(label: number): string {
-  return SCORE_CLASS_BY_LABEL[label - 1] || `Label ${label}`
 }
 
 const SOURCE_LABEL: Record<LesionScoreResult['scoreSource'], string> = {
@@ -26,6 +22,9 @@ export default function LesionScoreBox({
   onComputeAll,
   computingAll,
   seedRadiusMm,
+  onOpenSetup,
+  onDeleteRow,
+  onClearRows,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -35,6 +34,9 @@ export default function LesionScoreBox({
   onComputeAll: () => void
   computingAll: boolean
   seedRadiusMm: number
+  onOpenSetup: () => void
+  onDeleteRow: (id: number) => void
+  onClearRows: () => void
 }) {
   if (!pane.ctInfo || !pane.maskInfo) return null
 
@@ -54,8 +56,26 @@ export default function LesionScoreBox({
     </button>
   )
 
+  const scoringLabels = pane.scoringSetup?.labels ?? labelsFromColors(pane.maskColors)
+  const lesionName = (label: number) => scoringLabels.find((l) => l.label === label)?.name ?? `Label ${label}`
   const colorForLabel = (label: number) => pane.maskColors.find((c) => c.label === label)?.color || '#6c6d7a'
   const isVolumeMetric = pane.contrastMode
+  // Removing a row only removes it from this list; nothing else depends on it.
+  const deleteCell = (id: number) => (
+    <td>
+      <button
+        type="button"
+        className="lesion-row-delete"
+        title="Remove this entry"
+        onClick={(e) => {
+          e.stopPropagation()
+          onDeleteRow(id)
+        }}
+      >
+        ✕
+      </button>
+    </td>
+  )
 
   return (
     <div className="overlay-box edit-box lesion-score-box" onWheel={(e) => e.stopPropagation()}>
@@ -89,6 +109,9 @@ export default function LesionScoreBox({
           >
             {computingAll ? '…' : '▶'}
           </button>
+          <button className="wl-minimize-btn" onClick={onOpenSetup} title="Scoring setup: slice spacing, minimum lesion area, labels">
+            ⚙
+          </button>
           {dragHandle}
           {minimizeBtn}
         </div>
@@ -114,6 +137,11 @@ export default function LesionScoreBox({
                     <th>Lesion</th>
                     <th>Voxels</th>
                     <th>Volume (mm³)</th>
+                    <th className="lesion-clear-cell">
+                      <button type="button" className="lesion-row-delete" onClick={onClearRows} title="Clear all">
+                        clear
+                      </button>
+                    </th>
                   </tr>
                 ) : (
                   <tr>
@@ -121,6 +149,11 @@ export default function LesionScoreBox({
                     <th>Score</th>
                     <th>Old</th>
                     <th>New</th>
+                    <th className="lesion-clear-cell">
+                      <button type="button" className="lesion-row-delete" onClick={onClearRows} title="Clear all">
+                        clear
+                      </button>
+                    </th>
                   </tr>
                 )}
               </thead>
@@ -138,6 +171,7 @@ export default function LesionScoreBox({
                         <td style={{ color: lesionColor }}>{lesionName(r.label)}</td>
                         <td>{r.voxelCount.toLocaleString('en-US')}</td>
                         <td>{formatScore(r.volumeMm3)}</td>
+                        {deleteCell(r.id)}
                       </tr>
                     )
                   }
@@ -162,6 +196,7 @@ export default function LesionScoreBox({
                       >
                         {unavailable ? '—' : formatScore(r.newScore)}
                       </td>
+                      {deleteCell(r.id)}
                     </tr>
                   )
                 })}

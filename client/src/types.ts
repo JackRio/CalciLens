@@ -22,6 +22,19 @@ export interface VolumeInfo {
   labels: number[] | null
   is_new_mask: boolean
   dicom_series_uid: string | null
+  // What the file says about how the scan was acquired. Non-DICOM files only
+  // know their slice spacing.
+  acquisition?: Acquisition
+}
+
+export interface Acquisition {
+  source: 'dicom' | 'image'
+  slice_spacing_mm: number | null
+  slice_thickness_mm: number | null
+  kvp: number | null
+  kernel: string | null
+  non_uniform_spacing: boolean
+  spacing_variation_mm: number
 }
 
 // One entry per series found under a DICOM directory (see
@@ -45,6 +58,9 @@ export interface LabelColor {
   label: number
   color: string
   name?: string
+  // Counts towards the coronary total (CAC) when scored. Unset on labels the
+  // user added: the name decides then (see isCoronaryName).
+  coronary?: boolean
 }
 
 // CAC is the aggregate of LAD/LCx/RCA (not one of the 6 segmentation
@@ -52,11 +68,11 @@ export interface LabelColor {
 // palette; the other 6 classes map onto the label colors of labels 1-6.
 export const CAC_COLOR = '#FFFFFF'
 
-export function colorForScoreClass(cls: ScoreClass, maskColors: LabelColor[]): string {
+export function colorForScoreClass(cls: ScoreClass, maskColors: LabelColor[], labels: ScoringLabel[]): string {
   if (cls === 'CAC') return CAC_COLOR
   // By label number, not list position: labels can be renumbered, removed or
   // reordered in the editor, and position would then colour the wrong class.
-  const label = SCORE_CLASS_BY_LABEL.indexOf(cls) + 1
+  const label = labels.find((l) => l.name === cls)?.label
   return maskColors.find((c) => c.label === label)?.color || '#6c6d7a'
 }
 
@@ -76,26 +92,7 @@ export function inferMaskAnnotationType(maskPath: string): 'contrast' | 'non-con
   return null
 }
 
-function normalizePathForCompare(p: string): string {
-  return p.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
-}
-
-// Signals that a CT was loaded by mistake as a mask (same file picked for
-// both, or a manifest's image/mask columns mixed up).
-//
-// An earlier version also flagged a total value RANGE over 500, on the
-// reasoning that CT spans roughly -1000 HU to +1000s. That produced false
-// positives on real segmentations: whole-heart conventions (MMWHS and
-// anything derived from it) use label VALUES like 205, 420, 500, 550, 600,
-// 820, 850, so a perfectly good cardiac mask has a range of 850 and got
-// flagged. The criteria below key off things a label map genuinely never
-// has, rather than how large its label values happen to be.
-const MASK_LOOKS_LIKE_CT_LABEL_COUNT = 256
-// Air is about -1000 HU, so a CT essentially always goes well below zero;
-// a label map is non-negative. This is the single most specific signal.
-const MASK_LOOKS_LIKE_CT_MIN_VALUE = -100
-
-// A mask can only be edited or scored against a CT of identical geometry.
+// A mask can only be edited or scored against a CT of identical geometry (size, position, spacing and orientation).
 // Nothing checked this before: every slice lookup clamps its index against
 // its own volume independently, so a mask with fewer slices than the CT
 // didn't error — viewing CT slice 200 and painting wrote to the mask's LAST
@@ -104,18 +101,15 @@ const MASK_LOOKS_LIKE_CT_MIN_VALUE = -100
 export function detectGeometryMismatch(ctInfo: VolumeInfo, maskInfo: VolumeInfo): string | null {
   const a = ctInfo.shape_lps
   const b = maskInfo.shape_lps
-  if (a[0] === b[0] && a[1] === b[1] && a[2] === b[2]) return null
-  return (
-    `This mask does not match the CT: mask is ${b.join(' x ')} voxels, CT is ${a.join(' x ')}. ` +
-    'They must share the same geometry, so it cannot be displayed or edited against this scan.'
-  )
-}
-
-// Same size is necessary but not sufficient: a mask on a shifted origin, other
-// voxel spacing or another orientation has the right shape and still draws in
-// the wrong place. This is a warning, not a block, because tiny differences
-// from resampling tools are common and the user can judge the overlay.
-export function detectAlignmentMismatch(ctInfo: VolumeInfo, maskInfo: VolumeInfo): string | null {
+  if (a[0] !== b[0] || a[1] !== b[1] || a[2] !== b[2]) {
+    return (
+      `This mask does not match the CT: mask is ${b.join(' x ')} voxels, CT is ${a.join(' x ')}. ` +
+      'They must share the same geometry, so it cannot be displayed or edited against this scan.'
+    )
+  }
+  // Same size is necessary but not sufficient: a mask on a shifted origin, other
+  // voxel spacing or another orientation has the right shape and still draws (and
+  // scores) in the wrong place, so that is refused too.
   const co = ctInfo.origin_lps
   const mo = maskInfo.origin_lps
   const cd = ctInfo.direction_lps
@@ -131,8 +125,8 @@ export function detectAlignmentMismatch(ctInfo: VolumeInfo, maskInfo: VolumeInfo
   if (directionOff > 1e-3) problems.push('its orientation differs')
   if (problems.length === 0) return null
   return (
-    `This mask is the same size as the CT, but ${problems.join(' and ')}. ` +
-    'It may not line up with the anatomy. Check the overlay before you rely on it.'
+    `This mask is the same size as the CT, but ${problems.join(' and ')}, so it does not line up with the anatomy. ` +
+    'It cannot be displayed or edited against this scan.'
   )
 }
 
@@ -167,41 +161,16 @@ export function scanRecordedAsContrast(lookup: AnnotationLookup | null | undefin
   return !!lookup && (lookup.hasSeed || lookup.annotationType === 'contrast')
 }
 
-export function detectMaskLooksLikeCt(maskInfo: VolumeInfo, ctPath: string, maskPath: string): string | null {
-  if (ctPath && maskPath && normalizePathForCompare(ctPath) === normalizePathForCompare(maskPath)) {
-    return 'The mask path is the same file as the loaded CT scan — this overlays the CT on itself, not a real segmentation.'
-  }
-  // Each reason is reported, so the warning says *why* it fired rather than
-  // leaving the user to guess whether it has misjudged their data.
-  const reasons: string[] = []
-
-  const labelCount = maskInfo.labels?.length ?? 0
-  if (labelCount > MASK_LOOKS_LIKE_CT_LABEL_COUNT) {
-    reasons.push(`${labelCount} distinct values`)
-  }
-  if (maskInfo.value_min < MASK_LOOKS_LIKE_CT_MIN_VALUE) {
-    reasons.push(`values as low as ${Math.round(maskInfo.value_min)} (a label map is never negative)`)
-  }
-  if (/float/i.test(maskInfo.dtype)) {
-    reasons.push(`a ${maskInfo.dtype} data type (labels are whole numbers)`)
-  }
-
-  if (reasons.length === 0) return null
-  return (
-    `This mask looks like a CT scan rather than a segmentation — ${reasons.join('; ')}. ` +
-    'Double-check the mask path or manifest column. If it is correct, dismiss this and carry on.'
-  )
-}
-
-// Names follow SCORE_CLASS_BY_LABEL: coronary arteries (LAD, LCx, RCA), thoracic
-// aorta (TAC), aortic valve (AV), mitral valve (MV).
+// Heart and Aorta, the default label set: coronary arteries (LAD, LCx, RCA),
+// thoracic aorta (TAC), aortic valve (AV), mitral valve (MV). The other built-in
+// sets live in labelPresets.ts.
 export const CALCIFICATIONS_PRESET: LabelColor[] = [
-  { label: 1, color: '#FF0000', name: 'LAD' },
-  { label: 2, color: '#00FF00', name: 'LCx' },
-  { label: 3, color: '#0000FF', name: 'RCA' },
-  { label: 4, color: '#FFFF00', name: 'TAC' },
-  { label: 5, color: '#00FFFF', name: 'AV' },
-  { label: 6, color: '#FF00FF', name: 'MV' },
+  { label: 1, color: '#FF0000', name: 'LAD', coronary: true },
+  { label: 2, color: '#00FF00', name: 'LCx', coronary: true },
+  { label: 3, color: '#0000FF', name: 'RCA', coronary: true },
+  { label: 4, color: '#FFFF00', name: 'TAC', coronary: false },
+  { label: 5, color: '#00FFFF', name: 'AV', coronary: false },
+  { label: 6, color: '#FF00FF', name: 'MV', coronary: false },
 ]
 
 export const DEFAULT_THRESHOLD_COLOR = '#FF8000'
@@ -262,17 +231,77 @@ export const DEFAULT_MANIFEST_CONFIG: ManifestConfig = {
 
 export const STATUS_OPTIONS = ['Not Started', 'Annotated', 'InProgress', 'Review'] as const
 
-// Score columns are named "<CLASS>_Agatston" in the manifest; purely
-// optional/informational, shown if present and skipped if not.
-const SCORE_CLASSES = ['CAC', 'LAD', 'LCx', 'RCA', 'TAC', 'AV', 'MV'] as const
-export type ScoreClass = (typeof SCORE_CLASSES)[number]
+// Score tiles are named after the labels being scored. Manifest columns are
+// "<CLASS>_Agatston" for the standard names (CAC, LAD, LCx, RCA, TAC, AV, MV).
+export type ScoreClass = string
 
-// Positional mapping of segmentation label (1-6) to its clinical class name —
-// label 1 = SCORE_CLASS_BY_LABEL[0] = 'LAD', label 2 = 'LCx', etc. CAC is the
-// aggregate of LAD/LCx/RCA and isn't a segmentation label itself, so it has
-// no slot here. Shared by ScorePanel and LesionScorePanel.
-export const SCORE_CLASS_BY_LABEL: ScoreClass[] = ['LAD', 'LCx', 'RCA', 'TAC', 'AV', 'MV']
-export const CORONARY_LABELS = [1, 2, 3]
+// One row of the scoring table: a mask label, the name shown for it, and
+// whether it counts towards the coronary total (CAC).
+export interface ScoringLabel {
+  label: number
+  name: string
+  coronary: boolean
+}
+
+export const DEFAULT_SCORING_LABELS: ScoringLabel[] = [
+  { label: 1, name: 'LAD', coronary: true },
+  { label: 2, name: 'LCx', coronary: true },
+  { label: 3, name: 'RCA', coronary: true },
+  { label: 4, name: 'TAC', coronary: false },
+  { label: 5, name: 'AV', coronary: false },
+  { label: 6, name: 'MV', coronary: false },
+]
+
+// The method the numbers follow: Agatston 1990, 130 HU, scaled to 3 mm slices.
+export const AGATSTON_PAPER_URL = 'https://doi.org/10.1016/0735-1097(90)90282-T'
+export const AGATSTON_REFERENCE_SPACING_MM = 3
+export const DEFAULT_MIN_LESION_AREA_MM2 = 1
+
+// How one scan is scored. Confirmed once per scan and kept in the scan's
+// annotation record (`_source.json`), so the same numbers come back next time.
+export interface ScoringSetup {
+  metric: 'agatston' | 'volume'
+  // Slice spacing the Agatston score is scaled by (score x spacing / 3 mm).
+  sliceSpacingMm: number | null
+  // Informational: only DICOM headers carry it.
+  sliceThicknessMm: number | null
+  kvp: number | null
+  kernel: string | null
+  source: 'dicom' | 'image'
+  minLesionAreaMm2: number
+  // Contrast: the scan's own threshold the volume is measured above.
+  thresholdHu: number | null
+  labels: ScoringLabel[]
+  confirmedAt: string
+}
+
+// Coronary vessels and branches by their usual abbreviations (SCCT 18-segment
+// model), for label sets where nothing says explicitly what counts as coronary.
+const CORONARY_NAMES = new Set(
+  ['LM', 'LAD', 'D1', 'D2', 'RI', 'LCX', 'OM1', 'OM2', 'OM', 'RCA', 'PDA', 'PLB', 'PLV', 'CAC'].map((n) => n.toUpperCase()),
+)
+export function isCoronaryName(name: string): boolean {
+  return CORONARY_NAMES.has(name.trim().toUpperCase())
+}
+
+// The scoring table implied by a set of label colours (the pane's current
+// label set): same numbers and names, coronary as the set says.
+export function labelsFromColors(colors: LabelColor[]): ScoringLabel[] {
+  return colors.map((c) => {
+    const name = c.name?.trim() || `Label ${c.label}`
+    return { label: c.label, name, coronary: c.coronary ?? isCoronaryName(name) }
+  })
+}
+
+export function scoreClassForLabel(label: number, labels: ScoringLabel[]): ScoreClass {
+  const found = labels.find((l) => l.label === label)
+  if (!found) return `Label ${label}`
+  return found.coronary ? 'CAC' : found.name
+}
+
+export function coronaryLabels(labels: ScoringLabel[]): number[] {
+  return labels.filter((l) => l.coronary).map((l) => l.label)
+}
 
 export interface ManifestRow {
   index: number
@@ -317,6 +346,8 @@ export interface AnnotationLookup {
   annotationType: 'contrast' | 'non-contrast' | null
   savedAt: string | null
   savedForCtPath: string | null
+  // How this scan was scored last time, if anyone scored it.
+  scoring: ScoringSetup | null
 }
 
 export interface PaneState {
@@ -348,6 +379,11 @@ export interface PaneState {
 
   loadingMessage: string | null // shown alongside the loading tag/overlay while `loading` is true
 
+  // What the user picked or typed in the CT path field (a file, or a DICOM
+  // folder that may hold several series). Kept apart from ctPath, which is the
+  // scan that actually loaded: pressing Load again must search what the user
+  // chose, not the sub-folder a previous load happened to resolve to.
+  ctInputPath: string
   ctPath: string
   maskPath: string
   ctInfo: VolumeInfo | null
@@ -377,11 +413,8 @@ export interface PaneState {
   error: string | null
   loading: boolean
 
-  // Non-blocking heads-up when a loaded "mask" looks like it's actually
-  // another CT scan (huge label count / CT-like HU range, or the exact same
-  // path as the loaded CT) rather than a real segmentation — see
-  // detectMaskLooksLikeCt in Pane.tsx. Distinct from `error` since the load
-  // itself succeeded; this is a content sanity check, not a failure.
+  // Non-blocking heads-up about a mask that did load (e.g. it was annotated on
+  // the other screen's basis). Distinct from `error`, which is a failure.
   maskWarning: string | null
 
   // Mask editing — deliberately never synced between split-view panes.
@@ -408,6 +441,8 @@ export interface PaneState {
   scoreComputeMinimized: boolean
   scoreComputeBoxPos: { x: number; y: number } | null
   lesionResults: LesionScoreResult[]
+  // Confirmed scoring setup for the scan on screen (null until the user has been asked).
+  scoringSetup: ScoringSetup | null
 
   // Contrast CT: per-scan calcium-detection threshold, derived from a sphere VOI
   // around a user-placed seed point (ascending aorta near the left ostium) rather
@@ -421,6 +456,7 @@ export interface PaneState {
   contrastThreshold: number | null
   contrastThresholdLocked: boolean
   contrastMeta: {
+    method: 'aorta-sd' | 'fixed'
     meanHu: number
     stdHu: number
     voxelCount: number

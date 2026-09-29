@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+SimpleITK
+numpy
+scipy
+pillow
+pandas
+openpyxl
+python-multipart

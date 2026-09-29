@@ -1,0 +1,2464 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  border-bottom: 1px solid #2a2c34;
+  background: #1a1b21;
+  flex-shrink: 0;
+}
+
+.app-header h1 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+  color: #f0f0f2;
+}
+
+.app-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.app-header-controls button {
+  background: #2f3140;
+  color: #d7d8de;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  padding: 6px 12px;
+}
+
+.app-header-controls button:hover {
+  background: #3a3d4f;
+}
+
+.app-header-controls button.active {
+  background: #4a3b1f;
+  border-color: #a67c2e;
+  color: #ffd873;
+}
+
+.review-parent-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #9c9dab;
+}
+
+.review-parent-select .plane-tabs button {
+  padding: 4px 8px;
+}
+
+.link-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #9c9dab;
+}
+
+.split-hint {
+  font-size: 13px;
+  color: #6c6d7a;
+}
+
+.panes-container {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+.panes-container.panes-1 .pane {
+  border-right: none;
+}
+
+.pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid #2a2c34;
+  box-shadow: inset 0 0 0 1px transparent;
+}
+
+.pane:last-child {
+  border-right: none;
+}
+
+/* Shows which pane keyboard shortcuts (R/T/arrows/etc.) currently act on —
+   only meaningful in split view, since a single pane is unambiguous. */
+.panes-2 .pane.pane-active {
+  box-shadow: inset 0 0 0 1px #3b5bdb;
+}
+
+.pane-toolbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  /* Not space-between: with the loading tag conditionally appearing inside
+     .pane-toolbar-right, space-between recomputed the gap on every loading
+     state change and visibly shifted .case-nav-tabs (the row of Previous/
+     Next/Comment/Reason/etc buttons) sideways. Left-anchor the button
+     groups with a fixed gap instead, and let margin-left:auto on
+     .pane-toolbar-right push it to the right edge independently — so it
+     can grow/shrink without moving anything else. .case-nav-tabs itself is
+     taken out of flow (position:absolute, centered on .pane-toolbar) so its
+     position is pinned to the toolbar's own center and immune to either
+     side growing/shrinking, rather than an accident of matching widths. */
+  gap: 10px;
+  padding: 6px 10px;
+  background: #1a1b21;
+  border-bottom: 1px solid #2a2c34;
+  flex-shrink: 0;
+}
+
+.plane-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.plane-tabs button {
+  background: transparent;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  color: #9c9dab;
+  padding: 4px 10px;
+}
+
+.plane-tabs button.active {
+  background: #3b5bdb;
+  color: white;
+  border-color: #3b5bdb;
+}
+
+.case-nav-tabs {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  /* transform creates its own stacking context, which otherwise traps
+     .reason-picker's z-index (20) inside it — the whole box then only
+     competes as a plain z-index:auto layer against .viewer-area's overlays
+     (score panel, jump marker, label-select menu, etc. up to z-index 10),
+     which live outside any transformed ancestor and always paint on top of
+     it regardless of the reason picker's own z-index. Giving this box an
+     explicit z-index above those overlays fixes that. */
+  z-index: 25;
+  display: flex;
+  gap: 4px;
+}
+
+.case-nav-tabs button {
+  background: #2f3140;
+  color: #d7d8de;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  padding: 4px 10px;
+}
+
+.case-nav-tabs button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.case-nav-tabs button.has-comment {
+  background: #4a3b1f;
+  border-color: #a67c2e;
+  color: #ffd873;
+}
+
+.reason-picker-anchor {
+  position: relative;
+}
+
+/* DICOM multi-series Previous/Next — same positioning as .case-nav-tabs
+   (mutually exclusive with it: only one of the two ever renders, gated on
+   whether a manifest is loaded, so there's no collision to worry about). */
+.series-nav-tabs {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  display: flex;
+  gap: 4px;
+}
+
+.series-nav-tabs button {
+  background: #2f3140;
+  color: #d7d8de;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  padding: 4px 10px;
+}
+
+.series-nav-tabs button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.reason-picker {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  background: #1e1f27;
+  border: 1px solid #3c3e4d;
+  border-radius: 6px;
+  padding: 8px;
+  width: 220px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.reason-picker-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.reason-picker-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  color: #d7d8de;
+  cursor: pointer;
+}
+
+.reason-picker-option:hover {
+  background: #2f3140;
+}
+
+.reason-picker-add {
+  display: flex;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed #3c3e4d;
+}
+
+.reason-picker-add input {
+  flex: 1;
+  min-width: 0;
+  background: #12131a;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.reason-picker-add button {
+  background: #2f3140;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.reason-picker-add button:disabled {
+  opacity: 0.4;
+}
+
+.reason-picker-hint {
+  font-size: 11px;
+  color: #9c9dab;
+}
+
+.reason-picker-empty {
+  font-size: 12px;
+  color: #6c6d7a;
+  padding: 4px 6px;
+}
+
+.comment-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.comment-modal {
+  background: #1e1f27;
+  border: 1px solid #3c3e4d;
+  border-radius: 8px;
+  padding: 16px;
+  width: 420px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+.comment-modal-title {
+  font-weight: 600;
+  color: #d7d8de;
+}
+
+.comment-modal textarea {
+  width: 100%;
+  resize: vertical;
+  background: #14151a;
+  color: #d7d8de;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.comment-modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.keybind-modal {
+  width: 460px;
+}
+
+.keybind-hint {
+  font-size: 12px;
+  color: #9c9dab;
+}
+
+.keybind-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid #2a2c34;
+}
+
+.keybind-row-label {
+  font-size: 13px;
+  color: #d7d8de;
+}
+
+.keybind-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.keybind-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: #2f3140;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+  color: #d7d8de;
+}
+
+.keybind-chip button {
+  background: transparent;
+  border: none;
+  color: #9c9dab;
+  padding: 0;
+  line-height: 1;
+  font-size: 11px;
+}
+
+.keybind-chip button:hover {
+  color: #ff8787;
+}
+
+.keybind-chip-capturing {
+  background: #4a3b1f;
+  border-color: #a67c2e;
+  color: #ffd873;
+}
+
+.keybind-add-btn {
+  background: transparent;
+  border: 1px dashed #3c3e4d;
+  color: #9c9dab;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.keybind-add-btn:hover {
+  color: #d7d8de;
+  border-color: #6c6d7a;
+}
+
+.nav-modal-save-btn {
+  align-self: flex-start;
+  background: #2f3140;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 6px 14px;
+  font-size: 13px;
+}
+
+.nav-modal-save-btn:not(:disabled):hover {
+  background: #3a3d4f;
+}
+
+.nav-modal-save-btn:disabled {
+  opacity: 0.6;
+}
+
+.nav-modal-status-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.nav-modal-status-row button {
+  background: #2f3140;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.nav-modal-status-row button.active {
+  background: #1f4a2e;
+  border-color: #2ea678;
+  color: #7de3ab;
+}
+
+.pane-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.pane-toolbar-right button {
+  background: #2f3140;
+  color: #d7d8de;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.pane-toolbar-right button.active {
+  background: #3b5bdb;
+  color: #fff;
+  border-color: #3b5bdb;
+}
+
+.loading-tag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #ffd43b;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 212, 59, 0.25);
+  border-top-color: #ffd43b;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+/* Spinner inline with button text (no flex parent to supply gap) */
+button .loading-spinner {
+  margin-right: 6px;
+}
+
+.viewer-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.loading-spinner-lg {
+  width: 28px;
+  height: 28px;
+  border-width: 3px;
+}
+
+.pane-error {
+  background: #3a1d1d;
+  color: #ff8787;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid #5c2626;
+}
+
+/* Non-blocking heads-up (e.g. "this mask looks like a CT scan") — the load
+   itself succeeded, so amber rather than .pane-error's red, plus a dismiss
+   button since there's nothing to retry. */
+.pane-warning {
+  background: #3a2f14;
+  color: #f5c451;
+  border-bottom: 1px solid #5c4a1f;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pane-warning-dismiss {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.pane-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.viewer-area {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: #000;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: crosshair;
+}
+
+.slice-image {
+  height: 100%;
+  width: auto;
+  max-width: none;
+  image-rendering: pixelated;
+  user-select: none;
+}
+
+.viewer-placeholder {
+  color: #5b5c68;
+  font-size: 13px;
+}
+
+.brush-cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: 50%;
+  border: 1.5px solid #fff;
+  box-shadow: 0 0 0 1.5px #000;
+  pointer-events: none;
+  z-index: 5;
+  will-change: transform;
+}
+
+/* Shift+click circle-seed preview (Score/Volume-compute, Region-grow) —
+   reuses .brush-cursor's box/transform machinery but styled distinctly
+   (amber, dashed) so it's never mistaken for the brush-size cursor. */
+.brush-cursor.seed-radius-cursor {
+  border: 1.5px dashed #f5a623;
+  box-shadow: 0 0 0 1.5px #000;
+  background: rgba(245, 166, 35, 0.12);
+}
+
+.viewer-bottom-left {
+  position: absolute;
+  bottom: 6px;
+  left: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.score-panel {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: stretch;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid #3c3e4d;
+  border-radius: 6px;
+  overflow: hidden;
+  z-index: 6;
+}
+
+.score-panel-rail {
+  width: 26px;
+  /* Fixed floor so the drag handle / toggle button keep the same size
+     whether the panel is open (where align-items:stretch on .score-panel
+     would otherwise grow them to match the groups' height) or collapsed
+     (where the rail would otherwise shrink to its own tiny content size). */
+  min-height: 96px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.score-panel-drag {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  color: #9c9dab;
+  font-size: 17px;
+  border-bottom: 1px solid #3c3e4d;
+}
+
+.score-panel-drag:active {
+  cursor: grabbing;
+}
+
+.score-panel-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: #9c9dab;
+  font-size: 15px;
+  padding: 0;
+}
+
+.score-panel-toggle:hover {
+  color: #fff;
+}
+
+.score-panel-groups {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 6px 10px;
+}
+
+.score-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.score-group-header {
+  min-height: 44px;
+  display: flex;
+  align-items: flex-end;
+}
+
+.score-group-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #9c9dab;
+  white-space: nowrap;
+  padding-bottom: 4px;
+}
+
+.score-group-members {
+  display: flex;
+  gap: 6px;
+}
+
+.score-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 52px;
+  padding: 4px 7px;
+  border: 1px solid;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.score-tile-class {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.score-tile-value {
+  font-size: 17px;
+  color: #d7d8de;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.viewer-score-compute-box {
+  position: absolute;
+  /* Left-middle by default (Volume Compute in contrast mode, Score Compute
+     otherwise — same box). max-height (not a top+bottom band) caps how far
+     a long, ever-growing lesion table can grow before its own overflow
+     (see .lesion-score-box) takes over and it scrolls internally instead of
+     pushing into the W/L box above or the Mask/Thresh box below. */
+  top: 50%;
+  left: 8px;
+  transform: translateY(-50%);
+  max-height: 70vh;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  /* The container can still be taller than its visible content near the
+     max-height cap — without this, that empty space would silently swallow
+     clicks/drags meant for the CT image underneath (e.g. seed placement in
+     contrast mode). Re-enabled on the actual box below. */
+  pointer-events: none;
+}
+
+.viewer-score-compute-box > * {
+  pointer-events: auto;
+}
+
+.viewer-bottom-right {
+  position: absolute;
+  /* top is fixed (not just a max-height off the bottom) so a tall edit box
+     can never grow up into the top-right HUD's corner — it's clamped to
+     this band regardless of how much content it has, and scrolls
+     internally (see .edit-box below) if it still doesn't fit. */
+  top: 56px;
+  bottom: 6px;
+  right: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  /* Same empty-space-swallows-clicks issue as .viewer-score-compute-box
+     above — this container is stretched to the full band regardless of its
+     (usually much shorter) visible content. */
+  pointer-events: none;
+}
+
+.viewer-bottom-right > * {
+  pointer-events: auto;
+}
+
+.viewer-bottom-right .edit-box {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.edit-quick-actions {
+  display: flex;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.edit-quick-actions button {
+  flex: 1;
+  background: #2f3140;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.edit-quick-actions button:hover {
+  background: #3a3d4f;
+}
+
+.edit-quick-actions button.active {
+  background: #4a3b1f;
+  border-color: #a67c2e;
+  color: #ffd873;
+}
+
+.viewer-left-controls {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+}
+
+.wl-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid #3c3e4d;
+  border-radius: 6px;
+  padding: 8px;
+  width: fit-content;
+  /* .viewer-area sets cursor:none in brush mode so the custom brush circle
+     can stand in for the pointer over the image — but that's inherited by
+     every child, and this box hides the brush circle over itself too
+     (isOverUIBox), so without this override hovering it shows no cursor
+     at all. */
+  cursor: default;
+}
+
+.wl-box:has(.wl-field) {
+  width: 130px;
+}
+
+.wl-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #9c9dab;
+}
+
+.wl-box:has(.wl-field) .wl-title {
+  margin-bottom: 2px;
+}
+
+.wl-minimize-btn {
+  background: transparent;
+  border: 1px solid #3c3e4d;
+  color: #9c9dab;
+  border-radius: 4px;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  font-size: 13px;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.wl-minimize-btn:hover {
+  color: #fff;
+}
+
+.wl-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #d7d8de;
+}
+
+.wl-field input {
+  flex: 1;
+  min-width: 0;
+  background: #12131a;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 3px 5px;
+  font-size: 13px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.wl-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px dashed #3c3e4d;
+}
+
+.wl-presets button {
+  background: #2f3140;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 11px;
+  text-align: left;
+}
+
+.wl-presets button:hover {
+  background: #3a3d4f;
+}
+
+.viewer-top-right {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 19px;
+  line-height: 1.1;
+  color: #b8ffb0;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-family: ui-monospace, Consolas, monospace;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.viewer-patient-id {
+  margin-top: 2px;
+  font-size: 18px;
+  font-weight: 600;
+  color: #ffd873;
+}
+
+.case-nav-count {
+  color: #9c9dab;
+  font-size: 13px;
+  padding: 0 2px;
+  align-self: center;
+}
+
+.case-nav-count-input {
+  width: 32px;
+  text-align: right;
+  background: #1c1d26;
+  border: 1px solid #3c3e4d;
+  border-radius: 3px;
+  color: #e8e9f0;
+  font-size: 13px;
+  padding: 1px 3px;
+}
+
+.case-nav-count-input:focus {
+  outline: none;
+  border-color: #6c8ef5;
+}
+
+.viewer-alpha-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.edit-box {
+  width: 210px;
+}
+
+.edit-box.lesion-score-box {
+  width: 340px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.lesion-score-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+  font-size: 14px;
+}
+
+.lesion-score-table th {
+  text-align: left;
+  color: #9c9dab;
+  font-weight: 600;
+  padding: 3px 5px;
+  border-bottom: 1px solid #3c3e4d;
+}
+
+.lesion-score-table td {
+  padding: 4px 5px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.lesion-row {
+  cursor: pointer;
+}
+
+.lesion-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+@keyframes lesion-row-flash {
+  0%,
+  100% {
+    background: transparent;
+  }
+  50% {
+    background: rgba(255, 216, 115, 0.35);
+  }
+}
+
+.lesion-row-flash {
+  animation: lesion-row-flash 0.4s ease-in-out 4;
+}
+
+.jump-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 22px;
+  height: 22px;
+  margin-left: -11px;
+  margin-top: -11px;
+  border-radius: 50%;
+  border: 2px solid #ffd873;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  z-index: 6;
+}
+
+/* The contrast-mode seed marker — a small crosshair (not a filled ring like
+   .jump-marker) since it's a precise placement target the user compares
+   against anatomy, not a "look over here" flash. */
+.seed-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 18px;
+  height: 18px;
+  margin-left: -9px;
+  margin-top: -9px;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.seed-marker::before,
+.seed-marker::after {
+  content: '';
+  position: absolute;
+  background: #ff6b6b;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+
+.seed-marker::before {
+  left: 8px;
+  top: 0;
+  width: 2px;
+  height: 18px;
+}
+
+.seed-marker::after {
+  top: 8px;
+  left: 0;
+  width: 18px;
+  height: 2px;
+}
+
+/* The sphere-VOI preview — sized/positioned in JS (its diameter depends on
+   the target volume setting, not a fixed value), so width/height/transform
+   are set imperatively; this just supplies the visual. */
+.seed-sphere-circle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: 50%;
+  border: 1.5px dashed #ff6b6b;
+  background: rgba(255, 107, 107, 0.12);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.edit-header {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.edit-header-buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.drag-handle {
+  cursor: grab;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.edit-header-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.edit-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12px;
+  color: #9c9dab;
+}
+
+.edit-field select,
+.edit-field input {
+  background: #12131a;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 12px;
+  max-width: 120px;
+}
+
+.label-select {
+  position: relative;
+}
+
+.label-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: #12131a;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  max-width: 100px;
+}
+
+.label-select-placeholder {
+  color: #6c6d7a;
+}
+
+.label-select-caret {
+  margin-left: auto;
+  font-size: 9px;
+  color: #6c6d7a;
+}
+
+.label-swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  flex-shrink: 0;
+}
+
+.label-swatch-empty {
+  background: transparent;
+  border: 1px solid #6c6d7a;
+}
+
+.label-select-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 0;
+  z-index: 10;
+  background: #1e1f27;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  padding: 3px;
+  min-width: 110px;
+  max-height: 180px;
+  overflow-y: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.label-select-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  color: #d7d8de;
+  cursor: pointer;
+}
+
+.label-select-option:hover {
+  background: #2f3140;
+}
+
+.label-select-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  min-width: 160px;
+}
+
+.label-select-option-full {
+  grid-column: 1 / -1;
+}
+
+.edit-hint {
+  font-size: 10px;
+  color: #6c6d7a;
+  font-style: italic;
+}
+
+.contrast-seed-box {
+  min-width: 190px;
+}
+
+.contrast-stat-row {
+  font-size: 12px;
+  color: #d7d8de;
+}
+
+.edit-message {
+  font-size: 10px;
+  word-break: break-word;
+}
+
+.overlay-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid #3c3e4d;
+  border-radius: 6px;
+  padding: 9px 11px;
+  cursor: default;
+}
+
+.overlay-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 15px;
+  color: #d7d8de;
+  white-space: nowrap;
+}
+
+.overlay-toggle input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+}
+
+.overlay-box-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.overlay-hu-input {
+  width: 60px;
+  background: #12131a;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  font-size: 15px;
+  font-family: ui-monospace, Consolas, monospace;
+  padding: 4px 6px;
+  text-align: right;
+}
+
+.alpha-spinner {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.alpha-spinner-label {
+  font-size: 13px;
+  color: #9c9dab;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.alpha-spinner-input {
+  width: 56px;
+  background: #12131a;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: ui-monospace, Consolas, monospace;
+  padding: 3px 5px;
+  text-align: right;
+}
+
+.alpha-spinner-arrows {
+  display: flex;
+  flex-direction: column;
+  line-height: 0;
+}
+
+.alpha-spinner-arrows button {
+  background: transparent;
+  border: none;
+  color: #9c9dab;
+  font-size: 12px;
+  padding: 0 3px;
+  line-height: 12px;
+}
+
+.alpha-spinner-arrows button:hover {
+  color: #fff;
+}
+
+.slice-slider {
+  width: 100%;
+  flex-shrink: 0;
+  margin: 0;
+  accent-color: #3b5bdb;
+}
+
+.pane-settings {
+  flex-shrink: 0;
+  max-height: 46vh;
+  overflow-y: auto;
+  background: #1a1b21;
+  border-top: 1px solid #2a2c34;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-section {
+  border: 1px solid #2a2c34;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #1e1f27;
+}
+
+.settings-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #c8c9d4;
+  margin-bottom: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.batch-load-header {
+  margin-bottom: 8px;
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+.collapse-toggle {
+  background: transparent;
+  border: 1px solid #3c3e4d;
+  color: #9c9dab;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settings-section label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  color: #9c9dab;
+  margin-bottom: 6px;
+}
+
+.settings-section input[type='text'],
+.settings-section input[type='number'],
+.settings-section select {
+  background: #12131a;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+.inline-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.inline-row input {
+  flex: 1;
+  min-width: 140px;
+}
+
+.inline-row button {
+  background: #2f3140;
+  color: #d7d8de;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.preset-row button {
+  background: #2f3140;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.advanced-toggle {
+  background: transparent;
+  border: none;
+  color: #7d9dff;
+  padding: 4px 0;
+  font-size: 12px;
+  text-align: left;
+}
+
+.advanced-panel {
+  border-top: 1px dashed #3c3e4d;
+  padding-top: 8px;
+  margin-top: 4px;
+}
+
+.busy-msg {
+  font-size: 11px;
+  color: #8fb8ff;
+  margin-bottom: 6px;
+}
+
+.manifest-error {
+  color: #ff8787;
+}
+
+.manifest-columns-row {
+  display: flex;
+  gap: 8px;
+}
+
+.manifest-columns-row label {
+  flex: 1;
+  min-width: 0;
+}
+
+.reason-column-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Selector must be at least as specific as ".settings-section label" (class +
+   tag) below, or that rule's flex-direction:column wins and stacks the
+   checkbox above its own text regardless of source order — a single-class
+   ".reason-defaults-toggle" selector is NOT specific enough on its own
+   (verified via getComputedStyle; a prior attempt at this looked fixed in a
+   screenshot but wasn't). Two classes here (0,2,0) beats one class + one tag
+   (0,1,1). */
+.settings-section .reason-defaults-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: normal;
+  color: #9c9dab;
+  white-space: nowrap;
+}
+
+.reason-defaults-toggle input {
+  margin: 0;
+  width: 11px;
+  height: 11px;
+}
+
+.advanced-panel details {
+  font-size: 12px;
+  color: #9c9dab;
+  margin-top: 6px;
+}
+
+.advanced-panel details label {
+  margin-top: 6px;
+}
+
+.hint {
+  font-size: 11px;
+  color: #6c6d7a;
+  margin-top: 4px;
+}
+
+.label-editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #c8c9d4;
+  margin-bottom: 6px;
+}
+
+.label-editor-header button {
+  background: #2f3140;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.label-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 170px);
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.label-grid-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  background: #14151a;
+  border: 1px solid #2a2c34;
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+.label-grid-value {
+  min-width: 14px;
+  color: #d7d8de;
+}
+
+.label-grid-item input[type='color'] {
+  width: 32px;
+  height: 20px;
+  border: none;
+  background: none;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.label-grid-item .icon-btn {
+  margin-left: auto;
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: #9c9dab;
+}
+
+.add-label-btn {
+  background: #2f3140;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.info-panel {
+  font-size: 15px;
+  margin-bottom: 12px;
+}
+
+.info-panel:last-child {
+  margin-bottom: 0;
+}
+
+.info-title {
+  font-weight: 700;
+  font-size: 16px;
+  color: #e4e5ea;
+  margin-bottom: 5px;
+}
+
+.info-empty {
+  color: #5b5c68;
+}
+
+.info-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 0;
+  color: #d7d8de;
+  border-bottom: 1px solid #232430;
+  line-height: 1.35;
+}
+
+.info-label {
+  color: #8f909d;
+  font-size: 12px;
+}
+
+.info-value {
+  text-align: left;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 15px;
+  word-break: break-word;
+}
+
+.info-matrix {
+  text-align: left;
+  white-space: pre;
+}
+
+.info-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Unsaved-work / save-conflict prompts ------------------------------ */
+
+/* A destructive confirmation must not look like the ordinary "continue"
+   button next to it — these buttons discard annotation work or overwrite
+   another scan's file. */
+.danger-btn {
+  background: #5c2020;
+  border-color: #8a3030;
+  color: #ffd9d9;
+}
+
+.danger-btn:hover {
+  background: #7a2a2a;
+}
+
+.nav-modal-body {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #c9cad3;
+  max-width: 460px;
+}
+
+.nav-modal-body p {
+  margin: 0 0 8px;
+}
+
+.nav-modal-body code {
+  display: block;
+  font-size: 11px;
+  word-break: break-all;
+  background: #1b1c22;
+  border: 1px solid #2c2d36;
+  border-radius: 4px;
+  padding: 4px 6px;
+  color: #9fd0ff;
+}
+
+/* Contrast notices are a different kind of warning from a mask problem:
+   they say the app cannot safely threshold this scan yet. */
+.pane-warning-contrast {
+  background: #3a2a0c;
+  color: #ffd27a;
+  border-bottom: 2px solid #e0a63a;
+  font-size: 14px;
+  font-weight: 600;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+/* Says which file the visible mask came from, so "is this my work or the
+   original prediction?" is never a guess. */
+.mask-source-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid #2c2d36;
+  background: #1b1c22;
+  color: #8b8c99;
+  white-space: nowrap;
+}
+
+.mask-source-tag.mask-source-annotation {
+  border-color: #2f5c3a;
+  color: #7fd39a;
+}
+
+.settings-row {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.settings-row > .settings-section:first-child {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.settings-row > .settings-section:last-child {
+  flex: 0 0 auto;
+}
+
+.settings-section input.label-grid-number {
+  width: 44px;
+  padding: 2px 4px;
+  flex-shrink: 0;
+}
+
+.settings-section input.label-grid-invalid {
+  border-color: #c0392b;
+}
+
+.settings-section input.label-grid-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 6px;
+}
+
+.preset-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.preset-row select {
+  min-width: 150px;
+}
+
+.settings-section input.preset-name-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 3px 6px;
+}
+
+.preset-row button {
+  background: #2f3140;
+  border: 1px solid #3c3e4d;
+  color: #d7d8de;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.label-grid-item .icon-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* Fixed-looking values that turn into inputs on double-click (InlineEdit). */
+.inline-edit {
+  display: inline-block;
+  padding: 2px 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #d7d8de;
+  cursor: default;
+  user-select: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inline-edit:hover,
+.inline-edit:focus-visible {
+  border-color: #3c3e4d;
+  outline: none;
+}
+
+.inline-edit-empty {
+  color: #6c6d7a;
+}
+
+.settings-section input.inline-edit-input {
+  padding: 2px 4px;
+  min-width: 0;
+}
+
+.inline-edit-invalid,
+.settings-section input.inline-edit-invalid {
+  border-color: #c0392b;
+}
+
+.inline-edit.label-grid-number,
+.settings-section input.inline-edit-input.label-grid-number {
+  width: 36px;
+  flex-shrink: 0;
+  text-align: center;
+}
+
+.inline-edit.label-grid-name,
+.settings-section input.inline-edit-input.label-grid-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.inline-edit.preset-name,
+.settings-section input.inline-edit-input.preset-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.preset-dropdown {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.preset-dropdown-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 170px;
+  padding: 4px 8px;
+  background: #12131a;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  color: #d7d8de;
+  font-size: 12px;
+}
+
+.preset-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 40;
+  min-width: 100%;
+  max-height: 240px;
+  overflow-y: auto;
+  background: #1a1b21;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+
+.preset-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  font-size: 12px;
+  color: #d7d8de;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.preset-dropdown-item:hover {
+  background: #2a2c38;
+}
+
+.preset-dropdown-item.selected {
+  color: #fff;
+  font-weight: 600;
+}
+
+.preset-dropdown-new {
+  border-top: 1px solid #2a2c34;
+  color: #8fa0ff;
+}
+
+.preset-dropdown-delete {
+  visibility: hidden;
+  background: transparent;
+  border: none;
+  color: #9c9dab;
+  padding: 0 2px;
+  font-size: 12px;
+}
+
+.preset-dropdown-item:hover .preset-dropdown-delete {
+  visibility: visible;
+}
+
+.preset-dropdown-delete:hover {
+  color: #ff6b6b;
+}
+
+/* Untouched default column names read as suggestions, not entered values. */
+.settings-section input.column-default {
+  color: #6c6d7a;
+}
+
+.settings-section input.column-default:focus {
+  color: #d7d8de;
+}
+
+.preset-dropdown-toggle {
+  max-width: 200px;
+}
+
+.preset-dropdown-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preset-dropdown-menu {
+  max-width: 320px;
+}
+
+.preset-dropdown-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- Label colors card ---- */
+.label-colors-card {
+  max-width: 640px;
+}
+
+.label-editor-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.label-editor-title {
+  font-weight: 600;
+  color: #c8c9d4;
+  margin-right: 4px;
+}
+
+.label-editor-header .add-label-btn {
+  margin-left: auto;
+}
+
+.label-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.preset-combo {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  background: #12131a;
+  border: 1px solid #3c3e4d;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #d7d8de;
+}
+
+.preset-combo-name {
+  min-width: 0;
+  padding: 0 2px 0 4px;
+}
+
+.preset-default-name {
+  display: inline-block;
+  padding: 2px 4px;
+  white-space: nowrap;
+}
+
+.preset-combo-chevron {
+  align-self: stretch;
+  padding: 0 7px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid #3c3e4d;
+  color: #9c9dab;
+}
+
+.preset-combo-chevron:hover {
+  color: #fff;
+  background: #2a2c38;
+}
+
+.preset-dropdown {
+  min-width: 0;
+}
+
+.threshold-color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #2a2c34;
+  font-size: 12px;
+  color: #c8c9d4;
+}
+
+.threshold-color-row input[type='color'] {
+  width: 32px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: none;
+}
+
+/* ---- Show all: three linked views ---- */
+.show-all-btn {
+  margin-left: 8px;
+}
+
+.show-all-btn.active {
+  background: #3d4dbf;
+  border-color: #5a6cff;
+  color: #fff;
+}
+
+.mpr-grid {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  background: #2a2c34; /* shows through the gaps as thin dividers */
+}
+
+.mpr-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: #000;
+}
+
+.mpr-tile-active {
+  box-shadow: inset 0 0 0 1px #5a6cff;
+}
+
+.mpr-tile-head {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: baseline;
+  padding: 6px 10px 2px;
+  pointer-events: none;
+}
+
+.mpr-tile-name {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #5fd97a;
+  text-align: center;
+}
+
+.mpr-tile-count {
+  justify-self: end;
+  font-size: 14px;
+  color: #c8c9d4;
+}
+
+.mpr-tile-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.mpr-frame {
+  position: relative;
+  flex: none;
+  cursor: crosshair;
+}
+
+.mpr-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  user-select: none;
+  pointer-events: none;
+}
+
+.mpr-cross {
+  position: absolute;
+  background: rgba(90, 108, 255, 0.75);
+  pointer-events: none;
+}
+
+.mpr-cross-v {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+
+.mpr-cross-h {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+
+.mpr-letter,
+.edge-letter {
+  position: absolute;
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffd873;
+  text-shadow: 0 0 3px #000;
+  pointer-events: none;
+}
+
+.mpr-letter-left { left: 4px; top: 50%; transform: translateY(-50%); }
+.mpr-letter-right { right: 4px; top: 50%; transform: translateY(-50%); }
+.mpr-letter-top { top: 2px; left: 50%; transform: translateX(-50%); }
+.mpr-letter-bottom { bottom: 2px; left: 50%; transform: translateX(-50%); }
+
+.edge-letter-left { left: 10px; top: 50%; transform: translateY(-50%); }
+.edge-letter-right { right: 10px; top: 50%; transform: translateY(-50%); }
+.edge-letter-top { top: 6px; left: 50%; transform: translateX(-50%); }
+.edge-letter-bottom { bottom: 6px; left: 50%; transform: translateX(-50%); }
+
+@media (max-width: 900px) {
+  .mpr-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: repeat(3, minmax(0, 1fr));
+    inset: 0;
+  }
+}
+
+.orientation-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-section .orientation-check {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  font-size: 12px;
+  color: #c8c9d4;
+  white-space: nowrap;
+}
+
+/* Which scan is open (file name, or the DICOM series UID): same look as the
+   Index/ID line, fixed at the bottom-right of the viewer in every view. */
+.viewer-scan-identity {
+  position: absolute;
+  right: 12px;
+  bottom: 8px;
+  z-index: 3;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 18px;
+  font-weight: 600;
+  color: #ffd873;
+  text-shadow: 0 0 4px #000, 0 0 4px #000;
+  pointer-events: none;
+}
+
+/* Zoomed views: the image scales from its centre inside the view's clip. */
+.mpr-frame {
+  transform-origin: center center;
+  cursor: crosshair;
+}
+
+/* Keep the crosshair lines 1 screen pixel thick whatever the zoom. */
+.mpr-cross-v {
+  width: calc(1px / var(--zoom, 1));
+}
+
+.mpr-cross-h {
+  height: calc(1px / var(--zoom, 1));
+}
+
+.mpr-zoom-badge {
+  position: absolute;
+  left: 8px;
+  top: 6px;
+  font-size: 12px;
+  color: #c8c9d4;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 1px 6px;
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+/* ---- Empty viewer: sketch + pull handle; settings close circle ---- */
+.empty-sketch {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 12px;
+  pointer-events: none;
+}
+
+.empty-sketch svg {
+  width: 100%;
+  height: 100%;
+}
+
+.pull-handle {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  z-index: 5;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--sketch-neon);
+  cursor: grab;
+}
+
+.pull-handle:hover {
+  color: var(--sketch-neon-bright);
+}
+
+.pull-handle-bob {
+  animation: pull-bob 2.2s ease-in-out infinite;
+}
+
+@keyframes pull-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pull-handle-bob { animation: none; }
+}
+
+.settings-close-row {
+  position: sticky;
+  top: -10px;
+  z-index: 3;
+  display: flex;
+  justify-content: center;
+  margin: -10px -12px 4px;
+  padding: 6px 0 2px;
+  background: #1a1b21;
+}
+
+.settings-close-circle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  background: #23242c;
+  border: 1px solid #3c3e4d;
+  color: #c8c9d4;
+}
+
+.settings-close-circle:hover {
+  border-color: #5a6cff;
+  color: #fff;
+}
+
+/* Arrows from the empty viewer up to the toolbar and header buttons. */
+.empty-callouts {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  overflow: visible;
+}
+
+/* Keeps the drawing below the arrows and notes, whatever the window size. */
+.empty-sketch-notes {
+  padding-top: 120px;
+  /* clear of the pull handle at the bottom-middle */
+  padding-bottom: 104px;
+}
+
+/* Annotate: shown over the viewer while all three views are up. */
+.show-all-note {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  z-index: 4;
+  padding: 3px 12px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.7);
+  border: 1px solid #3c3e4d;
+  color: #c8c9d4;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.save-folder-modal {
+  min-width: 460px;
+}
+
+.save-folder-modal .inline-row input {
+  flex: 1;
+}
+
+/* The one colour for things in the empty-state drawings that should catch the
+   eye (the swirly arrows, the settings pull handle): neon-ish teal, toned down
+   so it stands out without glaring. Reuse it for future drawings. */
+:root {
+  --sketch-neon: #3ccfb4;
+  --sketch-neon-bright: #7cefd8;
+}
+
+/* The output-folder prompt: path bar first, then two big buttons underneath. */
+.save-folder-modal .comment-modal-buttons,
+.save-conflict-modal .comment-modal-buttons {
+  display: flex;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.save-folder-modal .comment-modal-buttons button,
+.save-conflict-modal .comment-modal-buttons button {
+  flex: 1;
+  padding: 12px 18px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* Overwrite prompt: the path, small, then two big buttons. */
+.save-conflict-modal {
+  min-width: 460px;
+  max-width: 640px;
+}
+
+.save-conflict-modal code {
+  display: block;
+  margin-top: 4px;
+  padding: 8px 10px;
+  background: #12131a;
+  border: 1px solid #2a2c34;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #c8c9d4;
+  word-break: break-all;
+}
+
+.save-conflict-modal .danger-btn {
+  background: #c0392b;
+  border-color: #e0503f;
+  color: #fff;
+}
+
+.save-conflict-modal .danger-btn:hover {
+  background: #d6453a;
+}
+
+/* "Last saved …" under the path in the overwrite prompt: same green as the
+   "Your annotation (saved …)" tag next to Reset view. */
+.save-conflict-modal .saved-stamp {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #7fd39a;
+}
+
+/* ---- One look for every prompt ----
+   Short title, at most a line or two of text (or a path / field), then two
+   big equal buttons underneath: Cancel on the left, the action on the right,
+   in red when it destroys something. */
+.comment-modal {
+  width: 460px;
+}
+
+.comment-modal-title {
+  font-size: 16px;
+}
+
+.comment-modal .nav-modal-body,
+.comment-modal .busy-msg {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #c9cad3;
+}
+
+.comment-modal .comment-modal-buttons {
+  display: flex;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.comment-modal .comment-modal-buttons button {
+  flex: 1;
+  padding: 12px 18px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.comment-modal .danger-btn {
+  background: #c0392b;
+  border-color: #e0503f;
+  color: #fff;
+}
+
+.comment-modal .danger-btn:hover {
+  background: #d6453a;
+}
+
+.comment-modal .nav-modal-save-btn {
+  align-self: stretch;
+  padding: 10px 14px;
+  font-size: 15px;
+}
+
+.comment-modal .nav-modal-status-row button {
+  padding: 9px 8px;
+  font-size: 13px;
+}
+
+/* ---- Split view: one drawing across both empty windows ---- */
+.panes-container {
+  position: relative;
+}
+
+.shared-sketch {
+  position: absolute;
+  top: 44px; /* below the windows' toolbars */
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.panes-container.shared-sketch-on .pane {
+  position: relative;
+  z-index: 1;
+}
+
+/* Let the shared drawing show through the empty viewers. */
+.panes-container.shared-sketch-on .viewer-area {
+  background: transparent;
+}
+
+/* ---- Header: the way back to the mode screen ---- */
+.app-header .back-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px 4px 10px;
+  background: #1f2029;
+  border: 1px solid #34364a;
+  border-radius: 999px;
+  color: #d7d8de;
+  font-size: 14px;
+  font-weight: 600;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.app-header .back-btn:hover {
+  background: #242733;
+  border-color: var(--sketch-neon);
+  color: #fff;
+}
+
+.back-btn-arrow {
+  color: var(--sketch-neon);
+  font-size: 22px;
+  line-height: 1;
+  margin-top: -3px;
+}
+
+.app-title-icon {
+  margin-right: 8px;
+}

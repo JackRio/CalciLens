@@ -31,7 +31,7 @@ export async function loadVolume(path: string, isMask: boolean, force = false, s
   return handleJson<VolumeInfo>(res)
 }
 
-export async function listDicomSeries(path: string): Promise<DicomSeriesInfo[]> {
+async function listDicomSeries(path: string): Promise<DicomSeriesInfo[]> {
   const res = await fetch(`/api/volumes/list_dicom_series?path=${encodeURIComponent(path)}`)
   const data = await handleJson<{
     series: {
@@ -269,20 +269,6 @@ export async function saveManifestReason(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ manifest_path: manifestPath, row_index: rowIndex, reasons, reason_column: reasonColumn }),
-  })
-  await handleJson(res)
-}
-
-export async function saveManifestMaskPath(
-  manifestPath: string,
-  rowIndex: number,
-  maskColumn: string,
-  maskPath: string,
-): Promise<void> {
-  const res = await fetch('/api/manifest/mask_path', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ manifest_path: manifestPath, row_index: rowIndex, mask_column: maskColumn, mask_path: maskPath }),
   })
   await handleJson(res)
 }

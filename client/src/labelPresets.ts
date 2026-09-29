@@ -6,7 +6,7 @@ import { CALCIFICATIONS_PRESET, type LabelColor } from './types'
 // pane, so a colour scheme made once is there in the next session too.
 export const BUILTIN_PRESET_ID = 'builtin:calcifications'
 export const BUILTIN_PRESET_NAME = 'Calcifications'
-export const DEFAULT_PRESET_BASE_NAME = 'user-preset'
+const DEFAULT_PRESET_BASE_NAME = 'user-preset'
 export const MAX_PRESET_NAME_LENGTH = 40
 
 export interface UserPreset {
@@ -69,10 +69,6 @@ function commit(next: UserPreset[]) {
   listeners.forEach((l) => l())
 }
 
-export function getPresets(): UserPreset[] {
-  return presets
-}
-
 export function findPreset(id: string): UserPreset | undefined {
   return presets.find((p) => p.id === id)
 }
@@ -99,7 +95,7 @@ export function isNameTaken(name: string, exceptId?: string): boolean {
 // "user-preset", then "user-preset-2", "-3", ... — the number only appears
 // once there is another preset still carrying a default name, and it is the
 // lowest one free (so deleting user-preset-2 makes the next new one reuse it).
-export function nextDefaultName(): string {
+function nextDefaultName(): string {
   if (!isNameTaken(DEFAULT_PRESET_BASE_NAME)) return DEFAULT_PRESET_BASE_NAME
   for (let n = 2; ; n++) {
     const candidate = `${DEFAULT_PRESET_BASE_NAME}-${n}`
@@ -140,7 +136,7 @@ export function removePreset(id: string) {
 
 // The preset a new session (or new pane) starts on. Falls back to the
 // built-in when the remembered one no longer exists.
-export function getSelectedPresetId(): string {
+function getSelectedPresetId(): string {
   try {
     const id = localStorage.getItem(SELECTED_KEY)
     if (id && findPreset(id)) return id

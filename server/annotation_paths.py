@@ -53,9 +53,6 @@ ANNOTATION_FOLDER_NAME = "Manual_Annotations"
 # Folders written by the earlier one-per-day scheme. Read for discovery so
 # existing work is still found; never written to again.
 LEGACY_DATED_PREFIX = "Manual_Annotations_"
-# Keep the old name importable — contrast_threshold references it for the
-# pre-folder-scheme sidecar lookup.
-DATED_FOLDER_PREFIX = LEGACY_DATED_PREFIX
 # How many save entries to keep in _source.json before dropping the oldest.
 MAX_SAVE_HISTORY = 200
 
@@ -446,10 +443,6 @@ def _cleanup(tmp_path: str) -> None:
             os.remove(tmp_path)
         except OSError:
             pass
-
-
-def seed_sidecar_path(ct_path: str, series_uid: Optional[str], scan_dir: str) -> str:
-    return os.path.join(scan_dir, SEED_SIDECAR_NAME)
 
 
 def find_seed_sidecar(ct_path: str, series_uid: Optional[str] = None, base_dir: Optional[str] = None) -> Optional[str]:

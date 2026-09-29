@@ -115,7 +115,7 @@ count (1, or 2 for View ▸ Split view) and renders `<App mode initialPaneCount 
   - `/api/mask/new`, `/api/mask/paint`, `/api/mask/refresh_labels`, `/api/mask/region_grow`,
     `/api/mask/save` — mask editing.
   - `/api/manifest_columns`, `/api/manifest_pairs`, `/api/manifest/comment`,
-    `/api/manifest/status`, `/api/manifest/reason`, `/api/manifest/mask_path` — CSV/Excel
+    `/api/manifest/status`, `/api/manifest/reason` — CSV/Excel
       case-manifest read/write, plus `/api/manifest/annotation_path` and `/api/manifest/contrast`.
   - `/api/annotations/lookup` — **what previous sessions already recorded about a scan**
     (annotation path, saved-at, annotation type, whether a contrast seed exists), independent of
@@ -158,7 +158,7 @@ count (1, or 2 for View ▸ Split view) and renders `<App mode initialPaneCount 
   reason column whose existing values have nothing to do with those built-in tags. `image_exists`/
   `mask_exists` use `os.path.exists` (not `isfile`) since both columns may point at a DICOM series
   directory, not just a NIFTI/MHA file (see `volume_store.py`'s `_is_dicom_dir`, which treats any
-  directory as one). `save_comment`/`save_status`/`save_reason`/`save_mask_path`/`save_annotation_path`/
+  directory as one). `save_comment`/`save_status`/`save_reason`/`save_annotation_path`/
   `save_contrast_flag` all go through `_save_cell`.
   - **Excel is edited in place, not rewritten** (`_set_cells_in_place`, openpyxl). The old
     read-with-pandas / write-with-pandas round trip rebuilt the workbook from a DataFrame, which
@@ -276,7 +276,7 @@ count (1, or 2 for View ▸ Split view) and renders `<App mode initialPaneCount 
   handles cross-pane sync for a fixed set of `syncKeys` (`plane`, `index`, `zoom`, `wlMinimized`,
   `showMask`, `thresholdEnabled`) when `linked` is on.
 - **`types.ts`** — `PaneState` (the full per-pane state shape), `ManifestRow`, keybind types
-  (`KeybindActionId`, `KeybindMap`, `DEFAULT_KEYBINDS`), constants (`DEFAULT_REASON_TAGS`,
+  (`KeybindActionId`, `KeybindMap`, `DEFAULT_KEYBINDS`), constants (
   `STATUS_OPTIONS`, `SCORE_CLASSES`, window presets, calcification label-color preset).
 - **`api.ts`** — every backend call as a typed async function. `renderUrl()` builds the
   `/api/render` query string from a pane's current render params (window/level, mask colors,

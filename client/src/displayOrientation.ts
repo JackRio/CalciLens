@@ -15,7 +15,7 @@ export interface DisplayOrientation {
   letters: boolean // show L/R/A/P/S/I at the image edges
 }
 
-export const DEFAULT_ORIENTATION: DisplayOrientation = { lr: false, ap: false, si: false, letters: true }
+const DEFAULT_ORIENTATION: DisplayOrientation = { lr: false, ap: false, si: false, letters: true }
 
 export const ORIENTATION_PRESETS = [
   { id: 'radiological', name: 'Radiological (default)', flips: { lr: false, ap: false, si: false } },

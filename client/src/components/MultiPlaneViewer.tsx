@@ -18,7 +18,7 @@ export interface MprCursor {
 
 type Lengths = Record<Plane, number>
 
-export const MPR_PLANES: Plane[] = ['axial', 'sagittal', 'coronal']
+const MPR_PLANES: Plane[] = ['axial', 'sagittal', 'coronal']
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
 
@@ -31,7 +31,7 @@ export interface MprView {
 }
 
 export const IDENTITY_VIEW: MprView = { zoom: 1, x: 0, y: 0 }
-export const MPR_ZOOM_MAX = 8
+const MPR_ZOOM_MAX = 8
 const ZOOM_STEP = 1.15
 
 export function isZoomed(v: MprView): boolean {

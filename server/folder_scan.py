@@ -19,9 +19,7 @@ DEFAULT_IMAGE_COLUMN = "image_path"
 DEFAULT_MASK_COLUMN = "mask_path"
 COMMENT_COLUMN = "Comment"
 DEFAULT_STATUS_COLUMN = "Status"
-STATUS_COLUMN = DEFAULT_STATUS_COLUMN  # back-compat alias
 STATUS_OPTIONS = ["Not Started", "Annotated", "InProgress", "Review"]
-DEFAULT_STATUS = STATUS_OPTIONS[0]
 
 # Written by the app when an annotation is saved, so returning to a case
 # re-opens the user's own work rather than the original prediction. Kept
@@ -523,14 +521,6 @@ def save_reason(manifest_path: str, row_index: int, reasons: list, reason_column
         raise ValueError("No reason column configured for this manifest")
     cleaned = [t.strip() for t in reasons if t and t.strip()]
     _save_cell(manifest_path, row_index, reason_column, REASON_DELIMITER.join(cleaned), reason_column=reason_column)
-
-
-def save_mask_path(manifest_path: str, row_index: int, mask_column: str, mask_path: str) -> None:
-    """Record a path into the manifest's mask column — for a row that had no
-    mask configured yet, so re-opening this manifest (or navigating back to
-    this case) picks the saved file up automatically instead of showing "no
-    mask" again."""
-    _save_cell(manifest_path, row_index, mask_column, mask_path)
 
 
 def save_annotation_path(manifest_path: str, row_index: int, annotation_column: str, annotation_path: str) -> None:

@@ -756,26 +756,6 @@ def manifest_reason(req: ManifestReasonRequest):
     return {"ok": True}
 
 
-class ManifestMaskPathRequest(BaseModel):
-    manifest_path: str
-    row_index: int
-    mask_column: str
-    mask_path: str
-
-
-@app.post("/api/manifest/mask_path")
-def manifest_mask_path(req: ManifestMaskPathRequest):
-    try:
-        folder_scan.save_mask_path(req.manifest_path, req.row_index, req.mask_column, req.mask_path)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to update manifest mask path: {e}")
-    return {"ok": True}
-
-
 class ManifestAnnotationPathRequest(BaseModel):
     manifest_path: str
     row_index: int

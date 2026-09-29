@@ -261,23 +261,10 @@ export const DEFAULT_MANIFEST_CONFIG: ManifestConfig = {
 }
 
 export const STATUS_OPTIONS = ['Not Started', 'Annotated', 'InProgress', 'Review'] as const
-export type AnnotationStatus = (typeof STATUS_OPTIONS)[number]
-
-export const DEFAULT_REASON_TAGS = [
-  'Mislabel',
-  'Incorrect Prediction',
-  'Empty Prediction',
-  'Valve Class Error',
-  'Foreign Object',
-  'Corrupted Image',
-  'Artefacts',
-  'Region Growing Issue',
-  'Image Noise',
-]
 
 // Score columns are named "<CLASS>_Agatston" in the manifest; purely
 // optional/informational, shown if present and skipped if not.
-export const SCORE_CLASSES = ['CAC', 'LAD', 'LCx', 'RCA', 'TAC', 'AV', 'MV'] as const
+const SCORE_CLASSES = ['CAC', 'LAD', 'LCx', 'RCA', 'TAC', 'AV', 'MV'] as const
 export type ScoreClass = (typeof SCORE_CLASSES)[number]
 
 // Positional mapping of segmentation label (1-6) to its clinical class name —

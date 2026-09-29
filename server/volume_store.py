@@ -128,16 +128,11 @@ class LoadedVolume:
     reoriented_origin: tuple = None  # origin/direction of the array as currently laid out (LPS-reoriented),
     reoriented_direction: tuple = None  # needed to write the array back out correctly after editing
     is_new_mask: bool = False  # True for a blank mask created in-app (never loaded from a file)
-    source_ct_path: Optional[str] = None  # the CT path a new mask was created against, for save-path naming
     dicom_series_uid: Optional[str] = None  # SeriesInstanceUID, when path is a DICOM directory —
     # used instead of the folder's basename for save-path naming (see
     # annotation_paths.scan_folder_name), since a folder can hold multiple series and the
     # basename alone can't disambiguate them.
     dirty: bool = False  # has unsaved in-memory edits — see VolumeStore._register
-
-    def size_lps(self):
-        nz, ny, nx = self.array.shape
-        return (nx, ny, nz)  # (L, P, S) counts matching sitk size order
 
     def plane_length(self, plane: str) -> int:
         nz, ny, nx = self.array.shape
@@ -313,9 +308,6 @@ class VolumeStore:
                 return
             self._cache.pop(evictable)
 
-    def mark_dirty(self, vol: LoadedVolume):
-        vol.dirty = True
-
     def get(self, volume_id: str) -> LoadedVolume:
         with self._lock:
             vol = self._cache.get(volume_id)
@@ -323,10 +315,6 @@ class VolumeStore:
                 raise KeyError(f"volume not loaded: {volume_id}")
             self._cache.move_to_end(volume_id)
             return vol
-
-    def evict(self, volume_id: str):
-        with self._lock:
-            self._cache.pop(volume_id, None)
 
     def create_blank_mask(self, ct_vol: "LoadedVolume") -> "LoadedVolume":
         """Create a new all-zero label mask matching ct_vol's geometry, for
@@ -351,7 +339,6 @@ class VolumeStore:
             reoriented_origin=ct_vol.reoriented_origin,
             reoriented_direction=ct_vol.reoriented_direction,
             is_new_mask=True,
-            source_ct_path=ct_vol.path,
             dicom_series_uid=ct_vol.dicom_series_uid,
         )
         self._register(vol)

@@ -40,7 +40,9 @@
 
 .launcher-grid {
   display: grid;
-  grid-template-columns: repeat(3, 300px);
+  /* three cards that shrink with the window (the app's minimum is 900px wide) */
+  grid-template-columns: repeat(3, minmax(0, 300px));
+  width: min(100%, 948px);
   gap: 24px;
   align-items: stretch;
 }

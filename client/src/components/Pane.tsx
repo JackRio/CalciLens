@@ -343,6 +343,7 @@ export default function Pane({
     resolution?: 'overwrite' | 'new_copy'
     then: 'save' | 'seed' | 'lookup'
   } | null>(null)
+  const [reseedAsk, setReseedAsk] = useState(false)
   const askedFolderUpFront = useRef(false)
   const lookupAfterFolder = useRef(false)
   const seedLoadToken = useRef(0)
@@ -582,10 +583,22 @@ export default function Pane({
   }, [caps.contrast, pane.ctInfo?.volume_id, pane.loading, annotationSaveDir])
 
   // After the up-front folder is chosen: re-read what is recorded there.
+  // Also runs when the folder is picked or typed in Settings: whatever is
+  // already recorded for the loaded scan in that folder loads straight away.
+  // Debounced so typing a path doesn't fire a lookup per keystroke.
+  const prevSaveDir = useRef(annotationSaveDir)
   useEffect(() => {
-    if (!lookupAfterFolder.current || !annotationSaveDir) return
-    lookupAfterFolder.current = false
-    reloadScanRecords()
+    const changed = prevSaveDir.current !== annotationSaveDir
+    prevSaveDir.current = annotationSaveDir
+    if (!annotationSaveDir) return
+    if (lookupAfterFolder.current) {
+      lookupAfterFolder.current = false
+      reloadScanRecords()
+      return
+    }
+    if (!changed || !caps.edit || !pane.ctInfo || pane.maskInfo) return
+    const t = window.setTimeout(() => reloadScanRecords(), 600)
+    return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [annotationSaveDir])
 
@@ -594,7 +607,7 @@ export default function Pane({
     const info = pane.ctInfo
     const hadMask = !!pane.maskInfo
     const { lookup } = await onApplyContrastEvidence(pane.ctPath, info)
-    await loadSavedSeed(annotationSaveDir, false)
+    if (caps.contrast) await loadSavedSeed(annotationSaveDir, false)
     if (lookup?.annotationPath && !hadMask) await loadSavedAnnotation(info, lookup)
   }
 
@@ -788,6 +801,10 @@ export default function Pane({
         contrastThreshold: result.thresholdHu,
         contrastThresholdLocked: true,
         seedPlacementMode: false,
+        // Placing the seed switched editing off; the next thing to do is paint,
+        // so with a mask loaded switch it back on rather than make the user
+        // hunt for the checkbox.
+        ...(pane.maskInfo ? { editMode: true, scoreComputeMode: false } : {}),
         thresholdValue: result.thresholdHu,
         thresholdEnabled: true,
         editThresholdMin: result.thresholdHu,
@@ -826,7 +843,38 @@ export default function Pane({
     }
   }
 
-  function reSeed() {
+  // A new seed means a new threshold, so anything painted against the old one
+  // is wrong: the mask is replaced with an empty one and has to be redone. The
+  // file on disk is untouched until the next save (which asks before it
+  // overwrites).
+  function requestReSeed() {
+    if (pane.maskInfo) setReseedAsk(true)
+    else reSeed()
+  }
+
+  async function reSeed() {
+    setReseedAsk(false)
+    if (pane.maskInfo && pane.ctInfo) {
+      try {
+        const info = await createBlankMask(pane.ctInfo.volume_id)
+        onChange({
+          maskPath: '',
+          maskInfo: info,
+          maskSource: 'new',
+          maskAnnotationType: 'contrast',
+          maskWarning: null,
+          hasUnsavedMaskChanges: false,
+          editVersion: pane.editVersion + 1,
+          maskBaselineVersion: pane.editVersion + 1,
+          lesionResults: [],
+          volumeScores: null,
+          agatstonScores: null,
+        })
+      } catch (e) {
+        onChange({ error: e instanceof Error ? e.message : String(e) })
+        return
+      }
+    }
     onChange({
       contrastThreshold: null,
       contrastThresholdLocked: false,
@@ -2837,7 +2885,7 @@ export default function Pane({
                     saving={contrastSaving}
                     error={contrastError}
                     onFinalize={() => finalizeSeed()}
-                    onReSeed={reSeed}
+                    onReSeed={requestReSeed}
                     onToggleSeedPlacement={toggleSeedPlacement}
                   />
                 </div>
@@ -3094,6 +3142,23 @@ export default function Pane({
               </button>
               <button className="add-label-btn" onClick={handleSaveComment} disabled={commentSaving}>
                 {commentSaving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reseedAsk && (
+        <div className="comment-modal-backdrop" onClick={() => setReseedAsk(false)}>
+          <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="comment-modal-title">Re-seed erases the mask</div>
+            <div className="nav-modal-body">
+              The annotation on screen was made with the old threshold, so it is replaced by an empty mask and has to be redone.
+            </div>
+            <div className="comment-modal-buttons">
+              <button onClick={() => setReseedAsk(false)}>Cancel</button>
+              <button className="danger-btn" onClick={() => reSeed()}>
+                Erase and re-seed
               </button>
             </div>
           </div>

@@ -103,7 +103,7 @@ export default function LesionScoreBox({
                   : 'Click a mask voxel to isolate its 3D lesion and compute its physical volume.'
                 : 'Click a mask voxel to isolate its 3D lesion and compute its Agatston score.'}
               <br />
-              {`Hold Shift + click to seed from a circle for tiny lesions (Shift+scroll to resize, ${seedRadiusMm.toFixed(1)} mm).`}
+              {`Hold Ctrl (or Shift) + click to seed from a circle for tiny lesions (Shift+scroll to resize, ${seedRadiusMm.toFixed(1)} mm).`}
             </div>
           )}
           {pane.lesionResults.length > 0 && (

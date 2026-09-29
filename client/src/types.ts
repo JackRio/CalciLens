@@ -158,7 +158,7 @@ export const NONCONTRAST_SCREEN_BLOCK =
 export const NONCONTRAST_ANNOTATION_ON_CONTRAST_SCREEN =
   'This scan was annotated as non-contrast (fixed 130 HU). For that, use Modes ▸ Annotate ▸ Non-contrast; here the threshold comes from a seed.'
 export const CONTRAST_NEEDS_SEED =
-  'Place a seed first: turn on Set AO seed, click near the left ostium / centre of the ascending aorta, then Finalize. Painting stays off until then.'
+  'Place a seed first: tick Set AO seed and click the middle of the aorta, on the slice where the left ostium originates, then press Finalize. Painting stays off until then.'
 
 // What earlier sessions recorded about a scan says it is contrast-enhanced: a
 // saved seed, or an annotation saved as contrast. (The scan-level counterpart

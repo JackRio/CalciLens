@@ -123,7 +123,10 @@ export default function CaseLoader({
     }
   }
 
-  async function tryDetectColumns(path: string, baseConfig: typeof cfg) {
+  // Returns the config it ended up with (also applied to the pane), so a caller
+  // that goes on to load the manifest uses the reconciled column names rather
+  // than the stale `cfg` from this render.
+  async function tryDetectColumns(path: string, baseConfig: typeof cfg): Promise<typeof cfg> {
     try {
       const cols = await getManifestColumns(path)
       onChange({ manifestColumns: cols })
@@ -147,8 +150,7 @@ export default function CaseLoader({
         if (byKeyword) return byKeyword
         return optional ? '' : current
       }
-      onChange({
-        manifestConfig: {
+      const resolved: typeof cfg = {
           ...baseConfig,
           imageColumn: resolve(baseConfig.imageColumn, ['image', 'ct_path', 'img'], false),
           maskColumn: resolve(baseConfig.maskColumn, ['mask', 'seg'], true),
@@ -162,10 +164,12 @@ export default function CaseLoader({
           // would leave saved annotations with nowhere to be recorded.
           annotationColumn: caps.columns.annotation ? resolve(baseConfig.annotationColumn, ['annotation'], false) : '',
           contrastColumn: caps.columns.contrast ? resolve(baseConfig.contrastColumn, ['contrast'], false) : '',
-        },
-      })
+      }
+      onChange({ manifestConfig: resolved })
+      return resolved
     } catch {
       onChange({ manifestColumns: [], manifestConfig: baseConfig })
+      return baseConfig
     }
   }
 
@@ -189,17 +193,21 @@ export default function CaseLoader({
       loadingMessage: 'Loading manifest...',
     })
     try {
+      // A path that was typed rather than picked has had no column detection
+      // yet: without it the default "PatientId" is sent and the load fails on
+      // any manifest that names it differently (or lacks it).
+      const c = availableColumns.length === 0 ? await tryDetectColumns(cfg.manifestPath, cfg) : cfg
       const { rows, reasonOptions, statusOptions, scoreClasses, hasAnnotationColumn, hasContrastColumn } =
         await getManifestPairs({
-          manifestPath: cfg.manifestPath,
-          imageColumn: cfg.imageColumn,
-          maskColumn: cfg.maskColumn,
-          patientIdColumn: cfg.patientIdColumn,
-          reasonColumn: cfg.reasonColumn,
-          includeDefaultReasonTags: cfg.includeDefaultReasonTags,
-          statusColumn: cfg.statusColumn,
-          annotationColumn: cfg.annotationColumn,
-          contrastColumn: cfg.contrastColumn,
+          manifestPath: c.manifestPath,
+          imageColumn: c.imageColumn,
+          maskColumn: c.maskColumn,
+          patientIdColumn: c.patientIdColumn,
+          reasonColumn: c.reasonColumn,
+          includeDefaultReasonTags: c.includeDefaultReasonTags,
+          statusColumn: c.statusColumn,
+          annotationColumn: c.annotationColumn,
+          contrastColumn: c.contrastColumn,
           readOnly: caps.readOnlyManifest,
         })
       onChange({

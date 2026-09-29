@@ -87,8 +87,8 @@ export default function ContrastSeedBox({
               </label>
               <div className="edit-hint">
                 {pane.seedPlacementMode
-                  ? 'Click near the left ostium, center of ascending aorta. Click again to move it.'
-                  : 'Enable "Set AO seed", then click on the image.'}
+                  ? 'Click the middle of the aorta, on the slice where the left ostium originates. Click again to move it.'
+                  : 'Tick "Set AO seed", then click the image.'}
               </div>
               {pane.pendingSeed ? (
                 <div className="contrast-stat-row">

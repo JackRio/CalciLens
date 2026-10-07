@@ -146,6 +146,14 @@ ipcMain.handle('pick-path', async (_event, options = {}) => {
   return result.filePaths[0]
 })
 
+ipcMain.handle('save-path', async (_event, options = {}) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: options.defaultName || '',
+    filters: options.filters || [],
+  })
+  return result.canceled || !result.filePath ? null : result.filePath
+})
+
 // One instance only. Without this lock, launching the app twice left the
 // second copy's uvicorn unable to bind the port while its window silently
 // attached to the FIRST copy's backend — two windows sharing one volume

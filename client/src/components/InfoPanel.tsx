@@ -13,12 +13,12 @@ function Vec3({ label, v }: { label: string; v: number[] }) {
   )
 }
 
-export default function InfoPanel({ title, info }: { title: string; info: VolumeInfo | null }) {
+export default function InfoPanel({ title, info, emptyNote }: { title: string; info: VolumeInfo | null; emptyNote?: string }) {
   if (!info) {
     return (
       <div className="info-panel">
         <div className="info-title">{title}</div>
-        <div className="info-empty">Not loaded</div>
+        <div className="info-empty">{emptyNote ?? 'Not loaded'}</div>
       </div>
     )
   }
@@ -26,17 +26,16 @@ export default function InfoPanel({ title, info }: { title: string; info: Volume
   return (
     <div className="info-panel">
       <div className="info-title">{title}</div>
+      <div className="info-headline">{info.size.join(' × ')}</div>
+      <div className="info-sub">
+        {info.spacing.map((v) => Number(v.toFixed(3))).join(' × ')} mm · {info.dtype}
+      </div>
       <div className="info-row">
         <span className="info-label">File</span>
         <span className="info-value info-path" title={info.path}>
           {info.path.split(/[\\/]/).slice(-2).join('/')}
         </span>
       </div>
-      <div className="info-row">
-        <span className="info-label">Dimensions</span>
-        <span className="info-value">{info.size.join(' x ')}</span>
-      </div>
-      <Vec3 label="Spacing (mm)" v={info.spacing} />
       <Vec3 label="Origin" v={info.origin} />
       <div className="info-row">
         <span className="info-label">Direction</span>
@@ -45,10 +44,6 @@ export default function InfoPanel({ title, info }: { title: string; info: Volume
             <div key={r}>{dir.slice(r * 3, r * 3 + 3).map(fmt).join('  ')}</div>
           ))}
         </span>
-      </div>
-      <div className="info-row">
-        <span className="info-label">Data type</span>
-        <span className="info-value">{info.dtype}</span>
       </div>
       <div className="info-row">
         <span className="info-label">Value range</span>

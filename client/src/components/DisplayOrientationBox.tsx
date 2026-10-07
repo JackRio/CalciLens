@@ -6,8 +6,13 @@ import {
   type OrientationPresetId,
 } from '../displayOrientation'
 
-// Settings row for how the scan is oriented on screen. Display only: the
-// data is untouched, and the choice is remembered between sessions.
+const PRESET_NOTES: Record<string, string> = {
+  radiological: 'Patient right on screen left',
+  neurological: 'Patient left on screen left',
+}
+
+// How the scan is oriented on screen. Display only: the data is untouched,
+// and the choice is remembered between sessions.
 export default function DisplayOrientationBox() {
   const o = useDisplayOrientation()
   const preset = presetIdFor(o)
@@ -17,38 +22,54 @@ export default function DisplayOrientationBox() {
     if (p) setDisplayOrientation({ ...p.flips })
   }
 
+  const flips: { key: 'lr' | 'ap' | 'si'; label: string; title: string }[] = [
+    { key: 'lr', label: 'Flip L–R', title: 'Mirror left and right (axial and coronal)' },
+    { key: 'ap', label: 'Flip A–P', title: 'Mirror anterior and posterior (axial and sagittal)' },
+    { key: 'si', label: 'Flip S–I', title: 'Mirror superior and inferior (coronal and sagittal)' },
+  ]
+
   return (
     <div className="settings-section orientation-box">
-      <div className="settings-title">Display orientation</div>
-      <div className="orientation-row">
-        <select value={preset} onChange={(e) => choose(e.target.value as OrientationPresetId)}>
-          {ORIENTATION_PRESETS.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-          {preset === 'custom' && <option value="custom">Custom</option>}
-        </select>
-        <label className="orientation-check" title="Mirror left and right (axial and coronal)">
-          <input type="checkbox" checked={o.lr} onChange={(e) => setDisplayOrientation({ lr: e.target.checked })} />
-          Flip L–R
-        </label>
-        <label className="orientation-check" title="Mirror anterior and posterior (axial and sagittal)">
-          <input type="checkbox" checked={o.ap} onChange={(e) => setDisplayOrientation({ ap: e.target.checked })} />
-          Flip A–P
-        </label>
-        <label className="orientation-check" title="Mirror superior and inferior (coronal and sagittal)">
-          <input type="checkbox" checked={o.si} onChange={(e) => setDisplayOrientation({ si: e.target.checked })} />
-          Flip S–I
-        </label>
-        <label className="orientation-check" title="Show L / R / A / P / S / I at the edges of each view">
-          <input
-            type="checkbox"
-            checked={o.letters}
-            onChange={(e) => setDisplayOrientation({ letters: e.target.checked })}
-          />
+      <div className="orientation-cards" role="group" aria-label="Orientation preset">
+        {ORIENTATION_PRESETS.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            className={`orientation-card${preset === p.id ? ' active' : ''}`}
+            aria-pressed={preset === p.id}
+            onClick={() => choose(p.id)}
+          >
+            <span className="orientation-card-name">{p.name.replace(' (default)', '')}</span>
+            <span className="orientation-card-note">{PRESET_NOTES[p.id]}</span>
+          </button>
+        ))}
+        <div className={`orientation-card orientation-card-custom${preset === 'custom' ? ' active' : ''}`}>
+          <span className="orientation-card-name">Custom</span>
+          <span className="orientation-card-note">Set by the flips below</span>
+        </div>
+      </div>
+      <div className="orientation-chips">
+        {flips.map((f) => (
+          <button
+            key={f.key}
+            type="button"
+            className={`orientation-chip${o[f.key] ? ' active' : ''}`}
+            aria-pressed={o[f.key]}
+            title={f.title}
+            onClick={() => setDisplayOrientation({ [f.key]: !o[f.key] })}
+          >
+            {f.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          className={`orientation-chip${o.letters ? ' active' : ''}`}
+          aria-pressed={o.letters}
+          title="Show L / R / A / P / S / I at the edges of each view"
+          onClick={() => setDisplayOrientation({ letters: !o.letters })}
+        >
           Edge letters
-        </label>
+        </button>
       </div>
     </div>
   )

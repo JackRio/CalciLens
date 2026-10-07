@@ -133,6 +133,23 @@ count (1, or 2 for View ▸ Split view) and renders `<App mode initialPaneCount 
   the desktop window** (Electron `close` → `app-close-requested` IPC → the page acks and confirms; 1.5 s
   fallback so a blank page can still be closed).
 
+- **Settings tabs** (`Pane.tsx`, `settingsTabs`): I/O (`CaseLoader`), Threshold Seed (`ThresholdSettings`, contrast screen
+  only), Class Labels, Orientation (`caps.orientation`), Info. The panel has a FIXED height (46vh) so it never jumps
+  between tabs. Contrast threshold UI = two stepper cards (`NumberStepper`: Sphere volume, k) with literature chips
+  (`K_REFERENCES`) and a boxed formula; styles must not depend on `.case-loader` (the card lives outside it).
+- **Errors** are one red toast at the bottom centre of each pane (`.error-toast`, shows `pane.error`, `pane.manifestError`
+  and the contrast seed error). Never render an error inside Settings.
+- **Manifest template**: the download button in the Batch Load header calls Electron's save dialog (`save-path` IPC, so
+  the user picks the folder and renames) then `/api/manifest/template` (header-only `.xlsx` by default, `.csv` if chosen).
+  The manifest reader tolerates cp1252/BOM CSVs and `;`/tab separators, and a manifest it cannot add its tracking
+  columns to (locked in Excel) still loads.
+- **Saved annotations are written on the CT's own voxel grid** (`volume_store._image_on_ct_grid`: exact permute/flip of
+  the LPS array back to the CT's original orientation, header copied from the CT), so ITK-SNAP and other tools see the
+  same size/direction/origin as the image. `save_mask` takes `ct_vol`; the endpoint loads it from the cache.
+- "Image not found" in a manifest means the path does not exist ON THIS MACHINE (differently mapped drives such as
+  `R:\standard\...` vs `R:\QIA\...`), not a reader problem. DICOM folders over Windows' 260-char path limit get an
+  explicit message (`_long_path_hint`); `\?\` paths do not work with GDCM.
+
 ## Backend structure (`server/`)
 
 - **`app.py`** — FastAPI routes. Key groups:

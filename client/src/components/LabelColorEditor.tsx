@@ -199,7 +199,6 @@ export default function LabelColorEditor({
   return (
     <div className="label-editor">
       <div className="label-editor-header">
-        <span className="label-editor-title">Label colors</span>
         <PresetDropdown
           selectedId={isBuiltin ? shownBuiltin.id : presetId}
           presets={presets}
@@ -233,12 +232,12 @@ export default function LabelColorEditor({
       </div>
       {isBuiltin && shownBuiltin.sources && (
         <div className="label-editor-sources">
-          Based on:{' '}
+          Based on{' '}
           {shownBuiltin.sources.map((s, i) => (
             <span key={s.url}>
               {i > 0 && ' · '}
               <a href={s.url} target="_blank" rel="noreferrer">
-                {s.label}
+                {s.label} ↗
               </a>
             </span>
           ))}

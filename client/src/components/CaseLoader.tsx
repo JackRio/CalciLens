@@ -3,7 +3,7 @@ import type { ManifestRow, PaneState } from '../types'
 import { DEFAULT_MANIFEST_CONFIG } from '../types'
 import type { ModeCaps } from '../modeConfig'
 import { manifestDefaultsForCaps } from '../modeConfig'
-import { getManifestColumns, getManifestPairs } from '../api'
+import { getManifestColumns, getManifestPairs, saveManifestTemplate } from '../api'
 import { IMAGE_FILE_FILTERS, isElectron, pickPath } from '../electronApi'
 
 // The optional column pickers all look identical: a select over the
@@ -48,6 +48,42 @@ function ColumnPicker({
         />
       )}
     </label>
+  )
+}
+
+const K_REFERENCES = [
+  {
+    k: 3,
+    label: 'Eberhard 2017',
+    doi: 'doi:10.4244/EIJ-D-17-00060',
+    url: 'https://eurointervention.pcronline.com/article/quantification-of-aortic-valve-calcification-on-contrast-enhanced-ct-of-patients-prior-to-transcatheter-aortic-valve-implantation',
+  },
+  { k: 2, label: 'Schuhbaeck 2015', doi: 'doi:10.1016/j.jcct.2015.06.001', url: 'https://doi.org/10.1016/j.jcct.2015.06.001' },
+]
+
+function NumberStepper({
+  value,
+  step,
+  min,
+  unit,
+  onChange,
+}: {
+  value: number
+  step: number
+  min: number
+  unit?: string
+  onChange: (v: number) => void
+}) {
+  const set = (v: number) => onChange(Math.max(min, Math.round(v * 100) / 100))
+  return (
+    <div className="threshold-stepper">
+      <button type="button" aria-label="Decrease" onClick={() => set(value - step)}>−</button>
+      <div className="threshold-stepper-value">
+        <input type="number" value={value} step={step} min={min} onChange={(e) => set(Number(e.target.value))} />
+        {unit && <span>{unit}</span>}
+      </div>
+      <button type="button" aria-label="Increase" onClick={() => set(value + step)}>+</button>
+    </div>
   )
 }
 
@@ -104,6 +140,100 @@ function PathField({
   )
 }
 
+export function ThresholdSettings({
+  contrastSettings,
+  onContrastSettingsChange,
+}: {
+  contrastSettings: ContrastSettings
+  onContrastSettingsChange: (next: ContrastSettings) => void
+}) {
+  return (
+        <div className="threshold-settings">
+          <div className="seg-toggle" role="group" aria-label="Threshold method">
+            <button
+              type="button"
+              className={contrastSettings.method === 'aorta-sd' ? 'active' : ''}
+              onClick={() => onContrastSettingsChange({ ...contrastSettings, method: 'aorta-sd' })}
+            >
+              From aorta seed
+            </button>
+            <button
+              type="button"
+              className={contrastSettings.method === 'fixed' ? 'active' : ''}
+              onClick={() => onContrastSettingsChange({ ...contrastSettings, method: 'fixed' })}
+            >
+              Fixed HU
+            </button>
+          </div>
+          {contrastSettings.method === 'aorta-sd' ? (
+            <>
+              <div className="threshold-cards">
+                <div className="threshold-card" title="The seed samples a sphere of this volume inside the aorta">
+                  <div className="threshold-card-title">Sphere volume</div>
+                  <NumberStepper
+                    value={contrastSettings.targetVolumeMm3}
+                    step={10}
+                    min={1}
+                    unit="mm³"
+                    onChange={(v) => onContrastSettingsChange({ ...contrastSettings, targetVolumeMm3: v })}
+                  />
+                  <div className="threshold-card-note">Region sampled in the aorta</div>
+                </div>
+                <div className="threshold-card threshold-card-k" title="How many standard deviations above the aortic mean">
+                  <div className="threshold-card-title">k (SD multiplier)</div>
+                  <NumberStepper
+                    value={contrastSettings.kMultiplier}
+                    step={0.5}
+                    min={0}
+                    onChange={(v) => onContrastSettingsChange({ ...contrastSettings, kMultiplier: v })}
+                  />
+                  <div className="threshold-chips">
+                    {K_REFERENCES.map((r) => (
+                      <span key={r.label} className={`threshold-chip${contrastSettings.kMultiplier === r.k ? ' active' : ''}`}>
+                        <button type="button" onClick={() => onContrastSettingsChange({ ...contrastSettings, kMultiplier: r.k })}>
+                          {r.k} · {r.label}
+                        </button>
+                        <a href={r.url} target="_blank" rel="noreferrer" title={r.doi} aria-label={`Open ${r.label}`}>↗</a>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="threshold-formula-box">
+                threshold = aortic mean + <span className="formula-var">k</span> × SD
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="threshold-cards">
+                <div className="threshold-card threshold-card-k">
+                  <div className="threshold-card-title">Threshold</div>
+                  <NumberStepper
+                    value={contrastSettings.fixedHu}
+                    step={10}
+                    min={1}
+                    unit="HU"
+                    onChange={(v) => onContrastSettingsChange({ ...contrastSettings, fixedHu: v })}
+                  />
+                  <div className="threshold-chips">
+                    <span className={`threshold-chip${contrastSettings.fixedHu === 320 ? ' active' : ''}`}>
+                      <button type="button" onClick={() => onContrastSettingsChange({ ...contrastSettings, fixedHu: 320 })}>
+                        320 · Otton 2012
+                      </button>
+                      <a href="https://doi.org/10.1016/j.jcct.2011.11.004" target="_blank" rel="noreferrer" title="doi:10.1016/j.jcct.2011.11.004" aria-label="Open Otton 2012">↗</a>
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="threshold-formula-box">
+                threshold = <span className="formula-var">{contrastSettings.fixedHu} HU</span> for every scan, no seed
+              </div>
+            </>
+          )}
+        </div>
+  )
+}
+
 export default function CaseLoader({
   pane,
   onChange,
@@ -115,8 +245,6 @@ export default function CaseLoader({
   onLoadRow,
   hasUnsavedMaskChanges,
   caps,
-  contrastSettings,
-  onContrastSettingsChange,
 }: {
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
@@ -131,9 +259,6 @@ export default function CaseLoader({
   onLoadRow: (row: ManifestRow) => void
   hasUnsavedMaskChanges: boolean
   caps: ModeCaps
-  // Defaults for the contrast seed (Contrast screen only).
-  contrastSettings?: ContrastSettings
-  onContrastSettingsChange?: (next: ContrastSettings) => void
 }) {
   const electronAvailable = isElectron()
 
@@ -163,6 +288,20 @@ export default function CaseLoader({
   async function handleBrowseMaskFile() {
     const picked = await pickPath({ properties: ['openFile'], filters: IMAGE_FILE_FILTERS })
     if (picked) onChange({ maskPath: picked })
+  }
+
+  // The OS save dialog lets the user pick the folder and rename the file.
+  async function handleDownloadTemplate() {
+    const dest = await window.electronAPI?.savePath({
+      defaultName: 'manifest_template.xlsx',
+      filters: [{ name: 'Excel', extensions: ['xlsx'] }, { name: 'CSV', extensions: ['csv'] }],
+    })
+    if (!dest) return
+    try {
+      await saveManifestTemplate(dest)
+    } catch (e) {
+      onChange({ manifestError: e instanceof Error ? e.message : String(e) })
+    }
   }
 
   async function handleBrowseManifest() {
@@ -368,103 +507,6 @@ export default function CaseLoader({
         </div>
       </label>
       )}
-      {caps.contrast && contrastSettings && onContrastSettingsChange && (
-        <div className="threshold-settings">
-          <div className="threshold-settings-title">Contrast threshold</div>
-          <div className="seg-toggle" role="group" aria-label="Threshold method">
-            <button
-              type="button"
-              className={contrastSettings.method === 'aorta-sd' ? 'active' : ''}
-              onClick={() => onContrastSettingsChange({ ...contrastSettings, method: 'aorta-sd' })}
-            >
-              From aorta seed
-            </button>
-            <button
-              type="button"
-              className={contrastSettings.method === 'fixed' ? 'active' : ''}
-              onClick={() => onContrastSettingsChange({ ...contrastSettings, method: 'fixed' })}
-            >
-              Fixed HU
-            </button>
-          </div>
-          {contrastSettings.method === 'aorta-sd' ? (
-            <div className="threshold-body">
-              <div className="threshold-left">
-                <div className="threshold-params">
-                  <label title="The seed samples a sphere of this volume inside the aorta">
-                    Sphere
-                    <input
-                      type="number"
-                      min={1}
-                      value={contrastSettings.targetVolumeMm3}
-                      onChange={(e) => onContrastSettingsChange({ ...contrastSettings, targetVolumeMm3: Number(e.target.value) })}
-                    />
-                    mm³
-                  </label>
-                  <label className="threshold-editable" title="How many standard deviations above the aortic mean">
-                    k
-                    <input
-                      type="number"
-                      step={0.1}
-                      value={contrastSettings.kMultiplier}
-                      onChange={(e) => onContrastSettingsChange({ ...contrastSettings, kMultiplier: Number(e.target.value) })}
-                    />
-                  </label>
-                </div>
-                <div className="threshold-source">
-                  <a href="https://eurointervention.pcronline.com/article/quantification-of-aortic-valve-calcification-on-contrast-enhanced-ct-of-patients-prior-to-transcatheter-aortic-valve-implantation" target="_blank" rel="noreferrer">
-                    Eberhard 2017 · doi:10.4244/EIJ-D-17-00060
-                  </a>{' '}
-                  (k = 3)
-                  <br />
-                  <a href="https://doi.org/10.1016/j.jcct.2015.06.001" target="_blank" rel="noreferrer">
-                    Schuhbaeck 2015 · doi:10.1016/j.jcct.2015.06.001
-                  </a>{' '}
-                  (k = 2)
-                </div>
-              </div>
-              <div className="threshold-formula-big">
-                <div className="threshold-formula-line">
-                  threshold = aortic mean + <span className="formula-var">k</span> × SD
-                </div>
-                <div className="threshold-formula-note">
-                  <span className="formula-var">k</span> is yours to change: currently {contrastSettings.kMultiplier}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="threshold-body">
-              <div className="threshold-left">
-                <div className="threshold-params">
-                  <label className="threshold-editable">
-                    Value
-                    <input
-                      type="number"
-                      min={1}
-                      value={contrastSettings.fixedHu}
-                      onChange={(e) => onContrastSettingsChange({ ...contrastSettings, fixedHu: Number(e.target.value) })}
-                    />
-                    HU
-                  </label>
-                </div>
-                <div className="threshold-source">
-                  <a href="https://doi.org/10.1016/j.jcct.2011.11.004" target="_blank" rel="noreferrer">
-                    Otton 2012 · doi:10.1016/j.jcct.2011.11.004
-                  </a>{' '}
-                  (320 HU)
-                </div>
-              </div>
-              <div className="threshold-formula-big">
-                <div className="threshold-formula-line">
-                  threshold = <span className="formula-var">{contrastSettings.fixedHu} HU</span>
-                </div>
-                <div className="threshold-formula-note">the same value for every scan, no seed</div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
       <div className="settings-title batch-load-header" style={{ marginTop: 10 }}>
         <button
           className="collapse-toggle"
@@ -474,6 +516,19 @@ export default function CaseLoader({
           {pane.batchLoadCollapsed ? '▸' : '▾'}
         </button>
         <span>Batch Load</span>
+        <button
+          className="download-template-btn"
+          onClick={handleDownloadTemplate}
+          disabled={!electronAvailable}
+          title="Save a blank manifest to fill in"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 3v12" />
+            <path d="m7 10 5 5 5-5" />
+            <path d="M4 20h16" />
+          </svg>
+          Download Template
+        </button>
       </div>
 
       {!pane.batchLoadCollapsed && (
@@ -651,8 +706,6 @@ export default function CaseLoader({
           </button>
         </>
       )}
-
-      {pane.manifestError && <div className="busy-msg manifest-error">{pane.manifestError}</div>}
 
       {pane.manifestRows.length > 0 && (
         <label style={{ marginTop: 8 }}>

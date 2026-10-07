@@ -156,6 +156,15 @@ export async function getManifestColumns(manifestPath: string): Promise<string[]
   return data.columns
 }
 
+export async function saveManifestTemplate(path: string): Promise<string> {
+  const res = await fetch('/api/manifest/template', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  return (await handleJson<{ path: string }>(res)).path
+}
+
 export async function getManifestPairs(params: {
   manifestPath: string
   imageColumn: string

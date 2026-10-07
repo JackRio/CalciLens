@@ -616,8 +616,14 @@ def mask_save(req: SaveMaskRequest):
     if not req.ct_path:
         raise HTTPException(status_code=400, detail="ct_path is required to save an annotation")
     try:
+        # The CT supplies the voxel grid the annotation is written on.
+        try:
+            ct_vol = store.load(req.ct_path, False, False, req.series_uid)
+        except Exception:
+            ct_vol = None
         result = save_mask(
             mask_vol,
+            ct_vol=ct_vol,
             ct_path=req.ct_path,
             series_uid=req.series_uid,
             base_dir=req.save_dir,
@@ -770,7 +776,23 @@ def manifest_pairs(req: ManifestPairsRequest):
         raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError:
+        raise HTTPException(status_code=400, detail="Can't open the manifest. Close it in Excel and try again.")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Couldn't read the manifest: {e}")
     return result
+
+
+class ManifestTemplateRequest(BaseModel):
+    path: str
+
+
+@app.post("/api/manifest/template")
+def manifest_template(req: ManifestTemplateRequest):
+    try:
+        return {"path": folder_scan.write_manifest_template(req.path)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Couldn't save the template: {e}")
 
 
 class ManifestCommentRequest(BaseModel):

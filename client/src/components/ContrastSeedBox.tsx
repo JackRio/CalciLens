@@ -5,7 +5,6 @@ export default function ContrastSeedBox({
   minimized,
   onToggleMinimized,
   saving,
-  error,
   onFinalize,
   onReSeed,
   onToggleSeedPlacement,
@@ -16,7 +15,6 @@ export default function ContrastSeedBox({
   minimized: boolean
   onToggleMinimized: () => void
   saving: boolean
-  error: string | null
   onFinalize: () => void
   onReSeed: () => void
   onToggleSeedPlacement: () => void
@@ -96,7 +94,6 @@ export default function ContrastSeedBox({
               </button>
             </>
           )}
-          {error && <div className="busy-msg manifest-error">{error}</div>}
         </>
       )}
     </div>

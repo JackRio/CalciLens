@@ -84,6 +84,7 @@
 }
 
 .pane {
+  position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -1341,7 +1342,8 @@ button .loading-spinner {
 
 .pane-settings {
   flex-shrink: 0;
-  max-height: 46vh;
+  /* Fixed, so the panel doesn't jump in height as tabs change. */
+  height: 46vh;
   overflow-y: auto;
   background: #1a1b21;
   border-top: 1px solid #2a2c34;
@@ -2257,6 +2259,8 @@ button .loading-spinner {
   z-index: 3;
   display: flex;
   justify-content: center;
+  align-items: center;
+  gap: 14px;
   margin: -10px -12px 4px;
   padding: 6px 0 2px;
   background: #1a1b21;
@@ -2625,9 +2629,17 @@ button .loading-spinner {
 }
 
 .threshold-settings-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
   font-weight: 600;
   color: #b8bacb;
+}
+
+.threshold-summary {
+  font-weight: 400;
+  color: #8d8fa0;
 }
 
 .seg-toggle {
@@ -2687,50 +2699,167 @@ button .loading-spinner {
   color: #8fb8ff;
 }
 
-.case-loader .threshold-params label {
+.threshold-params label {
   flex-direction: row;
   align-items: center;
   margin: 0;
 }
 
-.case-loader .threshold-params input {
+.threshold-params input {
   width: 72px;
 }
 
-/* Contrast threshold: inputs on the left, the formula large on the right. */
-.threshold-body {
+/* Contrast threshold: two big cards with steppers, reference chips, boxed formula. */
+.threshold-cards {
   display: grid;
-  grid-template-columns: minmax(260px, auto) 1fr;
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.threshold-card {
+  display: flex;
+  flex-direction: column;
   align-items: center;
-}
-
-.threshold-left {
-  display: flex;
-  flex-direction: column;
   gap: 8px;
+  padding: 12px;
+  border: 1px solid #3c3e4d;
+  border-radius: 8px;
+  background: #1b1c25;
 }
 
-.threshold-formula-big {
+.threshold-card-k {
+  border-color: #5b7fc7;
+}
+
+.threshold-card-title {
+  font-size: 12px;
+  color: #9c9dab;
+}
+
+.threshold-card-note {
+  font-size: 11px;
+  color: #8d8fa0;
+}
+
+.threshold-stepper {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.threshold-stepper > button {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid #4a4d60;
+  background: #262837;
+  color: #e6e7ee;
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1;
+  display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.threshold-stepper > button:hover {
+  border-color: #7fb0ff;
+  background: rgba(127, 176, 255, 0.14);
+  color: #cfe0ff;
+}
+
+.threshold-stepper > button:active {
+  background: rgba(127, 176, 255, 0.28);
+}
+
+.threshold-stepper-value {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
   gap: 6px;
-  padding: 10px 14px;
-  border-left: 1px solid #3c3e4d;
+  min-width: 0;
+}
+
+.threshold-stepper-value span {
+  font-size: 13px;
+  color: #9c9dab;
+}
+
+.threshold-stepper-value input {
+  width: 84px;
+  flex: none;
+  padding: 0;
+  border: none;
+  background: transparent;
   text-align: center;
-}
-
-.threshold-formula-line {
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: clamp(16px, 2.4vw, 28px);
+  font-size: 32px;
+  font-weight: 500;
   color: #e6e7ee;
+  appearance: textfield;
+  -moz-appearance: textfield;
 }
 
-.threshold-formula-note {
+.threshold-stepper-value input::-webkit-outer-spin-button,
+.threshold-stepper-value input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.threshold-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+
+.threshold-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #3c3e4d;
+  border-radius: 999px;
+  overflow: hidden;
   font-size: 12px;
-  color: #8d8fa0;
+}
+
+.threshold-chip button {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 3px 4px 3px 10px;
+  color: #b8bacb;
+  font-size: 12px;
+}
+
+.threshold-chip a {
+  padding: 3px 9px 3px 4px;
+  color: #8fb8ff;
+  text-decoration: none;
+}
+
+.threshold-chip.active {
+  border-color: #7fb0ff;
+  background: rgba(127, 176, 255, 0.14);
+}
+
+.threshold-chip.active button {
+  color: #cfe0ff;
+}
+
+.threshold-formula-box {
+  align-self: center;
+  margin-top: 4px;
+  padding: 10px 22px;
+  border: 1.5px solid #5b7fc7;
+  border-radius: 8px;
+  background: rgba(127, 176, 255, 0.07);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: clamp(16px, 2.2vw, 24px);
+  color: #e6e7ee;
+  text-align: center;
 }
 
 /* The part of the formula the user can change. */
@@ -2741,20 +2870,6 @@ button .loading-spinner {
   border-radius: 5px;
   background: rgba(127, 176, 255, 0.14);
   box-shadow: inset 0 -2px 0 #7fb0ff;
-}
-
-.case-loader .threshold-params label.threshold-editable input {
-  border-color: #7fb0ff;
-}
-
-@media (max-width: 720px) {
-  .threshold-body {
-    grid-template-columns: 1fr;
-  }
-  .threshold-formula-big {
-    border-left: none;
-    border-top: 1px solid #3c3e4d;
-  }
 }
 
 /* CT path: what was chosen, then (grey) where in it the scan was found. */
@@ -2808,4 +2923,254 @@ button .loading-spinner {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.download-template-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+/* Errors: bottom centre of the pane (the whole window in single view), above
+   every viewer overlay, until dismissed. */
+.error-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: min(720px, calc(100% - 32px));
+  padding: 10px 14px;
+  border: 1px solid #5c2626;
+  border-radius: 8px;
+  background: #3a1d1d;
+  color: #ffb3b3;
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  overflow-wrap: anywhere;
+}
+
+.error-toast-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.error-toast-dismiss {
+  flex: none;
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Settings tabs: one section at a time instead of one long scroll. */
+.settings-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid #3c3e4d;
+  border-radius: 8px;
+  background: #15161d;
+}
+
+.settings-tabs button {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 12px;
+  color: #9c9dab;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.settings-tabs button:hover {
+  color: #e6e7ee;
+}
+
+.settings-tabs button.active {
+  background: #3b5bdb;
+  color: #fff;
+}
+
+/* ---- Class Labels tab ---- */
+.label-editor-header {
+  margin-bottom: 4px;
+}
+
+.label-editor .label-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.label-editor .label-grid-item {
+  padding: 6px 8px;
+  gap: 8px;
+  font-size: 13px;
+  border-radius: 6px;
+}
+
+.label-editor-sources {
+  margin: 4px 0 8px;
+  font-size: 12px;
+}
+
+.label-colors-card .threshold-color-row {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid #2a2c34;
+  border-radius: 6px;
+  background: #14151a;
+}
+
+.label-colors-card .threshold-color-row input[type='color'] {
+  margin-left: auto;
+}
+
+/* ---- Orientation tab ---- */
+.orientation-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.orientation-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 12px;
+  text-align: left;
+  border: 1px solid #3c3e4d;
+  border-radius: 8px;
+  background: #1b1c25;
+  color: #c8c9d4;
+}
+
+button.orientation-card:hover {
+  border-color: #5b7fc7;
+}
+
+.orientation-card.active {
+  border: 1.5px solid #7fb0ff;
+  background: rgba(127, 176, 255, 0.1);
+}
+
+.orientation-card-custom:not(.active) {
+  opacity: 0.55;
+}
+
+.orientation-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6e7ee;
+}
+
+.orientation-card-note {
+  font-size: 11px;
+  color: #8d8fa0;
+}
+
+.orientation-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.orientation-chip {
+  padding: 4px 12px;
+  font-size: 12px;
+  border: 1px solid #3c3e4d;
+  border-radius: 999px;
+  background: transparent;
+  color: #9c9dab;
+}
+
+.orientation-chip:hover {
+  color: #e6e7ee;
+}
+
+.orientation-chip.active {
+  border-color: #7fb0ff;
+  background: rgba(127, 176, 255, 0.14);
+  color: #cfe0ff;
+}
+
+/* ---- Info tab ---- */
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.info-headline {
+  font-size: 22px;
+  font-weight: 500;
+  color: #e6e7ee;
+  line-height: 1.2;
+}
+
+.info-sub {
+  font-size: 12px;
+  color: #8d8fa0;
+  margin-bottom: 8px;
+}
+
+.info-row {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.info-row .info-value {
+  font-size: 13px;
+  text-align: right;
+}
+
+.info-row .info-matrix {
+  text-align: right;
+}
+
+.info-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 28px 12px;
+  text-align: center;
+}
+
+.info-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #e6e7ee;
+}
+
+.info-empty-note {
+  font-size: 12px;
+  color: #8d8fa0;
+  margin-bottom: 6px;
+}
+
+/* Boxed label number (display state; the edit state is the input itself). */
+.label-editor .inline-edit.label-grid-number {
+  border: 1px solid #4a4d60;
+  border-radius: 6px;
+  background: #1e1f27;
+  color: #e6e7ee;
+  font-weight: 600;
+  padding: 2px 0;
 }

@@ -32,6 +32,35 @@ def _is_dicom_dir(path: str) -> bool:
     return os.path.isdir(path)
 
 
+def _long_path_hint(directory: str) -> str:
+    """Why a DICOM folder may be unreadable on Windows: the 260-character path
+    limit. GDCM/ITK use the old Windows file APIs, so a file whose full path is
+    longer than that is invisible to them unless the OS has long paths enabled
+    (which is off by default). The same scan then loads from a shorter path,
+    e.g. through a mapped drive. Returns "" when this isn't the problem."""
+    if os.name != "nt":
+        return ""
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+            if winreg.QueryValueEx(key, "LongPathsEnabled")[0]:
+                return ""
+    except OSError:
+        pass
+    try:
+        longest = max((len(directory) + 1 + len(n) for n in os.listdir(directory)), default=0)
+    except OSError:
+        return ""
+    if longest < 260:
+        return ""
+    return (
+        f"This folder's file paths are {longest} characters long, over Windows' 260-character limit, "
+        "so the DICOM files can't be read. Use a shorter path to the same folder (for example a mapped drive "
+        "that starts closer to it), or turn on Windows long paths."
+    )
+
+
 def _find_dicom_series(root: str) -> tuple[str, str, list]:
     """Return (series_dir, series_uid, file_names) for the first directory
     (root itself, or any subdirectory, walked top-down and alphabetically)
@@ -289,14 +318,20 @@ class VolumeStore:
         is_dicom_dir = _is_dicom_dir(path)
         resolved_series_uid = series_uid
         if is_dicom_dir:
-            reader = sitk.ImageSeriesReader()
-            reader.MetaDataDictionaryArrayUpdateOn()
-            if series_uid:
-                file_names = sitk.ImageSeriesReader.GetGDCMSeriesFileNames(path, series_uid)
-            else:
-                _, resolved_series_uid, file_names = _find_dicom_series(path)
-            reader.SetFileNames(file_names)
-            image = reader.Execute()
+            try:
+                reader = sitk.ImageSeriesReader()
+                reader.MetaDataDictionaryArrayUpdateOn()
+                if series_uid:
+                    file_names = sitk.ImageSeriesReader.GetGDCMSeriesFileNames(path, series_uid)
+                else:
+                    _, resolved_series_uid, file_names = _find_dicom_series(path)
+                reader.SetFileNames(file_names)
+                image = reader.Execute()
+            except Exception as e:
+                hint = _long_path_hint(path)
+                if hint:
+                    raise ValueError(hint) from e
+                raise
             acquisition = {} if is_mask else _dicom_acquisition(reader, image, len(file_names))
         else:
             image = sitk.ReadImage(path)
@@ -798,6 +833,39 @@ def _atomic_write_image(img: "sitk.Image", out_path: str) -> None:
         annotation_paths._cleanup(tmp_path)
 
 
+def _image_on_ct_grid(mask_vol: LoadedVolume, ct_vol: Optional[LoadedVolume]) -> "sitk.Image":
+    """The mask as a SimpleITK image laid out on the CT's own voxel grid.
+
+    In memory everything is reoriented to LPS, so writing the array back with
+    the LPS header gave an annotation whose axes/direction differed from the CT
+    it was drawn on (e.g. a CT stored RAS or with flipped slices). Physically
+    aligned, but other tools (ITK-SNAP) then showed it flipped or refused to
+    treat it as the same grid. Undoing the reorientation is an exact
+    permute/flip of voxels, no resampling.
+    """
+    img = sitk.GetImageFromArray(mask_vol.array)
+    img.SetSpacing(mask_vol.spacing_lps)
+    img.SetOrigin(mask_vol.reoriented_origin)
+    img.SetDirection(mask_vol.reoriented_direction)
+    if ct_vol is None or ct_vol.orientation_code != "LPS" or not ct_vol.orig_direction:
+        return img
+    try:
+        code = sitk.DICOMOrientImageFilter.GetOrientationFromDirectionCosines(ct_vol.orig_direction)
+        out = sitk.DICOMOrient(img, code)
+        if tuple(out.GetSize()) != tuple(ct_vol.orig_size):
+            return img
+        close = lambda a, b: max(abs(float(x) - float(y)) for x, y in zip(a, b)) < 1e-3
+        if close(out.GetOrigin(), ct_vol.orig_origin) and close(out.GetDirection(), ct_vol.orig_direction):
+            # Same grid; take the CT's header values verbatim.
+            out.SetOrigin(ct_vol.orig_origin)
+            out.SetDirection(ct_vol.orig_direction)
+            out.SetSpacing(ct_vol.orig_spacing)
+            return out
+    except Exception:
+        pass
+    return img
+
+
 def save_mask(
     mask_vol: LoadedVolume,
     ct_path: str,
@@ -808,6 +876,7 @@ def save_mask(
     resolution: Optional[str] = None,
     mask_source: Optional[str] = None,
     scoring: Optional[dict] = None,
+    ct_vol: Optional[LoadedVolume] = None,
 ) -> dict:
     """Write the current in-memory mask into this scan's own annotation
     folder, preserving the geometry it currently occupies (LPS-reoriented
@@ -832,10 +901,7 @@ def save_mask(
     if target["conflict"]:
         return {"status": "conflict", **target}
 
-    img = sitk.GetImageFromArray(mask_vol.array)
-    img.SetSpacing(mask_vol.spacing_lps)
-    img.SetOrigin(mask_vol.reoriented_origin)
-    img.SetDirection(mask_vol.reoriented_direction)
+    img = _image_on_ct_grid(mask_vol, ct_vol)
     _atomic_write_image(img, target["annotation_path"])
 
     record = annotation_paths.write_source_record(

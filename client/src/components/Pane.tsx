@@ -75,7 +75,7 @@ import MultiPlaneViewer, {
   type MprView,
 } from './MultiPlaneViewer'
 import LabelColorEditor from './LabelColorEditor'
-import CaseLoader from './CaseLoader'
+import CaseLoader, { ThresholdSettings } from './CaseLoader'
 import AlphaSpinner from './AlphaSpinner'
 import MaskEditor from './MaskEditor'
 import ReasonPicker from './ReasonPicker'
@@ -255,6 +255,8 @@ function setupSignature(setup: ScoringSetup): string {
   ].join('|')
 }
 
+type SettingsTab = 'io' | 'threshold' | 'labels' | 'orientation' | 'info'
+
 export default function Pane({
   pane,
   onChange,
@@ -308,9 +310,18 @@ export default function Pane({
 }) {
   // Closed on first load: the empty viewer explains how to load a scan and offers a pull-handle for this panel.
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('io')
   // Display orientation (mirrors) — also what every click sent to the backend was made under.
   const orient = useDisplayOrientation()
   const flip = caps.orientation ? flipCode(orient) : ''
+  const settingsTabs: { id: SettingsTab; label: string }[] = [
+    { id: 'io', label: 'I/O' },
+    ...(caps.contrast ? [{ id: 'threshold' as const, label: 'Threshold Seed' }] : []),
+    { id: 'labels', label: 'Class Labels' },
+    ...(caps.orientation ? [{ id: 'orientation' as const, label: 'Orientation' }] : []),
+    { id: 'info', label: 'Info' },
+  ]
+  const activeSettingsTab = settingsTabs.some((t) => t.id === settingsTab) ? settingsTab : 'io'
   const [copyingToOtherPane, setCopyingToOtherPane] = useState(false)
   const [probe, setProbe] = useState<{ hu: number | null; label: number | null; row: number; col: number } | null>(
     null,
@@ -2903,7 +2914,30 @@ export default function Pane({
         </div>
       </div>
 
-      {pane.error && <div className="pane-error">{pane.error}</div>}
+      {(() => {
+        const messages = [pane.error, pane.manifestError, contrastError].filter((m): m is string => !!m)
+        if (messages.length === 0) return null
+        return (
+          <div className="error-toast" role="alert">
+            <div className="error-toast-text">
+              {messages.map((m, i) => (
+                <div key={i}>{m}</div>
+              ))}
+            </div>
+            <button
+              className="error-toast-dismiss"
+              onClick={() => {
+                onChange({ error: null, manifestError: null })
+                setContrastError(null)
+              }}
+              title="Dismiss"
+              aria-label="Dismiss error"
+            >
+              ✕
+            </button>
+          </div>
+        )
+      })()}
       {pane.contrastNotice && (
         <div className="pane-warning pane-warning-contrast">
           {pane.contrastNotice}
@@ -3081,7 +3115,6 @@ export default function Pane({
                     minimized={contrastBoxMinimized}
                     onToggleMinimized={() => setContrastBoxMinimized((v) => !v)}
                     saving={contrastSaving}
-                    error={contrastError}
                     onFinalize={() => finalizeSeed()}
                     onReSeed={requestReSeed}
                     fixedHu={contrastSettings.method === 'fixed' ? contrastSettings.fixedHu : null}
@@ -3278,6 +3311,20 @@ export default function Pane({
         {settingsOpen && (
           <div className="pane-settings">
             <div className="settings-close-row">
+              <div className="settings-tabs" role="tablist">
+                {settingsTabs.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeSettingsTab === t.id}
+                    className={activeSettingsTab === t.id ? 'active' : ''}
+                    onClick={() => setSettingsTab(t.id)}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
               <button
                 type="button"
                 className="settings-close-circle"
@@ -3290,44 +3337,66 @@ export default function Pane({
                 </svg>
               </button>
             </div>
-            <CaseLoader
-              pane={pane}
-              onChange={onChange}
-              onLoadCt={doLoadCt}
-              onLoadMask={doLoadMask}
-              annotationSaveDir={annotationSaveDir}
-              onAnnotationSaveDirChange={onAnnotationSaveDirChange}
-              onRequestSelectRow={requestSelectRow}
-              onLoadRow={onLoadRow}
-              hasUnsavedMaskChanges={hasUnsavedMaskChanges}
-              caps={caps}
-              contrastSettings={contrastSettings}
-              onContrastSettingsChange={setContrastSettings}
-            />
-
-            <div className="settings-section label-colors-card">
-              <LabelColorEditor
-                colors={pane.maskColors}
-                presetId={pane.labelPresetId}
-                onChange={(colors, presetId) => onChange({ maskColors: colors, labelPresetId: presetId })}
+            {activeSettingsTab === 'io' && (
+              <CaseLoader
+                pane={pane}
+                onChange={onChange}
+                onLoadCt={doLoadCt}
+                onLoadMask={doLoadMask}
+                annotationSaveDir={annotationSaveDir}
+                onAnnotationSaveDirChange={onAnnotationSaveDirChange}
+                onRequestSelectRow={requestSelectRow}
+                onLoadRow={onLoadRow}
+                hasUnsavedMaskChanges={hasUnsavedMaskChanges}
+                caps={caps}
               />
-              <div className="threshold-color-row">
-                <span>HU threshold overlay</span>
-                <input
-                  type="color"
-                  value={pane.thresholdColor}
-                  onChange={(e) => onChange({ thresholdColor: e.target.value })}
-                  title="Color of the HU threshold overlay"
+            )}
+
+            {activeSettingsTab === 'threshold' && caps.contrast && (
+              <ThresholdSettings contrastSettings={contrastSettings} onContrastSettingsChange={setContrastSettings} />
+            )}
+
+            {activeSettingsTab === 'labels' && (
+              <div className="settings-section label-colors-card">
+                <LabelColorEditor
+                  colors={pane.maskColors}
+                  presetId={pane.labelPresetId}
+                  onChange={(colors, presetId) => onChange({ maskColors: colors, labelPresetId: presetId })}
                 />
+                <div className="threshold-color-row">
+                  <span>HU threshold overlay</span>
+                  <input
+                    type="color"
+                    value={pane.thresholdColor}
+                    onChange={(e) => onChange({ thresholdColor: e.target.value })}
+                    title="Color of the HU threshold overlay"
+                  />
+                </div>
               </div>
-            </div>
+            )}
 
-            {caps.orientation && <DisplayOrientationBox />}
+            {activeSettingsTab === 'orientation' && caps.orientation && <DisplayOrientationBox />}
 
-            <div className="settings-section">
-              <InfoPanel title="CT image" info={pane.ctInfo} />
-              <InfoPanel title="Segmentation mask" info={pane.maskInfo} />
-            </div>
+            {activeSettingsTab === 'info' && (
+              pane.ctInfo || pane.maskInfo ? (
+                <div className="info-grid">
+                  <div className="settings-section">
+                    <InfoPanel title="CT image" info={pane.ctInfo} emptyNote="Not loaded. Load a CT in I/O." />
+                  </div>
+                  <div className="settings-section">
+                    <InfoPanel title="Segmentation mask" info={pane.maskInfo} emptyNote="Not loaded. Load or create a mask in I/O." />
+                  </div>
+                </div>
+              ) : (
+                <div className="settings-section info-empty-state">
+                  <div className="info-empty-title">No scan loaded</div>
+                  <div className="info-empty-note">Load a CT in the I/O tab to see its details here.</div>
+                  <button type="button" className="add-label-btn" onClick={() => setSettingsTab('io')}>
+                    Go to I/O
+                  </button>
+                </div>
+              )
+            )}
           </div>
         )}
       </div>

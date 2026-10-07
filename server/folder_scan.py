@@ -68,7 +68,19 @@ def _read_table(manifest_path: str) -> pd.DataFrame:
     ext = os.path.splitext(manifest_path)[1].lower()
     if ext in (".xlsx", ".xls", ".xlsm"):
         return pd.read_excel(manifest_path, dtype=str)
-    return pd.read_csv(manifest_path, dtype=str)
+    # CSVs from Excel are often not UTF-8 (cp1252, or UTF-8 with a BOM) and, in
+    # many locales, use ";" or tabs instead of ",". Reading them as plain
+    # UTF-8 with commas raised, which surfaced as an "Internal Server Error".
+    last_error = None
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            with open(manifest_path, "r", encoding=encoding, newline="") as f:
+                first_line = f.readline()
+            sep = max((",", ";", "	"), key=first_line.count)
+            return pd.read_csv(manifest_path, dtype=str, sep=sep, encoding=encoding)
+        except UnicodeDecodeError as e:
+            last_error = e
+    raise last_error
 
 
 def _write_table(manifest_path: str, df: pd.DataFrame, reason_column: str = DEFAULT_REASON_COLUMN) -> None:
@@ -317,7 +329,13 @@ def _ensure_tracking_columns(
         missing.append(contrast_column)
 
     if missing:
-        _append_columns(manifest_path, df, missing, reason_column)
+        try:
+            _append_columns(manifest_path, df, missing, reason_column)
+        except OSError:
+            # The file is open in Excel, read-only or locked by a sync client.
+            # The columns exist in memory, so the manifest still loads; a later
+            # save to the file reports the real problem.
+            pass
     return df
 
 
@@ -543,3 +561,23 @@ def save_contrast_flag(manifest_path: str, row_index: int, contrast_column: str,
     if not contrast_column:
         raise ValueError("No contrast column configured for this manifest")
     _save_cell(manifest_path, row_index, contrast_column, "Yes" if is_contrast else "No")
+
+
+TEMPLATE_COLUMNS = ["image_path", "mask_path", "PatientId"]
+
+
+def write_manifest_template(out_path: str) -> str:
+    """Write an empty manifest (header only) to `out_path`. The
+    extension picks the format: .csv, otherwise .xlsx. Returns the path written
+    (an extension is added when the user typed none)."""
+    out_path = clean_path(out_path)
+    ext = os.path.splitext(out_path)[1].lower()
+    if ext not in (".csv", ".xlsx"):
+        out_path += ".xlsx"
+        ext = ".xlsx"
+    df = pd.DataFrame(columns=TEMPLATE_COLUMNS)
+    if ext == ".csv":
+        df.to_csv(out_path, index=False)
+    else:
+        df.to_excel(out_path, index=False)
+    return out_path

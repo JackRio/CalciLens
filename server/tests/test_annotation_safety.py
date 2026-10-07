@@ -644,3 +644,37 @@ def test_nesting_check_ignores_case_and_trailing_separators(tmp_path):
     # A folder that merely starts with the name is NOT the folder itself.
     other = os.path.join(outer, ap.ANNOTATION_FOLDER_NAME + "_old")
     assert ap.annotation_dir(other) == os.path.join(other, ap.ANNOTATION_FOLDER_NAME)
+
+
+def test_saved_mask_uses_the_cts_own_voxel_grid(tmp_path):
+    import numpy as np
+    import SimpleITK as sitk
+    from volume_store import VolumeStore, _image_on_ct_grid
+
+    img = sitk.GetImageFromArray(np.zeros((5, 6, 7), dtype=np.int16))
+    img.SetSpacing((1, 2, 3))
+    img.SetOrigin((10, 20, 30))
+    img = sitk.DICOMOrient(img, "RAS")
+    ct_path = str(tmp_path / "ct.nii.gz")
+    sitk.WriteImage(img, ct_path)
+
+    store = VolumeStore()
+    ct = store.load(ct_path)
+    mask = store.create_blank_mask(ct)
+    out = _image_on_ct_grid(mask, ct)
+    assert out.GetDirection() == img.GetDirection()
+    assert out.GetOrigin() == img.GetOrigin()
+    assert out.GetSize() == img.GetSize()
+
+
+def test_semicolon_cp1252_csv_loads(tmp_path):
+    path = tmp_path / "m.csv"
+    path.write_bytes(b"image_path;PatientId\nD:\\caf\xe9\\ct.nii.gz;p1\n")
+    result = folder_scan.list_manifest_pairs(str(path), image_column="image_path", mask_column=None, read_only=True)
+    assert result["rows"][0]["image_path"].endswith("ct.nii.gz")
+
+
+def test_manifest_template_round_trips(tmp_path):
+    out = folder_scan.write_manifest_template(str(tmp_path / "t"))
+    assert out.endswith(".xlsx")
+    assert folder_scan.list_manifest_columns(out) == folder_scan.TEMPLATE_COLUMNS

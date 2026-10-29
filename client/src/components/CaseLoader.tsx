@@ -249,7 +249,7 @@ export default function CaseLoader({
   pane: PaneState
   onChange: (partial: Partial<PaneState>) => void
   onLoadCt: (path: string) => Promise<void>
-  onLoadMask: (path: string) => Promise<void>
+  onLoadMask: (path: string) => Promise<unknown>
   annotationSaveDir: string
   onAnnotationSaveDirChange: (next: string) => void
   // Routed through Pane so picking a case from this dropdown gets the same

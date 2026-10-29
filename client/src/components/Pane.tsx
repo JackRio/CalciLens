@@ -61,7 +61,7 @@ import ScoringSetupModal, { initialScoringSetup } from './ScoringSetupModal'
 import { BUILTIN_PRESET_ID, builtinColors, isBuiltinId, useLabelPresets } from '../labelPresets'
 import { edgeLabels, flipCode, useDisplayOrientation } from '../displayOrientation'
 import type { ModeCaps } from '../modeConfig'
-import { isElectron, pickPath } from '../electronApi'
+import { droppedPath, isElectron, pickPath } from '../electronApi'
 import DisplayOrientationBox from './DisplayOrientationBox'
 import EmptyStateSketch from './EmptyStateSketch'
 import SettingsPullHandle from './SettingsPullHandle'
@@ -335,6 +335,8 @@ export default function Pane({
   const [navModalDirection, setNavModalDirection] = useState<1 | -1 | null>(null)
   const [jumpPos, setJumpPos] = useState<number | null>(null)
   const [seriesStepDirection, setSeriesStepDirection] = useState<1 | -1 | null>(null)
+  const [dropHover, setDropHover] = useState(false)
+  const [droppedFile, setDroppedFile] = useState<string | null>(null) // asks: image or segmentation?
   const [counterDraft, setCounterDraft] = useState('')
   const [counterFocused, setCounterFocused] = useState(false)
   const [counterError, setCounterError] = useState<string | null>(null)
@@ -762,6 +764,39 @@ export default function Pane({
     await loadCtEntry(directory, seriesUid)
   }
 
+  // A file or DICOM folder dropped on the viewer (caps.dropToLoad) asks
+  // whether it is the image or a segmentation of it, then loads it the way
+  // Load CT / Load mask do (a mismatched segmentation is refused there).
+  function onDragOver(e: React.DragEvent) {
+    if (!caps.dropToLoad || !e.dataTransfer.types.includes('Files')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    if (!dropHover) setDropHover(true)
+  }
+
+  function onDrop(e: React.DragEvent) {
+    if (!caps.dropToLoad) return
+    e.preventDefault()
+    setDropHover(false)
+    const path = droppedPath(e)
+    if (path && !pane.loading) setDroppedFile(path)
+  }
+
+  const LEAVE_MANIFEST = { manifestRows: [], activeRowIndex: null, reasonOptions: [], scoreClasses: [], manifestError: null }
+
+  async function openDropped(as: 'image' | 'mask') {
+    const path = droppedFile
+    setDroppedFile(null)
+    if (!path) return
+    if (as === 'image') {
+      onChange({ ctInputPath: path, ...LEAVE_MANIFEST })
+      await doLoadCt(path)
+    } else if (await doLoadMask(path)) {
+      // Only once it loaded: a refused segmentation leaves everything as it was.
+      onChange(LEAVE_MANIFEST)
+    }
+  }
+
   // Series Previous/Next (only relevant when doLoadCt found >1 series in the
   // loaded DICOM folder — see the series-nav-tabs bar below). Reuses the
   // same "Before you move on..." unsaved-mask-edits confirmation as manifest
@@ -789,7 +824,7 @@ export default function Pane({
     loadCtEntry(entry.directory, entry.seriesUid || undefined)
   }
 
-  async function doLoadMask(path: string) {
+  async function doLoadMask(path: string): Promise<boolean> {
     onChange({ loading: true, loadingMessage: 'Loading mask...', error: null })
     try {
       const info = await loadVolume(path, true)
@@ -799,7 +834,7 @@ export default function Pane({
       const mismatch = pane.ctInfo ? detectGeometryMismatch(pane.ctInfo, info) : null
       if (mismatch) {
         onChange({ loading: false, loadingMessage: null, error: mismatch })
-        return
+        return false
       }
       onChange({
         maskPath: path,
@@ -811,8 +846,10 @@ export default function Pane({
         loadingMessage: null,
         showMask: true,
       })
+      return true
     } catch (e) {
       onChange({ loading: false, loadingMessage: null, error: e instanceof Error ? e.message : String(e) })
+      return false
     }
   }
 
@@ -2990,7 +3027,13 @@ export default function Pane({
             hideCursor()
           }}
           onContextMenu={(e) => e.preventDefault()}
+          onDragOver={onDragOver}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropHover(false)
+          }}
+          onDrop={onDrop}
         >
+          {dropHover && <div className="viewer-drop-overlay">Drop to open</div>}
           {pane.showAll && pane.ctInfo && mprCursor ? (
             <MultiPlaneViewer
               pane={pane}
@@ -3423,6 +3466,28 @@ export default function Pane({
               </button>
               <button className="add-label-btn" onClick={handleSaveComment} disabled={commentSaving}>
                 {commentSaving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {droppedFile && (
+        <div className="comment-modal-backdrop" onClick={() => setDroppedFile(null)}>
+          <div className="comment-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="comment-modal-title">Open as</div>
+            <div className="nav-modal-body drop-modal-name" title={droppedFile}>
+              {droppedFile.split(/[\\/]/).filter(Boolean).pop()}
+              {!pane.ctInfo && <div className="drop-modal-hint">Open the image first to add a segmentation.</div>}
+            </div>
+            <div className="comment-modal-buttons">
+              <button onClick={() => openDropped('image')}>Image</button>
+              <button
+                disabled={!pane.ctInfo}
+                title={pane.ctInfo ? undefined : 'Open the image first'}
+                onClick={() => openDropped('mask')}
+              >
+                Segmentation
               </button>
             </div>
           </div>

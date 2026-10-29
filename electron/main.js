@@ -105,6 +105,11 @@ function createWindow() {
     if (/^https:\/\//i.test(url)) shell.openExternal(url)
     return { action: 'deny' }
   })
+  // A file dropped anywhere the page doesn't handle it would otherwise replace
+  // the app with that file. Dropping a scan on the viewer is handled by the page.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith(SERVER_URL)) event.preventDefault()
+  })
   mainWindow.loadURL(SERVER_URL)
   mainWindow.once('ready-to-show', () => {
     mainWindow.maximize()

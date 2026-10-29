@@ -358,6 +358,7 @@ class VolumeStore:
         labels = None
         if is_mask:
             uniq = np.unique(array)
+            _assert_looks_like_mask(uniq)
             labels = [int(v) for v in uniq if v != 0]
 
         vol = LoadedVolume(
@@ -583,6 +584,25 @@ def _ellipse_mask(shape: tuple, center_row: float, center_col: float, radius_row
     rows = np.arange(shape[0])[:, None]
     cols = np.arange(shape[1])[None, :]
     return (((rows - center_row) / radius_row) ** 2 + ((cols - center_col) / radius_col) ** 2) <= 1.0
+
+
+# More distinct values than any segmentation has (TotalSegmentator, the
+# largest common one, has ~120 classes); a CT has thousands.
+MAX_MASK_LABELS = 1000
+
+
+def _assert_looks_like_mask(uniq: np.ndarray) -> None:
+    """Refuse an image opened as a segmentation (e.g. the CT itself dropped as
+    one). Every HU value would become its own label, which the label list,
+    colours and renderer cannot cope with. Only a count / non-integer test: a
+    guess at label *values* false-positived on real whole-heart masks. Labels
+    are never negative; a CT always is somewhere (air, padding)."""
+    if len(uniq) and uniq[0] < 0:
+        raise ValueError("This looks like an image, not a segmentation (it has negative values). Open it as an image instead.")
+    if uniq.dtype.kind == "f" and not np.all(np.mod(uniq, 1) == 0):
+        raise ValueError("This looks like an image, not a segmentation (it has fractional values). Open it as an image instead.")
+    if len(uniq) > MAX_MASK_LABELS:
+        raise ValueError(f"This looks like an image, not a segmentation ({len(uniq)} different values). Open it as an image instead.")
 
 
 def recompute_labels(mask_vol: LoadedVolume):

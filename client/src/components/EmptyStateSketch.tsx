@@ -198,7 +198,7 @@ function ViewArt({
         <text x="170" y="222" fontSize="16">Pull the handle up</text>
         <text x="170" y="245" fontSize="14">or click “Settings”</text>
 
-        <text x="480" y="222" fontSize="16">Browse file… or directory…</text>
+        <text x="480" y="222" fontSize="16">{viewOnly ? 'Browse… or drop it here' : 'Browse file… or directory…'}</text>
         <text x="480" y="245" fontSize="13">.nii .nii.gz .mha .mhd .nrrd · DICOM</text>
 
         <text x="790" y="222" fontSize="16">Load CT</text>

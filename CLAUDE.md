@@ -47,7 +47,11 @@ count (1, or 2 for View ▸ Split view) and renders `<App mode initialPaneCount 
   `App` passes `caps` to `Pane`/`CaseLoader`/`KeybindSettings`; **add a capability there rather than
   sprinkling `mode === ...` checks.** A new screen = a new `ModeCaps` entry + a sketch (below).
 - **View**: read-only. Manifest loads with `read_only` (no columns added to the user's file). Never looks up
-  `Manual_Annotations` or contrast evidence.
+  `Manual_Annotations` or contrast evidence. `caps.dropToLoad`: a file / DICOM folder dropped on the viewer asks
+  "Open as" Image / Segmentation (Segmentation disabled until a CT is open) and goes through `doLoadCt` /
+  `doLoadMask`, so a mismatched mask is refused with the error toast and the old one kept. The path comes from
+  the preload's `pathForFile` (`webUtils.getPathForFile`; `File.path` is gone in Electron 33), and `main.js`
+  blocks `will-navigate` off the app so a missed drop can't replace the page.
 - **Annotate non-contrast**: `caps.edit`; no Review/Tags/Split/Contrast/Reason; Status + Annotation columns.
   Fixed 130 HU. It never writes the manifest Contrast column (blank column = never read or written).
 - **Annotate contrast** (`annotate-contrast`, `caps.contrast`): same as non-contrast plus its own seed flow and
@@ -442,7 +446,9 @@ count (1, or 2 for View ▸ Split view) and renders `<App mode initialPaneCount 
   whose size, position, spacing or orientation differs from the CT's is refused outright, because slice
   indices are clamped per-volume and painting one would silently write to the wrong slice. There is
   deliberately no "does this look like a CT" heuristic any more (it guessed, and false-positived on
-  whole-heart masks whose label values run 205…850).
+  whole-heart masks whose label values run 205…850). The one server-side check (`_assert_looks_like_mask`)
+  refuses only what can't be a label map — negative or fractional values, or > `MAX_MASK_LABELS` distinct
+  values — so a CT opened as a segmentation errors instead of becoming thousands of "labels".
 - **Annotation saving/reloading**: one folder per scan under `Manual_Annotations/` (see
   `annotation_paths.py` — no date in the name; the dates are in `_source.json`), reloaded
   automatically whenever that scan is opened again — through the manifest's `annotation_path`

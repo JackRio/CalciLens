@@ -3174,3 +3174,33 @@ button.orientation-card:hover {
   font-weight: 600;
   padding: 2px 0;
 }
+
+/* Shown while a file is dragged over the viewer (View screen: drop to open). */
+.viewer-drop-overlay {
+  position: absolute;
+  inset: 12px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 3px dashed var(--sketch-neon);
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--sketch-neon);
+  font-size: 22px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+/* Scan names are often one long unbroken token (UIDs, underscores): wrap
+   anywhere rather than run out of the prompt. */
+.drop-modal-name {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.drop-modal-hint {
+  margin-top: 6px;
+  font-size: 13px;
+  opacity: 0.75;
+}

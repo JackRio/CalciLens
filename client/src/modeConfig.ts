@@ -16,6 +16,7 @@ export interface ModeCaps {
   showAll: boolean // the three-views-at-once button
   annotationLookup: boolean // reload this scan's saved annotation on load
   readOnlyManifest: boolean // loading a manifest never adds columns to the file
+  dropToLoad: boolean // drag a scan file / DICOM folder onto the viewer to open it
   // Manifest columns worth showing a picker for (Image / Mask / ID always are).
   columns: { reason: boolean; status: boolean; annotation: boolean; contrast: boolean }
 }
@@ -33,6 +34,7 @@ const VIEW: ModeCaps = {
   showAll: true,
   annotationLookup: false,
   readOnlyManifest: true,
+  dropToLoad: true,
   columns: NO_COLUMNS,
 }
 
@@ -47,6 +49,7 @@ const ANNOTATE_NONCONTRAST: ModeCaps = {
   showAll: true,
   annotationLookup: true,
   readOnlyManifest: false,
+  dropToLoad: false,
   // Status marks a case Annotated / InProgress; the annotation column is where
   // the saved annotation's path is recorded so the next visit finds it.
   columns: { reason: false, status: true, annotation: true, contrast: false },
@@ -74,6 +77,7 @@ const FULL: ModeCaps = {
   showAll: false,
   annotationLookup: true,
   readOnlyManifest: false,
+  dropToLoad: false,
   columns: { reason: true, status: true, annotation: true, contrast: false },
 }
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 import uuid
 from typing import Optional
 
@@ -54,6 +55,25 @@ DEFAULT_REASON_TAGS = [
 # shown in the viewer if present, skipped entirely if not.
 SCORE_CLASSES = ["CAC", "LAD", "LCx", "RCA", "TAC", "AV", "MV"]
 SCORE_COLUMN_SUFFIX = "_Agatston"
+
+
+def _replace_file(tmp_path: str, dest_path: str) -> None:
+    """os.replace with a short retry. On Windows the swap is refused (WinError
+    5/32) while another program holds the destination open: Excel with the
+    manifest open, or an antivirus / sync client scanning a file just written.
+    The second kind clears within a moment; the first needs the user to close
+    the file, so that gets a plain message instead of a raw OS error."""
+    for attempt in range(6):
+        try:
+            os.replace(tmp_path, dest_path)
+            return
+        except PermissionError:
+            if attempt == 5:
+                raise PermissionError(
+                    f"Can't update the manifest because it's open in another program (probably Excel) "
+                    f"or is read-only: {dest_path}. Close it and try again."
+                ) from None
+            time.sleep(0.4)
 
 
 def _read_table(manifest_path: str) -> pd.DataFrame:
@@ -125,7 +145,7 @@ def _write_table(manifest_path: str, df: pd.DataFrame, reason_column: str = DEFA
                     pass
         else:
             df.to_csv(tmp_path, index=False)
-        os.replace(tmp_path, manifest_path)
+        _replace_file(tmp_path, manifest_path)
     finally:
         if os.path.exists(tmp_path):
             try:
@@ -197,7 +217,7 @@ def _write_workbook_atomically(wb, manifest_path: str) -> None:
     tmp_path = os.path.join(dirname, f".tmp_{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex[:8]}_{basename}")
     try:
         wb.save(tmp_path)
-        os.replace(tmp_path, manifest_path)
+        _replace_file(tmp_path, manifest_path)
     finally:
         if os.path.exists(tmp_path):
             try:
@@ -347,6 +367,8 @@ def _append_columns(manifest_path: str, df: pd.DataFrame, columns: list, reason_
         try:
             if _set_cells_in_place(manifest_path, [], new_columns=columns):
                 return
+        except PermissionError:
+            raise
         except Exception:
             pass
     _write_table(manifest_path, df, reason_column=reason_column or DEFAULT_REASON_COLUMN)
@@ -508,6 +530,8 @@ def _save_cell(
         try:
             if _set_cells_in_place(manifest_path, [(row_index, column, value)]):
                 return
+        except PermissionError:
+            raise
         except Exception:
             # Fall through to the rewrite path rather than losing the edit.
             pass

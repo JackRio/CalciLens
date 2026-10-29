@@ -869,6 +869,8 @@ def manifest_annotation_path(req: ManifestAnnotationPathRequest):
         raise HTTPException(status_code=404, detail=f"Manifest not found: {req.manifest_path}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to record the annotation path: {e}")
     return {"ok": True}

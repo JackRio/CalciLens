@@ -678,3 +678,25 @@ def test_manifest_template_round_trips(tmp_path):
     out = folder_scan.write_manifest_template(str(tmp_path / "t"))
     assert out.endswith(".xlsx")
     assert folder_scan.list_manifest_columns(out) == folder_scan.TEMPLATE_COLUMNS
+
+
+def test_locked_manifest_gives_a_clear_error_and_never_rewrites(tmp_path, monkeypatch):
+    import pandas as pd
+    import pytest
+
+    path = tmp_path / "m.xlsx"
+    pd.DataFrame({"image_path": ["a"], "annotation_path": [""]}).to_excel(path, index=False)
+    before = path.read_bytes()
+
+    def locked(src, dst):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(folder_scan.os, "replace", locked)
+    monkeypatch.setattr(folder_scan.time, "sleep", lambda s: None)
+    written = []
+    monkeypatch.setattr(folder_scan, "_write_table", lambda *a, **k: written.append(1))
+    with pytest.raises(PermissionError, match="open in another program"):
+        folder_scan.save_annotation_path(str(path), 0, "annotation_path", "x.nii.gz")
+    assert not written  # no fall-back to the sheet-destroying full rewrite
+    monkeypatch.undo()
+    assert path.read_bytes() == before

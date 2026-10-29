@@ -1174,7 +1174,9 @@ export default function Pane({
             ),
           })
         } catch (e) {
-          message += ` (but failed to record it in the manifest: ${e instanceof Error ? e.message : String(e)})`
+          onChange({
+            manifestError: `Your annotation is saved, but the manifest wasn't updated. ${e instanceof Error ? e.message : String(e)}`,
+          })
         }
       } else {
         onChange({ maskPath: res.path, maskSource: 'annotation' })
